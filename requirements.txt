@@ -1,0 +1,31 @@
+# AeroFlow Studio — requires 64-bit Python 3.10–3.14
+# Compatible-release ranges: tested API surface, but free of brittle exact pins.
+
+# --- GUI -------------------------------------------------------------------
+PySide6>=6.6,<7
+QtPy>=2.4,<3                # required by pyvistaqt; main.py forces QT_API=pyside6
+
+# --- 3D visualisation ------------------------------------------------------
+vtk>=9.2,<10
+pyvista>=0.43,<1.0
+pyvistaqt>=0.11,<1.0
+
+# --- Geometry & mesh processing -------------------------------------------
+trimesh>=4.0,<5
+numpy-stl>=3.1,<4
+networkx>=3.0,<4            # used by trimesh for mesh repair / graph operations
+
+# --- Numerical computing ---------------------------------------------------
+numpy>=1.26,<3
+scipy>=1.11,<2
+# JIT-compiled flow-field kernels (5-30x faster solves). Optional at runtime: without it the
+# Instant engine falls back to vectorised NumPy automatically.
+numba>=0.60; python_version < "3.15"
+
+# --- 2D charts & plotting -------------------------------------------------
+pyqtgraph>=0.13.3,<0.15
+matplotlib>=3.8,<4
+
+# --- Export ----------------------------------------------------------------
+imageio>=2.33,<3
+Pillow>=10.0,<13

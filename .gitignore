@@ -1,0 +1,27 @@
+# Python virtual environment (recreate with setup_windows.bat / pip install -r requirements.txt)
+.venv/
+venv/
+env/
+
+# Python / numba caches
+__pycache__/
+*.py[cod]
+*.nbi
+*.nbc
+.pytest_cache/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local app output
+*.log
+exports/
+cases/
