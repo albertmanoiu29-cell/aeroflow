@@ -25,3 +25,6 @@ Thumbs.db
 *.log
 exports/
 cases/
+
+# Packaging: downloaded third-party installers
+packaging/redist/

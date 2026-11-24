@@ -34,7 +34,7 @@ from typing import Final
 # ---------------------------------------------------------------------------
 APP_NAME: Final[str] = "AeroFlow Studio"
 APP_ID: Final[str] = "aeroflow_studio"
-APP_VERSION: Final[str] = "1.3.0"
+APP_VERSION: Final[str] = "1.4.0"
 ORG_NAME: Final[str] = "AeroFlow"
 ORG_DOMAIN: Final[str] = "aeroflow.studio"
 

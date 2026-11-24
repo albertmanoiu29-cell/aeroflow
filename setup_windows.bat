@@ -3,6 +3,8 @@ rem AeroFlow Studio - one-step Windows setup.
 rem Double-click this file (or run it from Command Prompt / PowerShell) in the aeroflow_studio folder.
 rem It creates a private Python environment in .venv and installs every library into it, then checks
 rem the libraries import. It never relies on "activate", so PowerShell script policies don't matter.
+rem Used by the installer with:  AEROFLOW_PYTHON=<full path of python.exe>  (which Python to use) and
+rem AEROFLOW_UNATTENDED=1  (no "press any key" pauses).
 setlocal
 cd /d "%~dp0"
 
@@ -12,6 +14,7 @@ echo.
 
 rem ---- 1. Find a suitable 64-bit Python (3.10 - 3.14) -------------------------------------------
 set "PYEXE="
+if defined AEROFLOW_PYTHON if exist "%AEROFLOW_PYTHON%" set "PYEXE="%AEROFLOW_PYTHON%""
 for %%V in (3.12 3.13 3.11 3.14 3.10) do (
     if not defined PYEXE (
         py -%%V -c "import sys, struct; sys.exit(0 if struct.calcsize('P') == 8 else 1)" >nul 2>&1 && set "PYEXE=py -%%V"
@@ -79,12 +82,12 @@ if errorlevel 1 (
 echo.
 echo === Setup complete. Start the app with run_windows.bat ===
 echo.
-pause
+if not defined AEROFLOW_UNATTENDED pause
 exit /b 0
 
 :fail
 echo.
 echo === Setup did NOT finish. Scroll up for the first red/ERROR line and send it to support. ===
 echo.
-pause
+if not defined AEROFLOW_UNATTENDED pause
 exit /b 1

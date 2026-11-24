@@ -110,9 +110,19 @@ AeroFlow Studio needs **64-bit Python 3.10–3.14** and an OpenGL 3.2+ capable G
 
 ### Windows
 
-Requires 64-bit Python 3.10–3.14 from [python.org](https://www.python.org/downloads/windows/).
+**Easiest: the installer.** Download **`AeroFlowStudio-Setup-<version>.exe`** from the
+[Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases) and run it. No administrator rights
+are needed. It installs Python 3.12 if your PC has no suitable Python, runs `setup_windows.bat` to install
+every library (plus NVIDIA GPU acceleration when an NVIDIA driver is present), and adds Start-menu and
+desktop shortcuts to **`AeroFlow Studio.exe`**. Setup needs an internet connection and takes about 5–10
+minutes. To repair a damaged install, use **AeroFlow Studio – repair libraries** from the Start menu.
+Uninstall it from *Settings ▸ Apps*. Your cases and exports in `%APPDATA%\aeroflow_studio` are kept.
 
-**Easiest:** double-click **`setup_windows.bat`** once. It finds a suitable Python, creates a private
+To build the installer yourself, install Inno Setup 6 (`winget install JRSoftware.InnoSetup`) and run
+`powershell -ExecutionPolicy Bypass -File packaging\build_release.ps1`; the output goes to `dist\`.
+
+**From the source folder** (requires 64-bit Python 3.10–3.14 from [python.org](https://www.python.org/downloads/windows/)):
+double-click **`setup_windows.bat`** once. It finds a suitable Python, creates a private
 `.venv` environment, installs every library into it and checks they import. Then start the app with
 **`run_windows.bat`**.
 

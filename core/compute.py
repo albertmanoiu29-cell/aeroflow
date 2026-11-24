@@ -135,6 +135,11 @@ def _probe() -> GPUInfo:
         return GPUInfo(False, reason="disabled by AEROFLOW_NO_GPU")
     _prepare_cuda_paths()
     try:
+        import warnings
+
+        # CuPy 14 cannot derive a single "CUDA root" from NVIDIA's CUDA 12 pip wheels (each component has
+        # its own folder) and warns, although it finds NVRTC through cuda-pathfinder and works normally.
+        warnings.filterwarnings("ignore", message="CUDA path could not be detected", category=UserWarning)
         import cupy as cp
     except Exception as exc:  # noqa: BLE001 - ImportError or a broken CUDA install
         return GPUInfo(False, reason=f"CuPy is not installed ({type(exc).__name__}). "
