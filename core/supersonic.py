@@ -21,9 +21,18 @@ The inviscid model is the standard tool for shock structure: shock positions, an
 expansion fans and the sonic line are captured. Viscous effects (boundary layers, shock / boundary-
 layer interaction) are not modelled.
 
-All kernels are numba-compiled and parallel; calls are serialised with the shared kernel lock of
-:mod:`core.accel` (non-blocking from the GUI). Without numba a vectorised first-order HLL fallback
-keeps the Lab usable (slower and more diffusive).
+Compute devices (see :mod:`core.compute`):
+
+* **GPU** — CUDA port of the same kernels (:mod:`core.supersonic_gpu`), double precision. The state
+  stays on the GPU; each batch of steps is queued asynchronously and only the fields are copied back.
+* **CPU** — numba-compiled parallel kernels; calls are serialised with the shared kernel lock of
+  :mod:`core.accel` (non-blocking from the GUI). Without numba a vectorised first-order HLL fallback
+  keeps the Lab usable (slower and more diffusive).
+
+:meth:`Supersonic2D.begin_step` / :meth:`Supersonic2D.finish_step` split a batch so the caller can draw
+while the solver works (on the GPU, or on a background thread for the CPU). Readers always see the last
+*finished* state: :meth:`Supersonic2D.primitives` returns a published copy that is only replaced in
+:meth:`finish_step`, so an in-flight batch never tears a frame.
 """
 
 from __future__ import annotations
@@ -31,12 +40,13 @@ from __future__ import annotations
 import logging
 import math
 import time
+from concurrent.futures import Future
 from typing import Final, Optional
 
 import numpy as np
 from numpy.typing import NDArray
 
-from core import accel
+from core import accel, compute
 
 log = logging.getLogger("aeroflow.core.supersonic")
 
@@ -352,10 +362,38 @@ class Supersonic2D:
         self.mach = float(mach)
         self.ref_length = 0.25 * ny
         self.last_step_ms = 1.0
+        self.device = "CPU"                 # where the last batch ran: "GPU" or "CPU"
+        self._gpu = None                    # core.supersonic_gpu.SupersonicGPU while on the GPU
+        self._gpu_dirty = True              # host state changed: upload before the next GPU batch
+        self._future: Optional[Future] = None
+        self._pending_gpu = 0
+        self._U_stale = False               # the GPU holds a newer U than the host (fetched on demand)
+        self._mach_pub: Optional[F64] = None   # Mach field computed on the GPU for the published state
         self.resize(nx, ny)
+
+    @property
+    def U(self) -> F64:
+        """Conserved variables ``(rho, rho u, rho v, E)`` (ny, nx); fetched from the GPU when needed."""
+        if self._U_stale:
+            self._U_stale = False
+            if self._gpu is not None:
+                try:
+                    self._gpu.download_U(self._U)
+                except Exception as exc:  # noqa: BLE001 - keep the last host copy
+                    compute.gpu_failed(exc)
+                    self._gpu = None
+                    self._gpu_dirty = True
+        return self._U
+
+    @U.setter
+    def U(self, value: F64) -> None:
+        self._U = value
+        self._U_stale = False
 
     # -- set-up ------------------------------------------------------------
     def resize(self, nx: int, ny: int) -> None:
+        self._drain()
+        self._gpu = None
         self.nx, self.ny = int(nx), int(ny)
         self.solid_int = np.zeros((self.ny, self.nx), dtype=np.bool_)
         self.U = np.zeros((4, self.ny, self.nx))
@@ -364,6 +402,7 @@ class Supersonic2D:
         self._F = np.zeros((4, self.ny, self.nx + 1))        # x-face fluxes
         self._Gf = np.zeros((4, self.ny + 1, self.nx))       # y-face fluxes
         self.W = np.zeros((4, self.ny + 2 * G, self.nx + 2 * G))
+        self._Wpub = np.zeros_like(self.W)                   # last finished state, read by primitives()
         self._solid_pad = np.zeros((self.ny + 2 * G, self.nx + 2 * G), dtype=np.bool_)
         self._wall_pad = np.zeros_like(self._solid_pad)     # solids handled by face reflection
         self._clear_ib()
@@ -388,6 +427,9 @@ class Supersonic2D:
 
     def reset(self) -> None:
         """Impulsive start: uniform freestream everywhere outside the body."""
+        self._drain()
+        self._gpu_dirty = True
+        self._U_stale = False                            # U is overwritten entirely: no need to fetch it
         c = self._cons(*self.freestream)
         for k in range(4):
             self.U[k] = c[k]
@@ -411,6 +453,8 @@ class Supersonic2D:
         mask = np.asarray(mask, dtype=np.bool_).copy()
         if mask.shape != (self.ny, self.nx):
             raise ValueError(f"mask shape {mask.shape} != grid {(self.ny, self.nx)}")
+        self._drain()                                    # host U must be current before it is edited
+        self._gpu_dirty = True
         mask[:, :3] = False                              # keep the inflow region clear
         mask[:, -3:] = False
         mask[:3, :] = False
@@ -578,7 +622,10 @@ class Supersonic2D:
         self._fill_ib(use_nb)
 
     def _update_primitives(self) -> None:
+        """Host W from U, then publish it to readers (GUI thread only)."""
         self._primitives(self.U, False)
+        np.copyto(self._Wpub, self.W)
+        self._mach_pub = None
 
     def _residual(self, use_nb: bool) -> F64:
         if use_nb:
@@ -597,10 +644,125 @@ class Supersonic2D:
         return CFL / max(s, 1e-9)
 
     def step(self, n: int) -> int:
-        """Advance ``n`` time steps (SSP-RK2). Returns the steps done (0 if the kernels are busy)."""
+        """Advance ``n`` time steps (SSP-RK2) and wait for them. Returns the steps done (0 if the CPU
+        kernels are busy with another solver)."""
+        self.begin_step(n)
+        return self.finish_step()
+
+    # -- asynchronous stepping ---------------------------------------------------
+    @property
+    def busy(self) -> bool:
+        """True while a batch started by :meth:`begin_step` is still running."""
+        if self._future is not None:
+            return not self._future.done()
+        return self._gpu is not None and self._gpu.busy()
+
+    def begin_step(self, n: int, background: bool = False) -> None:
+        """Start ``n`` steps without waiting: queued on the GPU, or (``background=True``) run on a worker
+        thread for the CPU; otherwise the CPU steps run right here. Collect with :meth:`finish_step`."""
+        self._drain()
         n = max(int(n), 0)
         if n == 0:
+            return
+        if compute.use_gpu(wait=not background) and self._begin_gpu(n):
+            return
+        self._leave_gpu()
+        self.device = "CPU"
+        if background:
+            self._future = compute.cpu_executor().submit(self._step_cpu, n)
+        else:
+            fut: Future = Future()
+            try:
+                fut.set_result(self._step_cpu(n))
+            except BaseException as exc:  # noqa: BLE001 - re-raised by finish_step
+                fut.set_exception(exc)
+            self._future = fut
+
+    def finish_step(self) -> int:
+        """Wait for the batch from :meth:`begin_step` and publish its result. Returns the steps done."""
+        if self._pending_gpu:
+            done = self._finish_gpu()
+            # Any NaN anywhere reaches the CFL reduction, so a finite time means a finite field.
+            ok = math.isfinite(self.time)
+        elif self._future is not None:
+            fut, self._future = self._future, None
+            done = int(fut.result())
+            ok = bool(np.isfinite(self.U).all()) if done else True
+            if done and ok:
+                np.copyto(self._Wpub, self.W)
+                self._mach_pub = None
+        else:
             return 0
+        if done and not ok:
+            log.warning("Supersonic solver diverged; restarting from the freestream.")
+            self.reset()
+        return done
+
+    def _drain(self) -> None:
+        """Finish any batch in flight (host arrays are current afterwards)."""
+        if getattr(self, "_pending_gpu", 0) or getattr(self, "_future", None) is not None:
+            try:
+                self.finish_step()
+            except Exception as exc:  # noqa: BLE001 - a failed batch must not block a reset
+                log.debug("Supersonic batch failed while draining: %s", exc)
+
+    # -- GPU path ------------------------------------------------------------------
+    def _ib_arrays(self) -> dict:
+        return {"count": self.ib_count, "gj": self._ib_gj, "gi": self._ib_gi, "sj": self._ib_sj,
+                "si": self._ib_si, "sw": self._ib_sw, "n": self._ib_n}
+
+    def _begin_gpu(self, n: int) -> bool:
+        try:
+            if self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny):
+                from core.supersonic_gpu import SupersonicGPU
+
+                self._gpu = SupersonicGPU(self.nx, self.ny)
+                self._gpu_dirty = True
+            if self._gpu_dirty:
+                self._gpu.upload(self.U, self._solid_pad, self._wall_pad, self._ib_arrays())
+                self._gpu_dirty = False
+            self._gpu.enqueue(n, self.gamma, self.freestream, self.time)
+        except Exception as exc:  # noqa: BLE001 - fall back to the CPU, never crash the Lab
+            compute.gpu_failed(exc)
+            self._gpu = None
+            self._gpu_dirty = True
+            return False
+        self._pending_gpu = n
+        self.device = "GPU"
+        return True
+
+    def _finish_gpu(self) -> int:
+        self._pending_gpu = 0
+        try:
+            done, t, ms = self._gpu.wait()
+        except Exception as exc:  # noqa: BLE001
+            compute.gpu_failed(exc)
+            self._gpu = None
+            self._gpu_dirty = True
+            return 0
+        np.copyto(self._Wpub, self._gpu.h_W)             # published directly (host W is CPU scratch)
+        # A copy, not the pinned buffer itself: the next batch's asynchronous download overwrites that.
+        if self._mach_pub is None or self._mach_pub.shape != self._gpu.h_M.shape:
+            self._mach_pub = np.empty(self._gpu.h_M.shape, dtype=np.float32)
+        np.copyto(self._mach_pub, self._gpu.h_M)
+        self._U_stale = True
+        self.time = t if math.isfinite(t) else float("nan")
+        self.steps += done
+        if ms > 0.0:
+            self.last_step_ms = ms
+        return done
+
+    def _leave_gpu(self) -> None:
+        """Switching to the CPU: fetch the state from the GPU, then free the GPU memory."""
+        if self._gpu is not None:
+            _ = self.U                                    # pulls U if the GPU copy is newer
+            self._gpu = None
+            self._gpu_dirty = True
+            self._mach_pub = None
+
+    # -- CPU path ------------------------------------------------------------------
+    def _step_cpu(self, n: int) -> int:
+        """``n`` steps on the CPU (may run on a worker thread: touches no published state)."""
         use_nb = accel.HAVE_NUMBA
         locked = False
         if use_nb:
@@ -643,19 +805,18 @@ class Supersonic2D:
             if locked:
                 accel._KERNEL_LOCK.release()
         self.last_step_ms = (time.perf_counter() - t0) * 1000.0 / n
-        if not np.isfinite(self.U).all():
-            log.warning("Supersonic solver diverged; restarting from the freestream.")
-            self.reset()
-        self._update_primitives()
+        self._primitives(self.U, False)                      # W consistent with the final U
         return n
 
     # -- derived fields --------------------------------------------------------
     def primitives(self) -> tuple[F64, F64, F64, F64]:
-        """Interior ``(rho, u, v, p)`` views."""
-        W = self.W[:, G:-G, G:-G]
+        """Interior ``(rho, u, v, p)`` views of the last finished state."""
+        W = self._Wpub[:, G:-G, G:-G]
         return W[0], W[1], W[2], W[3]
 
     def mach_field(self) -> F64:
+        if self._mach_pub is not None:                   # already computed on the GPU for this state
+            return self._mach_pub.astype(np.float64)
         r, u, v, p = self.primitives()
         m = np.sqrt(u * u + v * v) / np.sqrt(self.gamma * p / r)
         m[self.solid_int] = 0.0

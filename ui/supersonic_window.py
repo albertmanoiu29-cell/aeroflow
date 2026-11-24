@@ -32,6 +32,7 @@ from config.theme import PALETTE, make_logo_icon, mono_font
 from core import gasdynamics as gd
 from core.geometry_manager import GeometryModel
 from ui.cfd_panel import AccordionCard, ToggleSwitch, button, compact_combo, labeled_row, scroll_wrap
+from ui.device_selector import DeviceSelector
 from utils.validators import validate_naca_code
 from visualization.supersonic_view import (
     BLUNT_BODIES, DEFAULT_SUPER_RESOLUTION, SHARP_BODIES, SUPER_RESOLUTIONS, SBody, SField, SupersonicView,
@@ -141,6 +142,8 @@ class SupersonicWindow(QMainWindow):
         self.resolution.setCurrentText(DEFAULT_SUPER_RESOLUTION)
         self.resolution.currentTextChanged.connect(self.view.set_resolution)
         sim.add(labeled_row("Grid", self.resolution, "Finer grids give sharper shocks but run slower."))
+        self.device = DeviceSelector()
+        sim.add(self.device)
         snap = button("Save snapshot…", "ghost", "camera", "Save the current view as PNG")
         snap.clicked.connect(self._snapshot)
         sim.add(snap)
@@ -213,7 +216,7 @@ class SupersonicWindow(QMainWindow):
         self.cmap.currentTextChanged.connect(self.view.set_colormap)
         disp.add(labeled_row("Mach colours", self.cmap))
         grid = QGridLayout()
-        self.t_sonic = ToggleSwitch("Sonic line", True, "Dashed white contour where the local Mach number is 1")
+        self.t_sonic = ToggleSwitch("Sonic line", True, "White contour where the local Mach number is 1")
         self.t_shock = ToggleSwitch("Shock cells", False, "Highlight cells detected inside shock waves")
         self.t_theory = ToggleSwitch("Theory lines", True,
                                      "Dotted cyan lines: exact oblique-shock angles from theory (sharp bodies)")

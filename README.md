@@ -21,6 +21,15 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## GPU acceleration (Live Flow Lab and Supersonic Lab)
+
+- **Compute device: Auto / GPU / CPU.** Pick it in the *Simulation* card of either Lab or under **Simulation ▸ Compute device**. The choice is remembered, and the flow keeps running when you switch. *Auto* uses an NVIDIA GPU when one works and falls back to the CPU otherwise (also if a GPU kernel ever fails).
+- **CUDA kernels via CuPy.** The lattice-Boltzmann and compressible-Euler solvers have CUDA ports. The Euler port runs in double precision and matches the CPU to round-off (about 1e-14); the LBM port runs in float32 like the CPU kernel. Batches of steps replay as CUDA graphs, and the GPU computes the next frame while the CPU draws the current one.
+- **Measured on an RTX 2070 SUPER / 8-core CPU, in the real windows:** Live Flow Lab at 62 FPS on every grid with 9,400–82,000 steps/s on the GPU (CPU: 400–3,300). Supersonic Lab at 55–61 FPS on Fast/Balanced/Detailed with 800–2,500 steps/s (CPU: 60–330; without numba: about 15).
+- **Setup:** `setup_windows.bat` installs the GPU libraries when `nvidia-smi` works. Manual install: `pip install -r requirements-gpu.txt`. No CUDA Toolkit is needed.
+- **Overrides:** `AEROFLOW_DEVICE=cpu|gpu|auto` forces the device, and `AEROFLOW_NO_GPU=1` disables CUDA.
+- OpenFOAM and the Instant Aero Engine stay on the CPU. OpenFOAM has no practical GPU build, and the Instant engine's double-precision n-body sums are no faster on consumer GPUs (fp64 runs at 1/32 rate). The OpenFOAM *CPU cores* setting now defaults to the physical cores minus one.
+
 ## What's new in 1.3
 
 - **Supersonic Lab (Ctrl+4, separate window).** It solves the compressible Euler equations live:
@@ -289,6 +298,7 @@ Data lives in `~/.aeroflow_studio/`, with a temp-folder fallback. It holds `logs
 | Flow or forces look wrong (lift sideways, huge drag) | The nose is not at −X: use **Align nose → wind** |
 | A side panel disappeared | **View → Controls panel / Analysis panel** (F9 / F10), or **View → Reset panel layout** |
 | Solves are slower than the times above | Check the Log tab for "Field kernels ready: numba …". If it says NumPy, install numba (`pip install numba`). The first start compiles the kernels once (a few seconds) and caches them |
+| The Labs say "GPU unavailable" | Hover over the *Compute* note for the reason. Usually CuPy or NVRTC is missing (`pip install -r requirements-gpu.txt`) or the NVIDIA driver is too old (CUDA 12 needs R525+). The Labs keep running on the CPU meanwhile |
 | `snappyHexMesh` fails | Run **Repair mesh** (it needs a watertight surface), then try Coarse resolution |
 | OpenFOAM solver diverges | Lower the speed or α, use Coarse, or reduce the iterations and inspect `logs/log.solver` |
 | Import is slow or fails for huge CAD meshes | Decimate below about 500k triangles in your CAD tool, and export as binary STL |

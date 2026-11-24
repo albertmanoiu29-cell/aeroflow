@@ -133,6 +133,55 @@ def build_body(body: SBody, nx: int, ny: int, size: float, aoa: float, half_angl
     return BodyGeometry(mask, segs, ref, nose, up, lo)
 
 
+def iso_segments(field: np.ndarray, level: float) -> tuple[np.ndarray, np.ndarray]:
+    """Contour line ``field == level`` as line-segment pairs (vectorised marching squares).
+
+    ``field[j, i]`` sits at (x, y) = (i, j). Returns ``(x, y)`` with consecutive points forming one
+    segment each, ready for ``PlotCurveItem(connect="pairs")``. Replaces pyqtgraph's pure-Python
+    ``isocurve``, which cost ~25-95 ms per frame on the Lab grids; this takes ~1-3 ms."""
+    a = np.asarray(field, dtype=np.float64) - float(level)
+    a = np.where(np.isfinite(a), a, -1.0)
+    s = a > 0.0
+    s00, s01, s10, s11 = s[:-1, :-1], s[:-1, 1:], s[1:, :-1], s[1:, 1:]
+    mixed = ~((s00 == s01) & (s00 == s10) & (s00 == s11))
+    cj, ci = np.nonzero(mixed)
+    if cj.size == 0:
+        return np.zeros(0), np.zeros(0)
+    a00, a01, a10, a11 = a[cj, ci], a[cj, ci + 1], a[cj + 1, ci], a[cj + 1, ci + 1]
+    b00, b01, b10, b11 = s00[cj, ci], s01[cj, ci], s10[cj, ci], s11[cj, ci]
+    x0, y0 = ci.astype(np.float64), cj.astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        def frac(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+            return np.clip(np.nan_to_num(p / (p - q), nan=0.5), 0.0, 1.0)
+        # crossing points on the four cell edges: bottom, right, top, left
+        X = np.stack([x0 + frac(a00, a01), x0 + 1.0, x0 + frac(a10, a11), x0], axis=1)
+        Y = np.stack([y0, y0 + frac(a01, a11), y0 + 1.0, y0 + frac(a00, a10)], axis=1)
+    E = np.stack([b00 != b01, b01 != b11, b10 != b11, b00 != b10], axis=1)
+    n_cross = E.sum(axis=1)
+    xs, ys = [], []
+    two = n_cross == 2
+    if two.any():
+        idx = np.argsort(~E[two], axis=1, kind="stable")[:, :2]      # the two crossed edges
+        rows = np.nonzero(two)[0]
+        xs.append(np.stack([X[rows, idx[:, 0]], X[rows, idx[:, 1]]], axis=1))
+        ys.append(np.stack([Y[rows, idx[:, 0]], Y[rows, idx[:, 1]]], axis=1))
+    four = np.nonzero(n_cross == 4)[0]
+    if four.size:
+        # Saddle: cut off the two corners whose side differs from the cell centre.
+        centre = (a00[four] + a01[four] + a10[four] + a11[four]) > 0.0
+        cut_01_10 = b01[four] != centre
+        pa = np.where(cut_01_10, 0, 3)            # (bottom, right) + (top, left)   or   (left, bottom) + (right, top)
+        pb = np.where(cut_01_10, 1, 0)
+        pc = np.where(cut_01_10, 2, 1)
+        pd = np.where(cut_01_10, 3, 2)
+        for p, q in ((pa, pb), (pc, pd)):
+            xs.append(np.stack([X[four, p], X[four, q]], axis=1))
+            ys.append(np.stack([Y[four, p], Y[four, q]], axis=1))
+    if not xs:
+        return np.zeros(0), np.zeros(0)
+    return np.concatenate(xs).ravel(), np.concatenate(ys).ravel()
+
+
 def _lut(name: str, n: int = 256) -> np.ndarray:
     from matplotlib import colormaps
 
@@ -155,8 +204,10 @@ class SupersonicView(QWidget):
         self.vb.setMouseEnabled(False, False)
         self.img = pg.ImageItem(axisOrder="row-major")
         self.vb.addItem(self.img)
-        self.sonic = pg.IsocurveItem(level=1.0, pen=pg.mkPen("#FFFFFF", width=1.6, style=Qt.PenStyle.DashLine))
-        self.sonic.setParentItem(self.img)
+        # Sonic line (M = 1): segments from a vectorised marching-squares pass, drawn as one batched path.
+        self.sonic = pg.PlotCurveItem(pen=pg.mkPen((255, 255, 255, 235), width=1.6), connect="pairs",
+                                      skipFiniteCheck=True)
+        self.vb.addItem(self.sonic)
         self.theory_lines = [pg.PlotCurveItem(pen=pg.mkPen("#22D3EE", width=1.8, style=Qt.PenStyle.DotLine))
                              for _ in range(2)]
         for c in self.theory_lines:
@@ -236,6 +287,7 @@ class SupersonicView(QWidget):
             return
         self.resolution = name
         m = self.solver.mach
+        self.solver.finish_step()                # let a batch in flight finish before dropping the solver
         self.solver = Supersonic2D(*SUPER_RESOLUTIONS[name], mach=m)
         self.rebuild_body(reset=True)
 
@@ -278,6 +330,8 @@ class SupersonicView(QWidget):
 
     def start(self) -> None:
         if not self.timer.isActive():
+            self._last_tick, self._wait_ms, self._gui_ms = 0.0, 0.0, 13.0
+            self._launch_ms = 0.05
             self._fps_t0 = time.perf_counter()
             self._fps_frames = 0
             self._steps_t0 = self.solver.steps
@@ -285,6 +339,8 @@ class SupersonicView(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        if self.solver.finish_step():            # collect the batch still in flight
+            self._render()
 
     def step_once(self) -> None:
         self.solver.step(10)
@@ -292,12 +348,33 @@ class SupersonicView(QWidget):
         self._emit_stats(0.0)
 
     def _tick(self) -> None:
-        # ~20 ms of physics per frame at 1x (≈ 35-40 FPS); faster settings trade frame rate for speed.
-        n = int(np.clip(20.0 * self.speed / max(self._step_ms, 0.05), 1, 200))
-        done = self.solver.step(n)
+        # Pipelined frame: collect the batch started last frame (on the GPU, or on a CPU worker thread),
+        # draw it, then start the next batch, which runs while this frame is shown. At 1x a batch is
+        # ~13 ms of solver time, so the solver is busy almost all the time and the display still keeps
+        # ~60 FPS; faster settings trade frame rate for simulation speed.
+        t_tick = time.perf_counter()
+        done = self.solver.finish_step()
+        t_ready = time.perf_counter()
         if done:
             self._step_ms = 0.7 * self._step_ms + 0.3 * self.solver.last_step_ms
         self._render()
+        # GUI time per frame, excluding the wait for the solver: when drawing takes longer than a 60 FPS
+        # frame, the next batch is sized to the actual frame so the solver never idles between frames.
+        if self._last_tick > 0.0:
+            gui_ms = max((t_tick - self._last_tick) * 1000.0 - self._wait_ms, 0.0)
+            self._gui_ms = 0.8 * self._gui_ms + 0.2 * gui_ms
+        self._last_tick = t_tick
+        budget = 13.0 * self.speed * max(1.0, 0.9 * self._gui_ms / 13.0)
+        n = int(np.clip(budget / max(self._step_ms, 0.005), 1, 400))
+        if self.solver.device == "GPU":
+            # A GPU step is 13 kernel launches (~70 µs of GUI-thread time): keep launches ≤ ~3 ms/frame.
+            n = int(np.clip(budget / max(self._step_ms, 0.005), 1, max(3.0 / max(self._launch_ms, 1e-3), 10)))
+        t_begin = time.perf_counter()
+        self.solver.begin_step(n, background=True)
+        t_end = time.perf_counter()
+        if self.solver.device == "GPU":
+            self._launch_ms = 0.8 * self._launch_ms + 0.2 * (t_end - t_begin) * 1000.0 / max(n, 1)
+        self._wait_ms = (t_ready - t_tick + t_end - t_begin) * 1000.0
         self._fps_frames += 1
         now = time.perf_counter()
         if now - self._fps_t0 >= 1.0:
@@ -382,7 +459,8 @@ class SupersonicView(QWidget):
                          f"simulated {meas['p_stag_sim']:.2f}")
         settle = meas["flow_throughs"]
         lines.append(f"<span style='color:{PALETTE.text_muted}'>{settle:.1f} flow-throughs"
-                     f"{' (settling…)' if settle < 2.0 else ' (steady)'} · {steps_per_s:,.0f} steps/s</span>")
+                     f"{' (settling…)' if settle < 2.0 else ' (steady)'} · {steps_per_s:,.0f} steps/s"
+                     f" on {self.solver.device}</span>")
         self.readout.setText("<br>".join(lines))
         self._layout_overlays()
 
@@ -397,9 +475,11 @@ class SupersonicView(QWidget):
         f = self.field
         m = s.mach
         gray = False
+        want_sonic = self.show_sonic and f is not SField.SCHLIEREN and f is not SField.SHADOWGRAPH
+        mach = s.mach_field() if (f is SField.MACH or want_sonic) else None
         if f is SField.MACH:
-            val, lo, hi = s.mach_field(), 0.0, max(1.6 * m, 1.2)
-            name, legend = self.cmap, f"Mach 0 – {hi:.1f}   (dashed white = sonic line M = 1)"
+            val, lo, hi = mach, 0.0, max(1.6 * m, 1.2)
+            name, legend = self.cmap, f"Mach 0 – {hi:.1f}   (white line = sonic line M = 1)"
         elif f is SField.PRESSURE:
             ns = gd.normal_shock(m).p_ratio if m > 1 else 1.0 + 0.7 * m * m
             val, lo, hi = s.pressure_ratio(), 0.0, max(ns * 1.15, 1.5)
@@ -437,9 +517,9 @@ class SupersonicView(QWidget):
             self._shown_shape = shape
             self.img.setRect(QRectF(-0.5, -0.5, s.nx, s.ny))
             self.vb.setRange(QRectF(-0.5, -0.5, s.nx, s.ny), padding=0.0)
-        if self.show_sonic and f is not SField.SCHLIEREN and f is not SField.SHADOWGRAPH:
-            # IsocurveItem expects column-major data; transpose the row-major Mach field
-            self.sonic.setData(s.mach_field().T, level=1.0)
+        if want_sonic:
+            xs, ys = iso_segments(mach, 1.0)
+            self.sonic.setData(xs, ys, connect="pairs")
             self.sonic.show()
         else:
             self.sonic.hide()

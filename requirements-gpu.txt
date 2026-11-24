@@ -1,0 +1,8 @@
+# AeroFlow Studio — optional GPU (NVIDIA CUDA) acceleration for the Live Flow Lab and the Supersonic Lab.
+# Installed by setup_windows.bat automatically when an NVIDIA driver is present (nvidia-smi works).
+# Manual install:  python -m pip install -r requirements-gpu.txt
+# No CUDA Toolkit is needed: NVIDIA's run-time compiler and headers come as pip wheels below.
+# Any recent NVIDIA driver (CUDA 12 capable, R525 or newer) and a GPU of compute capability 5.0+ work.
+cupy-cuda12x>=13.3,<15
+nvidia-cuda-nvrtc-cu12>=12.0,<13
+nvidia-cuda-runtime-cu12>=12.0,<13

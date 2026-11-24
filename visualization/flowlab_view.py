@@ -232,6 +232,8 @@ class FlowLabView(QWidget):
 
     def start(self) -> None:
         if not self.timer.isActive():
+            self._last_tick, self._wait_ms, self._gui_ms = 0.0, 0.0, 11.0
+            self._launch_ms = 0.01
             self._fps_t0 = time.perf_counter()
             self._fps_frames = 0
             self._steps_t0 = self.lab.steps
@@ -239,6 +241,8 @@ class FlowLabView(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        if self.lab.finish_step():               # collect the batch still in flight
+            self._render()
 
     def step_once(self) -> None:
         """Advance one frame's worth of steps while paused."""
@@ -301,15 +305,36 @@ class FlowLabView(QWidget):
 
     # -- frame loop ------------------------------------------------------------
     def _tick(self) -> None:
-        # ~9 ms of stepping per frame at 1x; faster settings spend more time per frame (the frame rate
-        # drops a little) rather than skipping physics.
-        n = int(np.clip(11.0 * self.speed / max(self._step_ms, 0.05), 1, 400))
-        done = self.lab.step(n, dye=self.show_smoke or self.field is LabField.SMOKE, particles=self.show_particles)
+        # Pipelined frame: collect the batch started last frame (GPU, or a CPU worker thread), draw it,
+        # then start the next one, which runs while this frame is on screen. ~11 ms of stepping per
+        # frame at 1x; faster settings spend more solver time per frame rather than skipping physics.
+        t_tick = time.perf_counter()
+        done = self.lab.finish_step()
+        t_ready = time.perf_counter()
         if done:
             # Smoothed cost of one lattice step alone; per-frame overheads (tracers, rendering) are
             # excluded so the budget cannot lock itself at one step per frame.
             self._step_ms = 0.7 * self._step_ms + 0.3 * self.lab.last_step_ms
         self._render()
+        # GUI time per frame without the wait for the solver: slow frames get a bigger batch, so the
+        # solver keeps working through the whole frame instead of idling.
+        if self._last_tick > 0.0:
+            gui_ms = max((t_tick - self._last_tick) * 1000.0 - self._wait_ms, 0.0)
+            self._gui_ms = 0.8 * self._gui_ms + 0.2 * gui_ms
+        self._last_tick = t_tick
+        budget = 11.0 * self.speed * max(1.0, 0.9 * self._gui_ms / 11.0)
+        n = int(np.clip(budget / max(self._step_ms, 0.005), 1, 400))
+        if self.lab.device == "GPU":
+            # Each GPU step is one kernel launch costing the GUI thread ~10 µs: keep launches ≤ ~3 ms/frame.
+            n = int(np.clip(budget / max(self._step_ms, 0.005), 1, max(3.0 / max(self._launch_ms, 1e-4), 50)))
+        t_begin = time.perf_counter()
+        self.lab.begin_step(n, dye=self.show_smoke or self.field is LabField.SMOKE, particles=self.show_particles,
+                            background=True)
+        t_end = time.perf_counter()
+        if self.lab.device == "GPU":
+            self._launch_ms = 0.8 * self._launch_ms + 0.2 * (t_end - t_begin) * 1000.0 / max(n, 1)
+        # Time spent waiting for or launching the solver is not drawing time.
+        self._wait_ms = (t_ready - t_tick + t_end - t_begin) * 1000.0
         self._fps_frames += 1
         now = time.perf_counter()
         if now - self._fps_t0 >= 1.0:

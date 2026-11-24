@@ -29,13 +29,14 @@ from __future__ import annotations
 import logging
 import math
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Final, Optional
 
 import numpy as np
 from numpy.typing import NDArray
 
-from core import accel
+from core import accel, compute
 
 log = logging.getLogger("aeroflow.core.lbm2d")
 
@@ -493,20 +494,35 @@ class FlowLab2D:
         self._ft_u = -1.0
         self._ftarget = np.zeros(9, dtype=np.float32)
         self._rng = np.random.default_rng(7)
+        self.device = "CPU"                  # where the last batch ran: "GPU" or "CPU"
+        self._gpu = None                     # core.lbm2d_gpu.FlowLabGPU while on the GPU
+        self._gpu_state_dirty = True         # host populations changed: upload before the next GPU batch
+        self._gpu_geom_dirty = True          # mask / viscosity / sponge changed
+        self._pending_gpu = 0
+        self._future: Optional[Future] = None
+        self._batch: tuple[bool, bool] = (False, False)     # (dye, particles) of the batch in flight
         self.resize(nx, ny)
 
     # -- set-up ------------------------------------------------------------
     def resize(self, nx: int, ny: int) -> None:
         """Allocate a new grid (keeps the obstacle mask only if the size is unchanged)."""
+        self._drain()
+        self._gpu = None
         self.nx, self.ny = int(nx), int(ny)
         shape = (self.ny, self.nx)
         self.solid = np.zeros(shape, dtype=np.bool_)
         self.f = np.empty((9,) + shape, dtype=np.float32)
         self.f2 = np.empty_like(self.f)
+        # Published fields (what views and measurements read; replaced only when a batch finishes) ...
         self.ux = np.zeros(shape, dtype=np.float32)
         self.uy = np.zeros(shape, dtype=np.float32)
         self.rho = np.ones(shape, dtype=np.float32)
         self.dye = np.zeros(shape, dtype=np.float32)
+        # ... and the CPU kernels' working copies (may be written by a worker thread mid-frame).
+        self._ux = np.zeros(shape, dtype=np.float32)
+        self._uy = np.zeros(shape, dtype=np.float32)
+        self._rho = np.ones(shape, dtype=np.float32)
+        self._dye = np.zeros(shape, dtype=np.float32)
         self._dye2 = np.zeros_like(self.dye)
         self._update_special()
         self.reset()
@@ -524,12 +540,16 @@ class FlowLab2D:
         sp2[0, :] = sp2[-1, :] = True
         sp2[:, 0] = sp2[:, -1] = True
         self.special = sp2
+        self._gpu_geom_dirty = True
 
     def set_obstacle(self, mask: NDArray[np.bool_], ref_length_cells: float) -> None:
         """Replace the obstacle (the flow keeps running around the new shape)."""
         mask = np.asarray(mask, dtype=np.bool_)
         if mask.shape != (self.ny, self.nx):
             raise ValueError(f"mask shape {mask.shape} != grid {(self.ny, self.nx)}")
+        self._drain()
+        self._pull_from_gpu()                     # edit the current populations, not a stale host copy
+        self._gpu_state_dirty = True
         mask = mask.copy()
         mask[:, :2] = False                       # keep the inlet column clear
         mask[:, -2:] = False
@@ -580,6 +600,7 @@ class FlowLab2D:
         s_out = np.clip((x - (self.nx - 1 - w_out)) / w_out, 0.0, 1.0)
         self.sponge = (0.08 * (s_in ** 2 + s_out ** 2)).astype(np.float32)
         self.tau_x = (self.tau0 + 0.5 * s_out ** 2).astype(np.float32)
+        self._gpu_geom_dirty = True
 
     @property
     def nu(self) -> float:
@@ -588,15 +609,16 @@ class FlowLab2D:
 
     def reset(self) -> None:
         """Restart from uniform flow (the obstacle is kept)."""
+        self._drain()
+        self._gpu_state_dirty = True
         u0 = 0.0
         self.f[:] = _feq_np(np.ones((self.ny, self.nx), np.float32), np.full((self.ny, self.nx), u0, np.float32),
                             np.zeros((self.ny, self.nx), np.float32))
         self.f[:, self.solid] = W[:, None]
         self.f2[:] = self.f
-        self.ux[:] = 0.0
-        self.uy[:] = 0.0
-        self.rho[:] = 1.0
-        self.dye[:] = 0.0
+        for a, b in ((self.ux, self._ux), (self.uy, self._uy), (self.rho, self._rho), (self.dye, self._dye)):
+            a[:] = 1.0 if a is self.rho else 0.0
+            b[:] = a
         self.steps = 0
         self.history.clear()
         self._force = np.zeros(2)
@@ -611,29 +633,172 @@ class FlowLab2D:
         """Convective time t* = t U / L (number of reference lengths the flow has travelled)."""
         return self.steps * self.u_lattice / max(self.ref_length, 1e-9)
 
-    def _inlet_speed(self) -> float:
-        ramp = min(1.0, (self.steps + 1) / self.ramp_steps)
+    def _inlet_speed(self, steps: Optional[int] = None) -> float:
+        s = self.steps if steps is None else steps
+        ramp = min(1.0, (s + 1) / self.ramp_steps)
         return self.u_lattice * (3.0 * ramp * ramp - 2.0 * ramp ** 3)   # smoothstep ramp
 
     def step(self, n: int, dye: bool = True, particles: bool = True) -> int:
-        """Advance ``n`` lattice steps (plus the tracers). Returns the number of steps done.
+        """Advance ``n`` lattice steps (plus the tracers) and wait for them. Returns the steps done.
 
         Returns 0 without blocking when the 3-D solver is using the numba kernels at that moment.
         """
+        self.begin_step(n, dye, particles)
+        return self.finish_step()
+
+    # -- asynchronous stepping -----------------------------------------------------
+    @property
+    def busy(self) -> bool:
+        """True while a batch started by :meth:`begin_step` is still running."""
+        if self._future is not None:
+            return not self._future.done()
+        return self._gpu is not None and self._gpu.busy()
+
+    def begin_step(self, n: int, dye: bool = True, particles: bool = True, background: bool = False) -> None:
+        """Start ``n`` lattice steps without waiting: queued on the GPU, or (``background=True``) on a
+        CPU worker thread; otherwise they run right here. Collect them with :meth:`finish_step`."""
+        self._drain()
         n = max(int(n), 0)
         if n == 0:
+            return
+        self._batch = (bool(dye), bool(particles))
+        if compute.use_gpu(wait=not background) and self._begin_gpu(n, bool(dye)):
+            return
+        self._leave_gpu()
+        self.device = "CPU"
+        if background:
+            self._future = compute.cpu_executor().submit(self._step_cpu, n, bool(dye))
+        else:
+            fut: Future = Future()
+            try:
+                fut.set_result(self._step_cpu(n, bool(dye)))
+            except BaseException as exc:  # noqa: BLE001 - re-raised by finish_step
+                fut.set_exception(exc)
+            self._future = fut
+
+    def finish_step(self) -> int:
+        """Wait for the batch from :meth:`begin_step`, publish its fields and update the forces and the
+        tracer particles. Returns the number of steps done."""
+        dye, particles = self._batch
+        if self._pending_gpu:
+            done, force = self._finish_gpu(dye)
+            ok = bool(np.isfinite(self.ux).all())
+        elif self._future is not None:
+            fut, self._future = self._future, None
+            done, force = fut.result()
+            if done:
+                np.copyto(self.ux, self._ux)
+                np.copyto(self.uy, self._uy)
+                np.copyto(self.rho, self._rho)
+                if dye:
+                    np.copyto(self.dye, self._dye)
+            ok = bool(np.isfinite(self.f).all()) if done else True
+        else:
             return 0
+        if not done:
+            return 0
+        self.steps += done
+        if not ok:
+            log.warning("Live Flow Lab diverged; restarting from uniform flow (try a lower Reynolds number).")
+            self.reset()
+            return done
+        q = 0.5 * self.u_lattice ** 2 * self.ref_length * done
+        self.cd = float(force[0] / q)
+        self.cl = float(force[1] / q)
+        self.history.append(self.time, self.cl, self.cd)
+        if particles:
+            self._advect_particles(float(done))
+        return done
+
+    def _drain(self) -> None:
+        """Finish any batch in flight."""
+        if getattr(self, "_pending_gpu", 0) or getattr(self, "_future", None) is not None:
+            try:
+                self.finish_step()
+            except Exception as exc:  # noqa: BLE001 - a failed batch must not block a reset
+                log.debug("Flow Lab batch failed while draining: %s", exc)
+
+    # -- GPU path ------------------------------------------------------------------
+    def _begin_gpu(self, n: int, dye: bool) -> bool:
+        try:
+            if self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny):
+                from core.lbm2d_gpu import FlowLabGPU
+
+                self._gpu = FlowLabGPU(self.nx, self.ny)
+                self._gpu_state_dirty = self._gpu_geom_dirty = True
+            if self._gpu_geom_dirty:
+                self._gpu.upload_geometry(self.solid, self.special, self.tau_x, self.sponge)
+                self._gpu_geom_dirty = False
+            if self._gpu_state_dirty:
+                self._gpu.upload_state(self.f, self.ux, self.uy, self.rho, self.dye)
+                self._gpu_state_dirty = False
+            speeds = [self._inlet_speed(self.steps + k) for k in range(n)]
+            self._gpu.enqueue(speeds, self.smag, dye, self.dye_spacing)
+        except Exception as exc:  # noqa: BLE001 - fall back to the CPU, never crash the Lab
+            compute.gpu_failed(exc)
+            self._gpu = None
+            self._gpu_state_dirty = self._gpu_geom_dirty = True
+            return False
+        self._pending_gpu = n
+        self.device = "GPU"
+        return True
+
+    def _finish_gpu(self, dye: bool) -> tuple[int, NDArray[np.float64]]:
+        self._pending_gpu = 0
+        g = self._gpu
+        try:
+            done, ms = g.wait()
+        except Exception as exc:  # noqa: BLE001
+            compute.gpu_failed(exc)
+            self._gpu = None
+            self._gpu_state_dirty = self._gpu_geom_dirty = True
+            return 0, np.zeros(2)
+        np.copyto(self.ux, g.h_ux)
+        np.copyto(self.uy, g.h_uy)
+        np.copyto(self.rho, g.h_rho)
+        if dye:
+            np.copyto(self.dye, g.h_dye)
+        if ms > 0.0:
+            self.last_step_ms = ms
+        return done, np.array(g.h_force, dtype=np.float64)
+
+    def _pull_from_gpu(self) -> None:
+        """Make the host copies current (populations and working fields) while the GPU holds the state."""
+        if self._gpu is None or self._gpu_state_dirty:
+            return
+        try:
+            self.f[:] = self._gpu.download_f()
+        except Exception as exc:  # noqa: BLE001
+            compute.gpu_failed(exc)
+            self._gpu = None
+            self._gpu_state_dirty = self._gpu_geom_dirty = True
+            return
+        self.f2[:] = self.f
+        for pub, work in ((self.ux, self._ux), (self.uy, self._uy), (self.rho, self._rho), (self.dye, self._dye)):
+            np.copyto(work, pub)
+
+    def _leave_gpu(self) -> None:
+        """Switching to the CPU: bring the state back and free the GPU memory."""
+        if self._gpu is not None:
+            self._pull_from_gpu()
+            self._gpu = None
+            self._gpu_state_dirty = self._gpu_geom_dirty = True
+
+    # -- CPU path ------------------------------------------------------------------
+    def _step_cpu(self, n: int, dye: bool) -> tuple[int, NDArray[np.float64]]:
+        """``n`` lattice steps on the CPU (may run on a worker thread: touches only working arrays)."""
         use_nb = accel.HAVE_NUMBA
         locked = False
         if use_nb:
             locked = accel._KERNEL_LOCK.acquire(blocking=False)
             if not locked:
-                return 0          # the 3-D solver is in a kernel right now; try again next frame
+                return 0, np.zeros(2)  # the 3-D solver is in a kernel right now; try again next frame
+        s0 = self.steps
         try:
             force = np.zeros(2)
             t_start = time.perf_counter()
-            for _ in range(n):
-                u_in = self._inlet_speed()
+            for k in range(n):
+                u_in = self._inlet_speed(s0 + k)
                 if u_in != self._ft_u:                 # constant once the start-up ramp is over
                     cu = 3.0 * CX * u_in
                     self._ftarget = (W * (1.0 + cu + 0.5 * cu * cu - 1.5 * u_in * u_in)).astype(np.float32)
@@ -642,18 +807,17 @@ class FlowLab2D:
                 if use_nb:
                     try:
                         _lbm_step_nb(self.f, self.f2, self.solid, self.special, np.float32(u_in), self.tau_x,
-                                     np.float32(self.smag), self.ux, self.uy, self.rho, force, CX, CY, W, OPP, REFY,
-                                     self.sponge, ftarget)
+                                     np.float32(self.smag), self._ux, self._uy, self._rho, force, CX, CY, W, OPP,
+                                     REFY, self.sponge, ftarget)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("Live Flow Lab: numba kernel failed (%s); using NumPy.", exc)
                         use_nb = False
-                        _lbm_step_np(self.f, self.f2, self.solid, u_in, self.tau_x, self.smag, self.ux, self.uy,
-                                     self.rho, force, self.sponge, ftarget)
+                        _lbm_step_np(self.f, self.f2, self.solid, u_in, self.tau_x, self.smag, self._ux, self._uy,
+                                     self._rho, force, self.sponge, ftarget)
                 else:
-                    _lbm_step_np(self.f, self.f2, self.solid, u_in, self.tau_x, self.smag, self.ux, self.uy,
-                                 self.rho, force, self.sponge, ftarget)
+                    _lbm_step_np(self.f, self.f2, self.solid, u_in, self.tau_x, self.smag, self._ux, self._uy,
+                                 self._rho, force, self.sponge, ftarget)
                 self.f, self.f2 = self.f2, self.f
-                self.steps += 1
             # Cost of the lattice steps alone (tracers and checks excluded), for adaptive frame budgets.
             self.last_step_ms = (time.perf_counter() - t_start) * 1000.0 / n
             if dye:
@@ -661,29 +825,19 @@ class FlowLab2D:
         finally:
             if locked:
                 accel._KERNEL_LOCK.release()
-        if not np.isfinite(self.f).all():
-            log.warning("Live Flow Lab diverged; restarting from uniform flow (try a lower Reynolds number).")
-            self.reset()
-            return n
-        q = 0.5 * self.u_lattice ** 2 * self.ref_length * n
-        self.cd = float(force[0] / q)
-        self.cl = float(force[1] / q)
-        self.history.append(self.time, self.cl, self.cd)
-        if particles:
-            self._advect_particles(float(n))
-        return n
+        return n, force
 
     # -- tracers -----------------------------------------------------------
     def _advect_dye(self, dt: float, use_nb: bool) -> None:
         if use_nb:
-            _advect_dye_nb(self.dye, self._dye2, self.ux, self.uy, self.solid, np.float32(dt), np.float32(0.9995))
+            _advect_dye_nb(self._dye, self._dye2, self._ux, self._uy, self.solid, np.float32(dt), np.float32(0.9995))
         else:
-            _advect_dye_np(self.dye, self._dye2, self.ux, self.uy, self.solid, dt, 0.9995)
-        self.dye, self._dye2 = self._dye2, self.dye
+            _advect_dye_np(self._dye, self._dye2, self._ux, self._uy, self.solid, dt, 0.9995)
+        self._dye, self._dye2 = self._dye2, self._dye
         rows = np.arange(self.ny)
         on = ((rows + self.dye_spacing // 2) % self.dye_spacing) < max(1, (3 * self.dye_spacing) // 10)
-        self.dye[on, 0:3] = 1.0
-        self.dye[~on, 0:3] = 0.0
+        self._dye[on, 0:3] = 1.0
+        self._dye[~on, 0:3] = 0.0
 
     def _spawn_particles(self, all_new: bool = False) -> None:
         n = self.n_particles

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QByteArray, QSettings, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDockWidget, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
     QMenuBar, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
@@ -32,6 +32,8 @@ from config.settings import (
     AppMode, FlowConditions, GeometryPreset, GridQuality, ReferenceAreaMode, SolverEngine, get_paths,
 )
 from config.theme import PALETTE, make_icon, make_logo_pixmap, make_section_label, mono_font, set_property
+from core import compute
+from core.compute import Device
 from core.geometry_manager import (
     GeometryError, GeometryManager, GeometryModel, LoadResult, align_nose, auto_orient, build_preset,
     center_model, convert_mm_to_m, rotate_90, scale_to_length, scale_to_span, suggest_scale,
@@ -41,6 +43,7 @@ from core.openfoam_bridge import CaseSettings, OpenFOAMEnvironment
 from core.polar_generator import default_export_name, export_html_report, export_polar_csv
 from core.results import PolarData, SolverResult
 from ui.cfd_panel import CFDPanel, SegmentedControl, scroll_wrap
+from ui.device_selector import compute_relay
 from ui.dialogs import ExportReportDialog, HelpDialog, OpenFOAMSetupDialog
 from ui.flowlab_panel import FlowLabPanel
 from ui.run_history import RunHistoryWidget
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
         self._pinned: list[tuple[str, PolarData]] = []     # reference polars shown dashed
         self._supersonic: Optional[Any] = None              # the Supersonic Lab window (created on demand)
         self.toasts = ToastManager(self, bottom_margin=STATUS_BAR_HEIGHT + 14)
+        self._restore_compute_device()
 
         self._build_top_bar()
         self._build_central()
@@ -328,7 +332,13 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.sb_engine)
         sb.addWidget(self._divider())
         sb.addWidget(self.sb_msg, 1)
+        self.sb_device = QLabel("")
+        self.sb_device.setFont(mono_font(11))
+        self.sb_device.setProperty("role", "muted")
+        self.sb_device.setToolTip("Where the Live Flow Lab and the Supersonic Lab run (Simulation ▸ Compute device)")
         sb.addPermanentWidget(self.sb_progress)
+        sb.addPermanentWidget(self.sb_device)
+        sb.addPermanentWidget(self._divider())
         sb.addPermanentWidget(self.sb_fps)
 
     @staticmethod
@@ -404,6 +414,17 @@ class MainWindow(QMainWindow):
         a(m_sim, "Use OpenFOAM", lambda: self._set_engine(SolverEngine.OPENFOAM))
         a(m_sim, "OpenFOAM setup guide…", self._show_setup_dialog)
         a(m_sim, "Re-detect OpenFOAM", self.detect_openfoam)
+        m_sim.addSeparator()
+        m_dev = m_sim.addMenu("Compute device (Live / Supersonic Labs)")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self._device_actions: dict[Device, QAction] = {}
+        for dev in Device:
+            act = QAction(dev.label, self, checkable=True)
+            act.triggered.connect(lambda _c=False, d=dev: compute.set_preference(d))
+            group.addAction(act)
+            m_dev.addAction(act)
+            self._device_actions[dev] = act
 
         m_help = mb.addMenu("&Help")
         a(m_help, "Help and shortcuts", self.show_help, "F1")
@@ -441,6 +462,8 @@ class MainWindow(QMainWindow):
         self.lab_panel.status_message.connect(self._status)
         self.runs.apply_requested.connect(self._apply_run_conditions)
         self.tasks.busy_changed.connect(self._on_busy)
+        compute_relay().changed.connect(self._on_compute_changed)
+        self._on_compute_changed()
 
     # =====================================================================
     # Persistence
@@ -480,6 +503,35 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             log.debug("Could not save the window layout: %s", exc)
 
+    def _restore_compute_device(self) -> None:
+        try:
+            saved = str(self._settings().value("compute/device", Device.AUTO.value))
+            compute.set_preference(Device(saved))
+        except (ValueError, TypeError):
+            compute.set_preference(Device.AUTO)
+
+    def _on_compute_changed(self) -> None:
+        """Preference or GPU availability changed: sync the menu, the status bar and the saved setting."""
+        pref = compute.preference()
+        act = getattr(self, "_device_actions", {}).get(pref)
+        if act is not None:
+            act.setChecked(True)
+        gpu_act = getattr(self, "_device_actions", {}).get(Device.GPU)
+        if compute.probed():
+            info = compute.gpu_info()
+            if gpu_act is not None:
+                gpu_act.setEnabled(info.available)
+                gpu_act.setToolTip(info.summary())
+            uses_gpu = compute.use_gpu()
+            self.sb_device.setText(f"Labs: {'GPU' if uses_gpu else 'CPU'}")
+            self.sb_device.setToolTip(f"Live Flow Lab / Supersonic Lab compute: {compute.describe()}")
+        else:
+            self.sb_device.setText("Labs: …")
+        try:
+            self._settings().setValue("compute/device", pref.value)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Could not save the compute device: %s", exc)
+
     @staticmethod
     def _open_folder(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -492,6 +544,12 @@ class MainWindow(QMainWindow):
         log.info("%s %s ready. Generating the default NACA 2412 wing…", APP_NAME, APP_VERSION)
         self._on_preset(GeometryPreset.NACA_2412, "2412", 6.0, 1.0, 0.0)
         self.detect_openfoam()
+        compute.warmup_async()                 # probe CUDA + pre-compile the Lab GPU kernels in the background
+        from core import accel
+
+        if not accel.HAVE_NUMBA:
+            log.warning("numba is not installed: the CPU solvers run 10-20x slower. Run setup_windows.bat "
+                        "(or: pip install numba) to enable the compiled kernels.")
 
     def _set_mode(self, mode: AppMode) -> None:
         if self._closing or self._recording:

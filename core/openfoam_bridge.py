@@ -1314,7 +1314,10 @@ def find_vtk_output(case_dir: Path) -> Optional[Path]:
 def _surface_from_block(block: Any) -> Optional[SurfaceField]:
     """Convert a PyVista boundary patch to a :class:`SurfaceField` (Cp filled later)."""
     try:
-        surf = block.extract_surface().triangulate()
+        try:
+            surf = block.extract_surface(algorithm="dataset_surface").triangulate()
+        except TypeError:                         # PyVista < 0.47 has no `algorithm` keyword
+            surf = block.extract_surface().triangulate()
         if surf.n_points == 0:
             return None
         if "p" not in surf.point_data and "p" in surf.cell_data:
@@ -1375,12 +1378,21 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
     if internal is None or internal.n_points == 0:
         raise OpenFOAMError("The OpenFOAM result contains no volume mesh.")
     if body_blocks == []:
-        patch_dir = path.parent / path.stem
-        for f in sorted(patch_dir.rglob("body*.vt*")) if patch_dir.is_dir() else []:
-            try:
-                body_blocks.append(pv.read(str(f)))
-            except Exception:
-                pass
+        # Legacy-format foamToVTK writes one folder per patch next to the internal file
+        # (VTK/body/body_<time>.vtk); some versions nest them under VTK/<case>_<time>/ instead.
+        for patch_dir in (path.parent / path.stem, path.parent / "body"):
+            files = sorted(patch_dir.rglob("body*.vt*"), key=lambda p: p.stat().st_mtime) if patch_dir.is_dir() else []
+            if files:
+                newest_time = files[-1].stem.rsplit("_", 1)[-1]
+                for f in files:
+                    if f.stem.rsplit("_", 1)[-1] != newest_time:
+                        continue                      # an older write time of the same patch
+                    try:
+                        body_blocks.append(pv.read(str(f)))
+                    except Exception:
+                        pass
+            if body_blocks:
+                break
 
     cond, _ = validate_flow_conditions(settings.conditions)
     v_inf = max(cond.velocity_ms, 1e-9)

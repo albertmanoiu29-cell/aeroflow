@@ -14,6 +14,7 @@ workers and viewports.
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from typing import Optional, Sequence
 
@@ -504,8 +505,13 @@ class CFDPanel(QWidget):
         ob.addWidget(self.of_iters)
         self.of_procs = QSpinBox()
         self.of_procs.setRange(1, 64)
-        self.of_procs.setValue(1)
-        ob.addWidget(labeled_row("CPU cores", self.of_procs, "Run OpenFOAM in parallel (requires MPI)."))
+        # Default: the physical cores minus one (logical / 2 with SMT), so the solve is fast and the
+        # desktop stays responsive. Falls back to a serial run automatically when MPI is missing.
+        logical = os.cpu_count() or 2
+        self.of_procs.setValue(max(1, min(logical // 2 - 1, 16)) if logical >= 4 else 1)
+        ob.addWidget(labeled_row("CPU cores", self.of_procs,
+                                 "MPI ranks for OpenFOAM (snappyHexMesh still meshes on one core). "
+                                 "OpenFOAM itself runs on the CPU only; the GPU is used by the Labs."))
         card.add(self.of_box)
         self.of_box.setVisible(False)
         self.live = ToggleSwitch("Live update", True, "Re-solve automatically with the Instant engine when you release a slider")

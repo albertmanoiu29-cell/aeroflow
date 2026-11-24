@@ -57,6 +57,24 @@ echo.
 echo Checking the installation...
 "%VPY%" -c "import PySide6, vtk, pyvista, pyvistaqt, pyqtgraph, numpy, scipy, matplotlib, PIL, trimesh; print('    All libraries import correctly.')"
 if errorlevel 1 goto :fail
+"%VPY%" -c "import numba; print('    numba', numba.__version__, '- compiled CPU kernels enabled.')"
+if errorlevel 1 echo    WARNING: numba is missing - the CPU solvers will run 10-20x slower.
+
+rem ---- 5. Optional: NVIDIA GPU acceleration for the Live Flow Lab and Supersonic Lab -------------
+where nvidia-smi >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo No NVIDIA GPU driver found - the Labs will run on the CPU.
+) else (
+    echo.
+    echo NVIDIA GPU detected - installing CUDA acceleration (CuPy, no CUDA Toolkit needed^)...
+    "%VPY%" -m pip install -r "%~dp0requirements-gpu.txt"
+    if errorlevel 1 (
+        echo    WARNING: GPU libraries could not be installed - the Labs will run on the CPU.
+    ) else (
+        "%VPY%" -c "from core import compute; i = compute.gpu_info(); print('   ', i.summary())"
+    )
+)
 
 echo.
 echo === Setup complete. Start the app with run_windows.bat ===

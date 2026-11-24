@@ -20,6 +20,7 @@ from config.settings import LAB_RE_DEFAULT, LAB_RE_RANGE, PARAM_LIMITS, get_path
 from config.theme import PALETTE, make_icon, mono_font, set_property
 from core.shapes2d import Obstacle2D
 from ui.cfd_panel import AccordionCard, ParamSlider, ToggleSwitch, button, compact_combo, labeled_row
+from ui.device_selector import DeviceSelector
 from utils.validators import validate_naca_code
 from visualization.flowlab_view import DEFAULT_RESOLUTION, LAB_COLORMAPS, LAB_RESOLUTIONS, FlowLabView, LabField
 
@@ -122,6 +123,8 @@ class FlowLabPanel(QWidget):
         self.resolution.setCurrentText(DEFAULT_RESOLUTION)
         self.resolution.currentTextChanged.connect(self.view.set_resolution)
         card.add(labeled_row("Grid", self.resolution, "More cells show finer vortices but run slower."))
+        self.device = DeviceSelector()
+        card.add(self.device)
         snap = button("Save snapshot…", "ghost", "camera", "Save the current view as a PNG image")
         snap.clicked.connect(self._snapshot)
         card.add(snap)
