@@ -169,6 +169,7 @@ class GeometryPreset(str, Enum):
     DELTA = "Swept Delta / Fighter Concept"
     GLIDER = "Glider / Sailplane"
     SPHERE = "Aerodynamic Sphere / Teardrop"
+    PROPELLER = "Propeller (2-blade, D 1 m)"
     CUSTOM_NACA = "Custom NACA 4-Digit Wing"
 
 

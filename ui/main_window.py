@@ -929,7 +929,8 @@ class MainWindow(QMainWindow):
         settings = CaseSettings(cond, quality, iterations=self.cfd_panel.openfoam_iterations(),
                                 n_procs=self.cfd_panel.openfoam_procs(),
                                 boundary_layers=self.cfd_panel.openfoam_layers(),
-                                compressible=self.cfd_panel.openfoam_compressible())
+                                compressible=self.cfd_panel.openfoam_compressible(),
+                                mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi)
         transient, ctimes, frames = self.cfd_panel.openfoam_transient()
         if transient:
             if settings.compressible:
@@ -980,6 +981,9 @@ class MainWindow(QMainWindow):
         self.result = result
         k = result.kpis
         self.cfd_view.set_result(result)
+        prop = result.extra.get("propeller") if result.extra else None
+        if prop:
+            QTimer.singleShot(300, lambda p=prop: self._show_propeller(p))
         if result.extra and result.extra.get("transient"):
             QTimer.singleShot(300, self.play_transient)       # step through the saved frames
         self.cp_chart.set_data(result.chord_cp)
@@ -1027,7 +1031,8 @@ class MainWindow(QMainWindow):
                                     iterations=self.cfd_panel.openfoam_iterations(),
                                     n_procs=self.cfd_panel.openfoam_procs(),
                                     boundary_layers=self.cfd_panel.openfoam_layers(),
-                                    compressible=self.cfd_panel.openfoam_compressible())
+                                    compressible=self.cfd_panel.openfoam_compressible(),
+                                    mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi)
             worker = OpenFOAMPolarWorker(self.of_env, model, settings, angles)
             worker.signals.message.connect(self._on_worker_message)
         else:
@@ -1371,6 +1376,25 @@ class MainWindow(QMainWindow):
         self.cfd_panel.apply_units()
         if self.result is not None:
             self.cfd_view.hud.update_kpis(self.result.kpis, self.result.engine)
+
+    def _show_propeller(self, p: dict) -> None:
+        from config import units
+
+        lines = [
+            f"Thrust {units.fmt(p['thrust_n'], 'force', 1)}  ·  torque {p['torque_nm']:.2f} N·m  ·  "
+            f"power {p['power_w'] / 1000.0:.2f} kW",
+            "",
+            f"Advance ratio J = V/(nD) = {p['J']:.3f}",
+            f"Thrust coefficient CT = {p['CT']:.4f}",
+            f"Torque coefficient CQ = {p['CQ']:.5f}",
+            f"Power coefficient CP = {p['CP']:.4f}",
+            f"Efficiency η = J·CT/CP = {p['eta']:.3f}",
+            "",
+            f"{p['rpm']:.0f} rpm, diameter {p['diameter_m']:.3f} m (MRF steady rotating frame).",
+        ]
+        text = "\n".join(lines)
+        log.success("Propeller: %s", " · ".join(ln for ln in lines if ln))
+        QMessageBox.information(self, "Propeller performance", text)
 
     def play_transient(self) -> None:
         r = self.result

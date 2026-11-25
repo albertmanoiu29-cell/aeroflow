@@ -366,3 +366,30 @@ def test_transient_strouhal_and_case_files(tmp_path) -> None:
     assert f"endTime         {end:.9g};" in ctrl
     assert "Euler" in (d / "system/fvSchemes").read_text()
     assert '".*"            1;' in (d / "system/fvSolution").read_text()
+
+
+def test_propeller_mrf_case_and_performance(tmp_path) -> None:
+    from config.settings import FlowConditions, GridQuality
+    from core import openfoam_bridge as ob
+    from core.geometry_manager import build_propeller
+
+    m = build_propeller(1.0, 2, 0.8)
+    assert m.is_watertight
+    st = ob.CaseSettings(conditions=FlowConditions(velocity_ms=15.0), quality=GridQuality.COARSE, mrf_rpm=2000.0)
+    d = ob.write_case(m, st, tmp_path / "prop").case_dir
+    mrf = (d / "constant/MRFProperties").read_text()
+    assert "cellZone            rotor;" in mrf and f"{2000 * 2 * math.pi / 60:.9g}" in mrf
+    assert "type        cylinder;" in (d / "system/createZonesDict").read_text()
+    assert "cylinderToCell" in (d / "system/topoSetDict").read_text()
+    assert "MRFnoSlip" in (d / "0/U").read_text()
+    assert "propellerForces" in (d / "system/controlDict").read_text()
+    # OpenFOAM.org forces.dat layout -> thrust / torque / coefficients
+    out = d / "postProcessing/propellerForces/0"
+    out.mkdir(parents=True)
+    (out / "forces.dat").write_text("# Time forces(pressure viscous) moments(pressure viscous)\n"
+                                    "400 ((-180 0 0) (-2 0 0)) ((-27 0 0) (-1 0 0))\n")
+    p = ob.propeller_performance(d, 2000.0, 1.0, 15.0, 1.225)
+    n = 2000.0 / 60.0
+    assert p["thrust_n"] == pytest.approx(182.0) and p["torque_nm"] == pytest.approx(28.0)
+    assert p["CT"] == pytest.approx(182.0 / (1.225 * n * n), rel=1e-9)
+    assert p["J"] == pytest.approx(15.0 / n) and 0.0 < p["eta"] < 1.0

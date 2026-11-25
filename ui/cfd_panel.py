@@ -594,6 +594,16 @@ class CFDPanel(QWidget):
         self.of_trans_box.setVisible(False)
         self.of_run.currentIndexChanged.connect(lambda _i: self.of_trans_box.setVisible(
             self.of_run.currentData() == "transient"))
+        self.of_rpm = QDoubleSpinBox()
+        self.of_rpm.setRange(0.0, 60000.0)
+        self.of_rpm.setDecimals(0)
+        self.of_rpm.setSingleStep(100.0)
+        self.of_rpm.setSuffix(" rpm")
+        self.of_rpm.setSpecialValueText("Off")
+        ob.addWidget(labeled_row("Rotation (MRF)", self.of_rpm,
+                                 "Spin the body about the +X (flow) axis at this speed, e.g. a propeller: a "
+                                 "rotating-frame (MRF) zone surrounds it and the result reports thrust, torque, "
+                                 "CT, CP and efficiency. Off for fixed bodies."))
         self.of_layers = QSpinBox()
         self.of_layers.setRange(-1, 15)
         self.of_layers.setValue(-1)
@@ -878,6 +888,9 @@ class CFDPanel(QWidget):
     def openfoam_transient(self) -> tuple[bool, float, int]:
         """(transient?, duration in convective times, number of frames)."""
         return (self.of_run.currentData() == "transient", float(self.of_ctimes.value()), int(self.of_frames.value()))
+
+    def openfoam_rpm(self) -> float:
+        return float(self.of_rpm.value())
 
     def openfoam_layers(self) -> Optional[int]:
         """Requested prism layers (None: the grid preset's number)."""

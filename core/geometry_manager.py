@@ -1159,6 +1159,43 @@ def build_naca_wing(code: str = "2412", span: float = 6.0, chord: float = 1.0, t
     return center_model(model)
 
 
+def build_propeller(diameter: float = 1.0, blades: int = 2, pitch_ratio: float = 0.8, code: str = "4412",
+                    name: Optional[str] = None) -> GeometryModel:
+    """A fixed-pitch propeller about the +X axis (the flow direction), with a spinner hub.
+
+    Blade sections (NACA ``code``) follow a constant geometric pitch ``P = pitch_ratio * D``: the section
+    angle to the rotation plane is ``beta(r) = atan(P / (2 pi r))``. Turning about +X (right-hand rule),
+    the blades produce thrust toward -X (upstream), i.e. they pull. Chord peaks at about 40 % radius.
+    """
+    naca = parse_naca4(code)
+    d = clamp_dimension(diameter, 0.05, 50.0, 1.0)
+    rad = 0.5 * d
+    r_hub = 0.12 * d
+    blades = int(np.clip(blades, 2, 6))
+    xi = np.linspace(0.0, 1.0, 16)
+    r = (0.8 * r_hub) + (rad - 0.8 * r_hub) * (1.0 - np.cos(0.5 * math.pi * xi))     # finer towards the tip
+    x_r = r / rad
+    chord = d * np.clip(0.07 + 0.11 * np.sin(math.pi * np.clip((x_r - 0.1) / 1.1, 0.0, 1.0)), 0.045, None)
+    chord[-1] = max(0.35 * chord[-2], 0.02 * d)                                        # rounded-off tip
+    beta = np.degrees(np.arctan(pitch_ratio * d / (2.0 * math.pi * np.maximum(r, 1e-6))))
+    loop = naca4_loop(naca, 36) * np.array([1.0, -1.0])        # camber toward -X: the suction side faces upstream
+    x_le = -0.25 * chord                                       # quarter chord on the pitch-change axis
+    blade = _wing_surface(loop, r, chord, x_le, np.zeros_like(r), twist_deg=90.0 - beta)
+    parts = []
+    for k in range(blades):
+        a = 2.0 * math.pi * k / blades
+        rot = np.array([[1.0, 0.0, 0.0], [0.0, math.cos(a), -math.sin(a)], [0.0, math.sin(a), math.cos(a)]])
+        parts.append((blade[0] @ rot.T, blade[1]))
+    hx = np.linspace(-0.28 * d, 0.22 * d, 24)
+    t = (hx - hx[0]) / (hx[-1] - hx[0])
+    hr = r_hub * np.sqrt(np.clip(np.sin(math.pi * np.clip(t * 1.15, 0.0, 1.0)), 0.0, 1.0))
+    hr[0] = hr[-1] = 0.0
+    parts.append(_revolve(hx, hr, 40))
+    v, f = _merge_parts(parts)
+    label = name or f"Propeller {blades}-blade D{d:g} P/D{pitch_ratio:g}"
+    return GeometryModel(v, f, label, None, (f"Generated {label}",))
+
+
 def _build_delta() -> GeometryModel:
     """Swept delta wing / fighter concept: fuselage, delta wing, vertical stabiliser."""
     length, radius = 14.0, 0.95
@@ -1256,6 +1293,8 @@ def build_preset(preset: GeometryPreset, naca_code: str = "2412", span: float = 
         return _build_glider()
     if preset is GeometryPreset.SPHERE:
         return _build_sphere(0.5, tail_ratio)
+    if preset is GeometryPreset.PROPELLER:
+        return build_propeller(1.0, 2, 0.8)
     if preset is GeometryPreset.CUSTOM_NACA:
         return build_naca_wing(naca_code, span, chord)
     raise GeometryError(f"Unknown preset: {preset}")

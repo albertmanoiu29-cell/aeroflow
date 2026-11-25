@@ -79,7 +79,7 @@ _SOURCE_SNIPPET: Final[str] = (
 _PROBE_SCRIPT: Final[str] = _SOURCE_SNIPPET + (
     'echo "AF_BASHRC=$AF_B"; echo "AF_PROJECT=$WM_PROJECT"; echo "AF_VERSION=$WM_PROJECT_VERSION"; '
     'for c in simpleFoam foamRun blockMesh snappyHexMesh surfaceFeatures surfaceFeatureExtract '
-    'foamToVTK decomposePar reconstructPar mpirun; do '
+    'foamToVTK decomposePar reconstructPar mpirun createZones topoSet checkMesh rhoSimpleFoam pimpleFoam; do '
     'command -v "$c" >/dev/null 2>&1 && echo "AF_HAS=$c"; done; true'
 )
 
@@ -325,6 +325,8 @@ class CaseSettings:
     transient: bool = False                    # time-accurate PIMPLE run (unsteady wakes, shedding)
     convective_times: float = 12.0             # transient duration in t* = t V / L (flow passes over the body)
     frames: int = 24                           # transient: saved, evenly spaced snapshots
+    mrf_rpm: float = 0.0                       # > 0: the body rotates about +X (MRF zone) - propellers, rotors
+    esi: bool = False                          # OpenFOAM flavour (ESI and .org differ in MRF wall conditions)
 
 
 @dataclass(frozen=True)
@@ -434,6 +436,10 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
                           "system/fvSolution": _cmp_fv_solution(), "system/fvConstraints": _cmp_fv_constraints()})
             files.update(_cmp_fields(atm.pressure_pa, atm.temperature_k))
             files.pop("constant/transportProperties", None)
+        if settings.mrf_rpm > 0.0:
+            files.update(_mrf_files(model, settings.mrf_rpm))
+            if not settings.esi:      # rotating walls inside the MRF zone (OpenFOAM.org)
+                files["0/U"] = re.sub(r'("body\.\*"\s*\{\s*type\s+)noSlip;', r"\1MRFnoSlip;", files["0/U"])
         for rel, text in files.items():
             (case_dir / rel).write_text(text, encoding="utf-8")
         (case_dir / "case.foam").write_text("", encoding="utf-8")
@@ -678,6 +684,7 @@ def _control_dict(c: CaseLayout, info: GeometryInfo, cond: FlowConditions, s: Ca
     application = "rhoSimpleFoam" if s.compressible else ("pimpleFoam" if s.transient else "simpleFoam")
     solver = "fluid" if s.compressible else "incompressibleFluid"
     rho_line = "rho             rho;" if s.compressible else "rho             rhoInf;"
+    prop_forces = _propeller_forces(info, c, rho_line) if s.mrf_rpm > 0.0 else ""
     if s.transient and not s.compressible:
         return _transient_control(c, info, cond, s, application, solver, rho_line, drag_dir, lift_dir)
     return _header("dictionary", "controlDict") + f"""application     {application};
@@ -718,7 +725,7 @@ functions
         lRef            {info.chord_m:.9g};
         Aref            {info.reference_area_m2:.9g};
     }}
-    wallShearStress
+{prop_forces}    wallShearStress
     {{
         type            wallShearStress;
         libs            ("libfieldFunctionObjects.so");
@@ -735,6 +742,115 @@ functions
     }}
 }}
 """
+
+
+def _propeller_forces(info: GeometryInfo, c: CaseLayout, rho_line: str) -> str:
+    """``forces`` function object about the rotor centre: total force and moment -> thrust and torque."""
+    ctr = 0.5 * (np.asarray(info.bounds_min) + np.asarray(info.bounds_max))
+    return f"""    propellerForces
+    {{
+        type            forces;
+        libs            ("libforces.so");
+        writeControl    timeStep;
+        writeInterval   1;
+        log             no;
+        patches         ("body.*");
+        {rho_line}
+        rhoInf          {c.rho:.9g};
+        CofR            {_vec(ctr)};
+    }}
+"""
+
+
+def propeller_performance(case_dir: Path, rpm: float, diameter: float, speed: float, rho: float
+                          ) -> Optional[dict[str, float]]:
+    """Thrust, torque and the standard propeller coefficients from the ``propellerForces`` output.
+
+    Thrust T = -Fx (a pulling propeller pushes air downstream, +X), torque Q = -Mx (the fluid resists a
+    rotation about +X). ``J = V/(nD)``, ``CT = T/(rho n^2 D^4)``, ``CQ = Q/(rho n^2 D^5)``, ``CP = 2 pi CQ``,
+    efficiency ``eta = J CT / CP``. Handles the OpenFOAM.org layout (nested brackets, pressure + viscous)
+    and ESI's column layout (``total_x ...``)."""
+    root = Path(case_dir) / "postProcessing" / "propellerForces"
+    files = sorted(root.rglob("*.dat"), key=lambda p: p.stat().st_mtime) if root.is_dir() else []
+    fx = mx = None
+    for f in files:
+        lines = [ln for ln in f.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+        head = " ".join(ln for ln in lines if ln.startswith("#"))
+        data = [ln for ln in lines if not ln.startswith("#")]
+        if not data:
+            continue
+        nums = [float(x) for x in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", data[-1])]
+        if "forces(pressure viscous)" in head and len(nums) >= 13:      # time, Fp(3), Fv(3), Mp(3), Mv(3)
+            fx, mx = nums[1] + nums[4], nums[7] + nums[10]
+        elif "total_x" in head and len(nums) >= 2:                        # ESI: force.dat / moment.dat
+            if "moment" in f.name:
+                mx = nums[1]
+            else:
+                fx = nums[1]
+    if fx is None or mx is None:
+        return None
+    n = rpm / 60.0
+    d = max(diameter, 1e-9)
+    thrust, torque = -fx, -mx
+    ct = thrust / max(rho * n * n * d ** 4, 1e-12)
+    cq = torque / max(rho * n * n * d ** 5, 1e-12)
+    cp = 2.0 * math.pi * cq
+    j = speed / max(n * d, 1e-12)
+    eta = j * ct / cp if abs(cp) > 1e-12 else float("nan")
+    return {"thrust_n": thrust, "torque_nm": torque, "power_w": torque * 2.0 * math.pi * n, "J": j, "CT": ct,
+            "CQ": cq, "CP": cp, "eta": eta, "rpm": rpm, "diameter_m": d}
+
+
+def rotor_zone(model: GeometryModel) -> tuple[tuple[float, float, float], tuple[float, float, float],
+                                               tuple[float, float, float], float, float]:
+    """MRF zone around the model: (origin, point1, point2, radius, blade radius). Axis = +X through the
+    bounding-box centre; the cylinder encloses the swept disc with a margin."""
+    v = np.asarray(model.vertices, dtype=float)
+    c = 0.5 * (v.min(axis=0) + v.max(axis=0))
+    rad = float(np.sqrt(((v[:, 1:] - c[1:]) ** 2).sum(axis=1)).max())
+    zone_r = 1.15 * rad
+    x0, x1 = float(v[:, 0].min()) - 0.12 * rad, float(v[:, 0].max()) + 0.12 * rad
+    origin = (float(c[0]), float(c[1]), float(c[2]))
+    return origin, (x0, origin[1], origin[2]), (x1, origin[1], origin[2]), zone_r, rad
+
+
+def _mrf_files(model: GeometryModel, rpm: float) -> dict[str, str]:
+    origin, p1, p2, zr, _rad = rotor_zone(model)
+    omega = rpm * 2.0 * math.pi / 60.0
+    mrf = _header("dictionary", "MRFProperties") + f"""rotor
+{{
+    cellZone            rotor;
+    active              yes;
+    nonRotatingPatches  ();
+    origin              {_vec(origin)};
+    axis                (1 0 0);
+    omega               {omega:.9g};
+}}
+"""
+    # OpenFOAM.org 12+: createZones; ESI: topoSet. Both are written; the runner uses what is installed.
+    zones = _header("dictionary", "createZonesDict") + f"""rotor
+{{
+    type        cylinder;
+    zoneType    cell;
+    point1      {_vec(p1)};
+    point2      {_vec(p2)};
+    radius      {zr:.9g};
+}}
+"""
+    topo = _header("dictionary", "topoSetDict") + f"""actions
+(
+    {{
+        name    rotor;
+        type    cellZoneSet;
+        action  new;
+        source  cylinderToCell;
+        p1      {_vec(p1)};
+        p2      {_vec(p2)};
+        radius  {zr:.9g};
+    }}
+);
+"""
+    return {"constant/MRFProperties": mrf, "system/createZonesDict": zones, "system/topoSetDict": topo}
 
 
 def transient_end_time(info: GeometryInfo, cond: FlowConditions, s: CaseSettings) -> float:
@@ -1370,7 +1486,8 @@ class OpenFOAMRunner:
             return argv
         raise OpenFOAMError("OpenFOAM is not available.")
 
-    def _stages(self, n_procs: int, compressible: bool = False, transient: bool = False) -> list[_Stage]:
+    def _stages(self, n_procs: int, compressible: bool = False, transient: bool = False,
+                mrf: bool = False) -> list[_Stage]:
         """Pipeline for the detected flavour."""
         if compressible:
             solver = "foamRun -solver fluid" if "foamRun" in self.env.executables else "rhoSimpleFoam"
@@ -1384,6 +1501,9 @@ class OpenFOAMRunner:
             _Stage("Meshing around geometry (snappyHexMesh)", "snappyHexMesh -overwrite", 0.24, "snappyHexMesh"),
             _Stage("Checking mesh quality (checkMesh)", "checkMesh", 0.01, "checkMesh"),
         ]
+        if mrf:      # cell zone of the rotating region (createZones on OpenFOAM.org 12+, topoSet otherwise)
+            tool = "createZones" if "createZones" in self.env.executables else "topoSet"
+            stages.append(_Stage("Creating the rotor zone", tool, 0.01, "zones"))
         has_mpi = "mpirun" in self.env.executables and "decomposePar" in self.env.executables
         if n_procs > 1 and has_mpi:
             stages.append(_Stage("Decomposing case", "decomposePar -force", 0.01, "decomposePar"))
@@ -1409,12 +1529,12 @@ class OpenFOAMRunner:
         report = RunReport(case_dir=case_dir, success=False)
         t0 = time.perf_counter()
         transient = settings.transient and not settings.compressible
-        stages = self._stages(settings.n_procs, settings.compressible, transient)
+        stages = self._stages(settings.n_procs, settings.compressible, transient, settings.mrf_rpm > 0.0)
         self._end_time = None
         if transient:          # progress = simulated time / end time (the time step adapts)
             m = re.search(r"^endTime\s+([0-9.eE+-]+);", (case_dir / "system" / "controlDict").read_text(), re.M)
             self._end_time = float(m.group(1)) if m else None
-        mesh_names = {"blockMesh", "features", "snappyHexMesh", "checkMesh"}
+        mesh_names = {"blockMesh", "features", "snappyHexMesh", "checkMesh", "zones"}
         if mesh_only:
             stages = [s for s in stages if s.log_name in mesh_names]
         elif solve_only:
@@ -1866,6 +1986,10 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
                         extra={"case_dir": str(layout.case_dir), "cells": layout.cells,
                                "mesh_quality": report.mesh_quality,
                                "transient": bool(settings.transient and not settings.compressible),
+                               "propeller": (propeller_performance(layout.case_dir, settings.mrf_rpm,
+                                                                   2.0 * rotor_zone(model)[4], v_inf,
+                                                                   cond.atmosphere.density)
+                                             if settings.mrf_rpm > 0.0 else None),
                                "iterations": report.iterations, "vtk_file": str(path)})
 
 
