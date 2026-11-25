@@ -53,6 +53,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "openwith"; Description: "Add AeroFlow Studio to ""Open with"" for 3-D model files (.stl, .obj, .ply, .off)"; GroupDescription: "File types:"; Flags: unchecked
 
 [Registry]
+; AeroFlow's own project files (.aeroflow) open with the app by default.
+Root: HKCU; Subkey: "Software\Classes\.aeroflow"; ValueType: string; ValueData: "AeroFlowStudio.Project"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Project"; ValueType: string; ValueData: "AeroFlow Studio project"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Project\DefaultIcon"; ValueType: string; ValueData: "{app}\aeroflow.ico"
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Project\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" ""%1"""
 ; "Open with" entries only (per user): the user's default program for these files is left untouched.
 Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Model"; ValueType: string; ValueData: "3-D model (AeroFlow Studio)"; Flags: uninsdeletekey; Tasks: openwith
 Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Model\DefaultIcon"; ValueType: string; ValueData: "{app}\aeroflow.ico"; Tasks: openwith

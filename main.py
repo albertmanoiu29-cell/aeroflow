@@ -195,7 +195,10 @@ def main() -> int:
         splash.finish(window)
     if len(sys.argv) > 1 and Path(sys.argv[1]).is_file():
         path = sys.argv[1]
-        QTimer.singleShot(800, lambda: window.load_file(path))
+        if path.lower().endswith(".aeroflow"):
+            QTimer.singleShot(800, lambda: window.open_project(path))
+        else:
+            QTimer.singleShot(800, lambda: window.load_file(path))
     log.info("%s %s started (Python %s, Qt binding PySide6, PyVista %s)", APP_NAME, APP_VERSION,
              sys.version.split()[0], pv.__version__)
     return int(app.exec())

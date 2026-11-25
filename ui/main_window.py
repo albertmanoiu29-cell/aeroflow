@@ -389,6 +389,11 @@ class MainWindow(QMainWindow):
         mb = self.menu_bar
         a = self._action
         m_file = mb.addMenu("&File")
+        a(m_file, "Open project…", self.open_project_dialog, "Ctrl+Shift+O",
+          "Reopen a saved session (.aeroflow): geometry, conditions, settings, camera and polar")
+        a(m_file, "Save project", self.save_project, "Ctrl+Alt+S", "Save the whole session as one .aeroflow file")
+        a(m_file, "Save project as…", lambda: self.save_project(ask=True))
+        m_file.addSeparator()
         a(m_file, "Import geometry…", self.import_dialog, "Ctrl+O", "Load an STL / OBJ / PLY / OFF / VTK mesh")
         self.m_recent = m_file.addMenu("Open recent")
         self.m_recent.aboutToShow.connect(self._fill_recent_menu)
@@ -1237,6 +1242,87 @@ class MainWindow(QMainWindow):
             self.mode_switch.setEnabled(True)
             self._progress_done()
 
+    # =====================================================================
+    # Projects
+    # =====================================================================
+    _project_path: Optional[Path] = None
+
+    def save_project(self, ask: bool = False) -> None:
+        from core.project import SUFFIX, ProjectState, save_project
+
+        model = self.geometry_mgr.model
+        if model is None:
+            self._status("Nothing to save yet - load or generate a geometry first.")
+            return
+        path = self._project_path
+        if ask or path is None:
+            default = path or (get_paths().root / "projects" / f"{sanitize_filename(model.name)}{SUFFIX}")
+            chosen, _ = QFileDialog.getSaveFileName(self, "Save project", str(default),
+                                                    f"AeroFlow project (*{SUFFIX})")
+            if not chosen:
+                return
+            path = Path(chosen)
+        case = str(self.result.extra.get("case_dir", "")) if self.result is not None and self.result.extra else ""
+        state = ProjectState(conditions=self.cfd_panel.conditions(), quality=self.cfd_panel.quality_value().value,
+                             engine="openfoam" if self.engine == SolverEngine.OPENFOAM else "instant",
+                             reference_mode=model.reference_mode.value, camera=self.cfd_view.camera_state(),
+                             polar=self.polar if self._polar_model is model else None, openfoam_case=case)
+        try:
+            out = save_project(path, model, state)
+        except OSError as exc:
+            self._error("Saving the project failed", str(exc))
+            return
+        self._project_path = out
+        self._add_recent(out)
+        self.setWindowTitle(f"{out.stem} — {APP_NAME}")
+        log.success("Project saved: %s", out)
+        self.notify(f"Project saved: {out.name}", "success")
+
+    def open_project_dialog(self) -> None:
+        from core.project import SUFFIX
+
+        start = str(self._project_path.parent if self._project_path else get_paths().root / "projects")
+        path, _ = QFileDialog.getOpenFileName(self, "Open project", start, f"AeroFlow project (*{SUFFIX})")
+        if path:
+            self.open_project(path)
+
+    def open_project(self, path: str | Path) -> None:
+        from core.project import ProjectError, load_project
+
+        try:
+            model, state = load_project(path, get_paths().cache)
+        except (ProjectError, GeometryError) as exc:
+            self._error("Could not open the project", str(exc))
+            return
+        try:
+            model = model.with_reference_mode(ReferenceAreaMode(state.reference_mode))
+        except ValueError:
+            pass
+        if self.mode != AppMode.CFD:
+            self._set_mode(AppMode.CFD)
+        self.cfd_panel.set_conditions(state.conditions, commit=False)
+        idx = self.cfd_panel.quality.findText(state.quality)
+        if idx >= 0:
+            self.cfd_panel.quality.setCurrentIndex(idx)
+        engine = SolverEngine.OPENFOAM if state.engine == "openfoam" else SolverEngine.INSTANT
+        self.cfd_panel.set_engine(engine if engine != SolverEngine.OPENFOAM or self.of_env.available
+                                  else SolverEngine.INSTANT)
+        self._set_engine(self.cfd_panel.selected_engine())
+        self.geometry_mgr.set_model(model, keep_undo=False)
+        self._model_changed(reset_camera=state.camera is None)
+        if state.polar is not None:
+            self._on_polar(state.polar, model)
+        if state.camera:
+            QTimer.singleShot(250, lambda c=state.camera: self.cfd_view.set_camera_state(c))
+        self._project_path = Path(path)
+        self._add_recent(path)
+        self.setWindowTitle(f"{Path(path).stem} — {APP_NAME}")
+        if engine == SolverEngine.OPENFOAM and state.openfoam_case:
+            self._status(f"Project opened. Its OpenFOAM result is in {state.openfoam_case} - run again to view it.")
+        else:
+            self._status("Project opened.")
+        log.success("Project opened: %s", path)
+
     def _show_line_probe(self, data: dict) -> None:
         from ui.probe_dialog import LineProbeDialog
 
@@ -1489,7 +1575,8 @@ class MainWindow(QMainWindow):
             act = m.addAction(f"&{(i + 1) % 10}  {Path(f).name}")
             act.setToolTip(f)
             act.setStatusTip(f)
-            act.triggered.connect(lambda _c=False, p=f: self.load_file(p))
+            act.triggered.connect(lambda _c=False, p=f: self.open_project(p) if p.lower().endswith(".aeroflow")
+                                  else self.load_file(p))
         if not existing:
             none = m.addAction("No recent files")
             none.setEnabled(False)

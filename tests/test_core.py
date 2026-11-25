@@ -284,3 +284,34 @@ def test_main_window_imports() -> None:
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel"):
         importlib.import_module(mod)
+
+
+def test_project_round_trip(tmp_path) -> None:
+    import json
+    import zipfile
+
+    from config.settings import FlowConditions, GeometryPreset
+    from core.geometry_manager import build_preset
+    from core.project import ProjectError, ProjectState, load_project, save_project
+    from core.results import PolarData
+
+    m = build_preset(GeometryPreset.NACA_2412)
+    m = getattr(m, "model", m)
+    pol = PolarData(alpha_deg=np.array([0.0, 4.0, 8.0]), cl=np.array([0.2, 0.6, 0.9]), cd=np.array([0.01, 0.02, 0.04]),
+                    cm=np.array([-0.05, -0.06, -0.07]), moment_ref=(0.25, 0.0, 0.0), geometry_name=m.name)
+    st = ProjectState(conditions=FlowConditions(velocity_ms=80.0, alpha_deg=3.0, ground_h_over_b=0.2), quality="Fine (detailed)",
+                      camera=[[1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], polar=pol)
+    out = save_project(tmp_path / "wing", m, st)
+    assert out.suffix == ".aeroflow"
+    m2, st2 = load_project(out, tmp_path / "scratch")
+    assert m2.triangle_count == m.triangle_count and m2.name == m.name
+    assert st2.conditions.velocity_ms == 80.0 and st2.conditions.ground_h_over_b == 0.2
+    assert st2.quality == "Fine (detailed)" and st2.camera == st.camera
+    assert np.allclose(st2.polar.cl, pol.cl) and st2.polar.moment_ref == (0.25, 0.0, 0.0)
+    # a project from a newer format is refused clearly
+    newer = tmp_path / "newer.aeroflow"
+    with zipfile.ZipFile(newer, "w") as zf:
+        zf.writestr("project.json", json.dumps({"format": 99, "app_version": "9.0"}))
+        zf.writestr("geometry.stl", b"")
+    with pytest.raises(ProjectError, match="newer"):
+        load_project(newer, tmp_path / "scratch")
