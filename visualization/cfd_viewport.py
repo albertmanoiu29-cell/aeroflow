@@ -57,6 +57,7 @@ ACTOR_ISO = "isosurface"
 ACTOR_VOLUME = "vortex_cloud"
 #: The three planes of the "three orthogonal slices" mode.
 ACTOR_SLICES_3 = ("slice_x", "slice_y", "slice_z")
+ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE = "probe_a", "probe_b", "probe_line"
 #: Solid colours of the three isosurface kinds (they overlay the colour-mapped layers).
 ISO_COLORS = {IsoField.QCRITERION: "#5EEAD4", IsoField.LAMBDA2: "#F472B6", IsoField.SPEED: "#FBBF24", IsoField.WAKE: "#A78BFA"}
 # Scalar-bar titles must be unique per layer: PyVista keys bars by title, so two layers sharing a title
@@ -420,6 +421,16 @@ class CFDViewport(QWidget):
         self.camera_bar.view_requested.connect(self._on_view)
         self.drop_overlay = DropOverlay(self)
         self.hud.update_kpis(None)
+        self.probe_label = QLabel(self)
+        self.probe_label.setObjectName("GlassCard")
+        self.probe_label.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.probe_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.probe_label.setTextFormat(Qt.TextFormat.RichText)
+        self.probe_label.setFont(mono_font(11))
+        self.probe_label.setMargin(10)
+        self.probe_label.hide()
+        self._probe_mode = "off"
+        self._probe_a: Optional[np.ndarray] = None
 
         self.settings = VisualSettings()
         self._model: Optional[GeometryModel] = None
@@ -545,7 +556,7 @@ class CFDViewport(QWidget):
         self._lines = None
         self._particles = None
         for name in (ACTOR_STREAMLINES, ACTOR_PARTICLES, ACTOR_SLICE, ACTOR_GLYPHS, ACTOR_ISO, ACTOR_VOLUME,
-                     *ACTOR_SLICES_3):
+                     *ACTOR_SLICES_3, ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE):
             self._remove(name)
         self._set_volume_on(False)
         for bar in _ALL_BARS:
@@ -1003,6 +1014,109 @@ class CFDViewport(QWidget):
             return
         self.slice_position_changed.emit(pos)
 
+    # -- probes -----------------------------------------------------------------
+    probe_line_ready = Signal(object)          # dict: distance + field arrays along a probe line
+
+    def set_probe_mode(self, mode: str) -> None:
+        """``"off"``, ``"point"`` (click: local flow readout) or ``"line"`` (two clicks: plot along a line)."""
+        self._probe_mode = mode
+        self._probe_a = None
+        try:
+            self.plotter.disable_picking()
+        except Exception:  # noqa: BLE001 - nothing was enabled
+            pass
+        for name in (ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE):
+            self._remove(name)
+        self.probe_label.hide()
+        if mode in ("point", "line"):
+            try:
+                self.plotter.enable_point_picking(callback=self._on_pick, left_clicking=True, picker="cell",
+                                                  show_message=False, show_point=False,
+                                                  clear_on_no_selection=False)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Picking unavailable: %s", exc)
+                self.status_message.emit(f"Probing is not available: {exc}")
+                return
+            self.status_message.emit("Probe: click on the slice, a streamline or the model." if mode == "point"
+                                     else "Line probe: click the start point, then the end point.")
+        self.plotter.render()
+
+    def _sample(self, points: np.ndarray) -> dict[str, np.ndarray]:
+        """Flow quantities at ``points`` (N, 3); NaN outside the flow domain or inside the body."""
+        probe = pv.PolyData(np.asarray(points, dtype=float)).sample(self._dataset)
+        pd = probe.point_data
+        valid = np.ones(probe.n_points, dtype=bool)
+        if "vtkValidPointMask" in pd:
+            valid &= np.asarray(pd["vtkValidPointMask"]) > 0
+        if "solid" in pd:
+            valid &= np.asarray(pd["solid"]) == 0
+        out: dict[str, np.ndarray] = {}
+        for name in ("speed", "Cp", "Cp0", "vorticity_mag", "velocity"):
+            if name in pd:
+                a = np.asarray(pd[name], dtype=float).copy()
+                a[~valid] = np.nan
+                out[name] = a
+        return out
+
+    def _marker(self, name: str, p: np.ndarray, colour: str) -> None:
+        r = 0.012 * self._ref_length()
+        self.plotter.add_mesh(pv.Sphere(radius=r, center=tuple(p)), name=name, color=colour, lighting=False,
+                              pickable=False, reset_camera=False)
+
+    def _on_pick(self, point: Any, *_args: Any) -> None:
+        if point is None or self._dataset is None:
+            if self._dataset is None:
+                self.status_message.emit("Run a simulation first - the probe reads the flow result.")
+            return
+        p = np.asarray(point, dtype=float).reshape(3)
+        if self._probe_mode == "point":
+            self._marker(ACTOR_PROBE, p, PALETTE.warning)
+            s = self._sample(p[None, :])
+            v_inf = self._result.field.freestream_ms if self._result is not None else 1.0
+            lines = [f"<b>Probe</b> &nbsp;x {p[0]:+.3f} &nbsp;y {p[1]:+.3f} &nbsp;z {p[2]:+.3f} m"]
+            if "speed" in s and np.isfinite(s["speed"][0]):
+                sp = float(s["speed"][0])
+                lines.append(f"Speed {sp:.2f} m/s &nbsp;({sp / max(v_inf, 1e-9):.3f} V∞)")
+                if "velocity" in s:
+                    vx, vy, vz = s["velocity"][0]
+                    lines.append(f"u {vx:+.2f} &nbsp;v {vy:+.2f} &nbsp;w {vz:+.2f} m/s")
+                if "Cp" in s:
+                    lines.append(f"Cp {float(s['Cp'][0]):+.3f}")
+                if "Cp0" in s:
+                    lines.append(f"Total-pressure Cp0 {float(s['Cp0'][0]):.3f}")
+                if "vorticity_mag" in s:
+                    lines.append(f"Vorticity {float(s['vorticity_mag'][0]):.3g} 1/s")
+            elif self._surface is not None and "Cp" in self._surface.point_data:
+                k = int(self._surface.find_closest_point(p))
+                lines.append(f"On the surface: Cp {float(self._surface.point_data['Cp'][k]):+.3f}")
+            else:
+                lines.append("Outside the flow field")
+            self.probe_label.setText("<br>".join(lines))
+            self.probe_label.show()
+            self._layout_overlays()
+        else:
+            if self._probe_a is None:
+                self._remove(ACTOR_PROBE_LINE)
+                self._remove(ACTOR_PROBE_B)
+                self._probe_a = p
+                self._marker(ACTOR_PROBE, p, PALETTE.warning)
+                self.status_message.emit("Line probe: now click the end point.")
+            else:
+                a, b = self._probe_a, p
+                self._probe_a = None
+                self._marker(ACTOR_PROBE_B, b, PALETTE.warning)
+                self.plotter.add_mesh(pv.Line(tuple(a), tuple(b)), name=ACTOR_PROBE_LINE, color=PALETTE.warning,
+                                      line_width=3, lighting=False, pickable=False, reset_camera=False)
+                n = 300
+                t = np.linspace(0.0, 1.0, n)
+                pts = a[None, :] + t[:, None] * (b - a)[None, :]
+                s = self._sample(pts)
+                s["distance"] = t * float(np.linalg.norm(b - a))
+                s["a"], s["b"] = a, b
+                s["v_inf"] = np.array([self._result.field.freestream_ms if self._result is not None else 1.0])
+                self.probe_line_ready.emit(s)
+        self.plotter.render()
+
     # -- export / camera ------------------------------------------------------
     def export_vtk(self, path: str | Path) -> Path:
         """Save the flow field, the surface (with Cp) and the traced streamlines as one VTK multiblock
@@ -1399,7 +1513,9 @@ class CFDViewport(QWidget):
         bw, bh = self.camera_bar.width(), self.camera_bar.height()
         self.camera_bar.move(max(0, (self.width() - bw) // 2), max(0, self.height() - bh - 16))
         self.drop_overlay.setGeometry(self.rect().adjusted(8, 8, -8, -8))
-        for w in (self.hud, self.camera_bar, self.drop_overlay):
+        self.probe_label.adjustSize()
+        self.probe_label.move(14, max(0, self.height() - self.probe_label.height() - bh - 28))
+        for w in (self.hud, self.camera_bar, self.probe_label, self.drop_overlay):
             w.raise_()
 
     @staticmethod

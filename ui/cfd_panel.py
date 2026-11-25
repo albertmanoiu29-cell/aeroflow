@@ -551,6 +551,13 @@ class CFDPanel(QWidget):
             grid.addWidget(t, i // 2, i % 2)
             t.toggled.connect(self._visual_changed)
         card.add_layout(grid)
+        self.probe = SegmentedControl(["No probe", "Point", "Line"],
+                                      ["Normal mouse: rotate / zoom the view",
+                                       "Click anywhere on the slice, a streamline or the model to read the local "
+                                       "speed, Cp, total pressure and vorticity",
+                                       "Click two points to plot the flow along the line between them"])
+        self.probe.changed.connect(lambda i: self.probe_mode_changed.emit(("off", "point", "line")[i]))
+        card.add(labeled_row("Probe", self.probe, "Read flow values with the mouse"))
         self.cmap = QComboBox()
         for c in DEFAULT_COLORMAPS:
             self.cmap.addItem(c)
@@ -794,6 +801,7 @@ class CFDPanel(QWidget):
             lock_ranges=self.t_lock.isChecked())
 
     slice_sweep_requested = Signal(bool)
+    probe_mode_changed = Signal(str)
 
     def _on_sweep_toggled(self, on: bool) -> None:
         if on and not self.t_slice.isChecked():

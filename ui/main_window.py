@@ -493,6 +493,8 @@ class MainWindow(QMainWindow):
         p.engine_changed.connect(self._set_engine)
         p.visuals_changed.connect(self.cfd_view.update_settings)
         p.slice_sweep_requested.connect(self._on_slice_sweep)
+        p.probe_mode_changed.connect(self.cfd_view.set_probe_mode)
+        self.cfd_view.probe_line_ready.connect(self._show_line_probe)
         self.cfd_view.slice_position_changed.connect(p.show_slice_position)
         p.sweep_requested.connect(self.run_sweep)
         p.export_requested.connect(self._on_export)
@@ -1186,6 +1188,17 @@ class MainWindow(QMainWindow):
             self.menu_bar.setEnabled(True)
             self.mode_switch.setEnabled(True)
             self._progress_done()
+
+    def _show_line_probe(self, data: dict) -> None:
+        from ui.probe_dialog import LineProbeDialog
+
+        dlg = getattr(self, "_line_probe_dialog", None)
+        if dlg is None:
+            dlg = LineProbeDialog(self)
+            self._line_probe_dialog = dlg
+        dlg.set_data(data)
+        dlg.show()
+        dlg.raise_()
 
     def open_param_study(self) -> None:
         model = self.geometry_mgr.model
