@@ -247,3 +247,19 @@ def test_ground_effect_cuts_induced_drag() -> None:
         ref = 1.0 - math.exp(-2.48 * (2.0 * h) ** 0.768)
         assert g.cl > free.cl
         assert phi == pytest.approx(ref, abs=0.06)
+
+
+def test_flap_deflection_adds_lift_and_keeps_mesh_closed() -> None:
+    from config.settings import FlowConditions, GeometryPreset, GridQuality
+    from core.geometry_manager import build_preset, deflect_flap
+    from core.instant_solver import InstantSolver
+
+    s = InstantSolver(warmup=False)
+    m = build_preset(GeometryPreset.NACA_2412)
+    m = getattr(m, "model", m)
+    flapped = deflect_flap(m, 15.0, 0.75, 0.0, 0.6)
+    assert flapped.is_watertight and flapped.triangle_count == m.triangle_count
+    cond = FlowConditions(alpha_deg=4.0)
+    clean = s.coefficients(s.prepare(m, GridQuality.COARSE), cond)
+    flap = s.coefficients(s.prepare(flapped, GridQuality.COARSE), cond)
+    assert flap.cl > clean.cl + 0.2 and flap.cm < clean.cm          # more lift, nose-down moment

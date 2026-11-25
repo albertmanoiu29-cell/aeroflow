@@ -458,6 +458,40 @@ class CFDPanel(QWidget):
         row3.addWidget(b_repair, 1)
         row3.addWidget(b_undo)
         card.add_layout(row3)
+        # Control surfaces: deflect a plain flap / ailerons on the current wing (undoable).
+        card.add(make_section_label("Control surfaces"))
+        cs = QGridLayout()
+        self.cs_kind = QComboBox()
+        self.cs_kind.addItem("Flaps (both sides)", "both")
+        self.cs_kind.addItem("Ailerons (right down, left up)", "ailerons")
+        compact_combo(self.cs_kind, 8)
+        self.cs_delta, self.cs_hinge, self.cs_from, self.cs_to = (QDoubleSpinBox() for _ in range(4))
+        for sb, lo, hi, val, suf, tip in (
+                (self.cs_delta, -40.0, 40.0, 15.0, "°", "Deflection: positive = trailing edge down (more lift)"),
+                (self.cs_hinge, 50.0, 95.0, 75.0, " % c", "Hinge line position along the local chord"),
+                (self.cs_from, 0.0, 95.0, 10.0, " %", "Inboard end of the surface (% of the semi-span)"),
+                (self.cs_to, 5.0, 100.0, 60.0, " %", "Outboard end of the surface (% of the semi-span)")):
+            sb.setRange(lo, hi)
+            sb.setValue(val)
+            sb.setSuffix(suf)
+            sb.setDecimals(1)
+            sb.setToolTip(tip)
+        cs.addWidget(self.cs_kind, 0, 0, 1, 2)
+        cs.addWidget(QLabel("Deflection"), 1, 0)
+        cs.addWidget(self.cs_delta, 1, 1)
+        cs.addWidget(QLabel("Hinge"), 2, 0)
+        cs.addWidget(self.cs_hinge, 2, 1)
+        cs.addWidget(QLabel("Span from / to"), 3, 0)
+        span_row = QHBoxLayout()
+        span_row.addWidget(self.cs_from)
+        span_row.addWidget(self.cs_to)
+        cs.addLayout(span_row, 3, 1)
+        card.add_layout(cs)
+        b_cs = button("Deflect", "ghost", "", "Apply the deflection to the current geometry (Undo reverts it)")
+        b_cs.clicked.connect(lambda: self.geometry_op.emit("flap", (
+            self.cs_kind.currentData(), self.cs_delta.value(), self.cs_hinge.value() / 100.0,
+            self.cs_from.value() / 100.0, self.cs_to.value() / 100.0)))
+        card.add(b_cs)
         self.ref_mode = QComboBox()
         for m in ReferenceAreaMode:
             self.ref_mode.addItem(m.value, m)

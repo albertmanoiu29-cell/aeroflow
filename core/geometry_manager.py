@@ -734,6 +734,64 @@ def rotate_model(model: GeometryModel, axis: str, degrees: float) -> GeometryMod
                            f"Rotated {degrees:g}° about {axis.upper()}")
 
 
+def deflect_flap(model: GeometryModel, delta_deg: float, hinge_frac: float = 0.75, span_from: float = 0.0,
+                 span_to: float = 0.6, side: str = "both") -> GeometryModel:
+    """Deflect a plain flap / aileron: rotate the part behind the hinge line about the hinge.
+
+    The wing must face the +x flow (nose at -x, span along y). At every spanwise station the local
+    leading and trailing edges are found from the mesh; the hinge sits at ``hinge_frac`` of the local
+    chord on the local chord line. Vertices behind it, within ``span_from .. span_to`` of the semi-span
+    (measured from the centre line), are rotated by ``delta_deg`` (positive = trailing edge down).
+    ``side``: ``"both"`` (flaps), ``"right"`` (+y) or ``"left"`` (-y) - opposite deflections on the two
+    sides make ailerons."""
+    v = np.array(model.vertices, dtype=np.float64)
+    y = v[:, 1]
+    y_mid = 0.5 * (float(y.min()) + float(y.max()))
+    half = 0.5 * (float(y.max()) - float(y.min()))
+    if half <= 1e-9:
+        raise GeometryError("The model has no span (y extent) to put a flap on.")
+    # local leading / trailing edge (x and z) per spanwise bin
+    nb = 64
+    edges = np.linspace(float(y.min()), float(y.max()), nb + 1)
+    k = np.clip(np.digitize(y, edges) - 1, 0, nb - 1)
+    x_le = np.full(nb, np.nan)
+    x_te = np.full(nb, np.nan)
+    z_le = np.full(nb, np.nan)
+    z_te = np.full(nb, np.nan)
+    for b in range(nb):
+        sel = np.nonzero(k == b)[0]
+        if sel.size < 3:
+            continue
+        i_le, i_te = sel[np.argmin(v[sel, 0])], sel[np.argmax(v[sel, 0])]
+        x_le[b], x_te[b], z_le[b], z_te[b] = v[i_le, 0], v[i_te, 0], v[i_le, 2], v[i_te, 2]
+    ok = np.isfinite(x_le)
+    if ok.sum() < 2:
+        raise GeometryError("Could not find the wing's leading and trailing edges.")
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    xl = np.interp(y, centres[ok], x_le[ok])
+    xt = np.interp(y, centres[ok], x_te[ok])
+    zl = np.interp(y, centres[ok], z_le[ok])
+    zt = np.interp(y, centres[ok], z_te[ok])
+    xh = xl + hinge_frac * (xt - xl)
+    zh = zl + hinge_frac * (zt - zl)
+    s = (y - y_mid) / half                                       # -1 .. 1
+    in_span = (np.abs(s) >= span_from) & (np.abs(s) <= span_to)
+    if side == "right":
+        in_span &= s > 0
+    elif side == "left":
+        in_span &= s < 0
+    move = in_span & (v[:, 0] > xh)
+    if not move.any():
+        raise GeometryError("No part of the wing lies behind the hinge line in that span range.")
+    d = math.radians(float(delta_deg))
+    dx, dz = v[move, 0] - xh[move], v[move, 2] - zh[move]
+    v[move, 0] = xh[move] + dx * math.cos(d) + dz * math.sin(d)
+    v[move, 2] = zh[move] - dx * math.sin(d) + dz * math.cos(d)
+    where = {"both": "", "right": " (right)", "left": " (left)"}.get(side, "")
+    return model.derive(v, f"Flap {delta_deg:+g}° at {100 * hinge_frac:.0f} % chord, "
+                           f"{100 * span_from:.0f}-{100 * span_to:.0f} % span{where}")
+
+
 def rotate_90(model: GeometryModel, axis: str, turns: int = 1) -> GeometryModel:
     """Rotate in 90° increments (``turns`` may be negative)."""
     return rotate_model(model, axis, 90.0 * int(turns))

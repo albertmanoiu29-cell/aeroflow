@@ -38,7 +38,7 @@ from core import compute
 from core.compute import Device
 from core.geometry_manager import (
     GeometryError, GeometryManager, GeometryModel, LoadResult, align_nose, auto_orient, build_preset,
-    center_model, convert_mm_to_m, rotate_90, scale_to_length, scale_to_span, suggest_scale,
+    center_model, convert_mm_to_m, deflect_flap, rotate_90, scale_to_length, scale_to_span, suggest_scale,
 )
 from core.instant_solver import InstantSolver
 from core.openfoam_bridge import CaseSettings, OpenFOAMEnvironment
@@ -731,6 +731,16 @@ class MainWindow(QMainWindow):
             elif op == "rotate":
                 axis, turns = arg
                 self.geometry_mgr.apply(rotate_90, axis, turns)
+            elif op == "flap":
+                kind, delta, hinge, s_from, s_to = arg
+                if s_to <= s_from:
+                    self._status("The outboard end of the control surface must be beyond the inboard end.")
+                    return
+                if kind == "ailerons":
+                    model = deflect_flap(self.geometry_mgr.require(), delta, hinge, s_from, s_to, "right")
+                    self.geometry_mgr.apply(lambda _m: deflect_flap(model, -delta, hinge, s_from, s_to, "left"))
+                else:
+                    self.geometry_mgr.apply(deflect_flap, delta, hinge, s_from, s_to, "both")
             elif op == "center":
                 self.geometry_mgr.apply(center_model)
             elif op == "auto_orient":
