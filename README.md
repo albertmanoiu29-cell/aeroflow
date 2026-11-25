@@ -37,7 +37,7 @@ The full list is in the [CHANGELOG](CHANGELOG.md).
   - lifting-line theory overlays;
   - a grid convergence check (Richardson / GCI);
   - Kármán-Tsien compressibility, ground effect, flaps and ailerons.
-- **OpenFOAM:** polar sweeps on one shared mesh, skin friction and y⁺ on the body, a checkMesh summary, a boundary-layer control and a live CL/CD chart.
+- **OpenFOAM:** polar sweeps on one shared mesh, compressible air (automatic from Mach 0.3), transient runs with a frame player and Strouhal number, rotating propellers (MRF) with thrust, torque and efficiency, skin friction and y⁺ on the body, a checkMesh summary, a boundary-layer control and a live CL/CD chart.
 - **Labs:** load airfoil `.dat` files, time-averaged and RMS fields, a supersonic inlet, GPU-only Extreme grids and MP4 recording.
 - **Workflow:** `.aeroflow` project files, PDF reports, MP4/transparent/VTK exports with *Open in ParaView*, camera bookmarks and Imperial units.
 

@@ -35,6 +35,9 @@ download releases from the [Releases page](https://github.com/albertmanoiu29-cel
 - **Polar sweeps with OpenFOAM:** the mesh is built once, then one solver run per angle.
 - **Skin friction Cf and y⁺** on the body (*Surface shows*), with a warning when y⁺ is outside the wall-function range.
 - **checkMesh** summary after meshing, a **boundary-layer count** control, and a live **CL / CD convergence** chart.
+- **Compressible air** (`fluid` / rhoSimpleFoam, perfect gas, freestream far field). It switches on automatically from Mach 0.3 and adds a local **Mach number** field.
+- **Transient runs** (PIMPLE with a Courant-adaptive time step and saved frames) with a **player**: frame slider and Play, CL and CD against t*, and the **Strouhal number** of vortex shedding.
+- **Rotating propellers and rotors** (MRF zone built with createZones or topoSet): thrust, torque, power, advance ratio J, CT, CP and efficiency. Includes a built-in **propeller** geometry preset.
 
 ### Added: Labs
 - **Airfoil coordinate files** (`.dat`, Selig and Lednicer formats) in the Live Flow Lab and the Supersonic Lab.
