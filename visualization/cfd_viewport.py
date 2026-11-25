@@ -55,8 +55,10 @@ ACTOR_GLYPHS = "glyphs"
 ACTOR_SEEDS = "seed_rake"
 ACTOR_ISO = "isosurface"
 ACTOR_VOLUME = "vortex_cloud"
+#: The three planes of the "three orthogonal slices" mode.
+ACTOR_SLICES_3 = ("slice_x", "slice_y", "slice_z")
 #: Solid colours of the three isosurface kinds (they overlay the colour-mapped layers).
-ISO_COLORS = {IsoField.QCRITERION: "#5EEAD4", IsoField.SPEED: "#FBBF24", IsoField.WAKE: "#A78BFA"}
+ISO_COLORS = {IsoField.QCRITERION: "#5EEAD4", IsoField.LAMBDA2: "#F472B6", IsoField.SPEED: "#FBBF24", IsoField.WAKE: "#A78BFA"}
 # Scalar-bar titles must be unique per layer: PyVista keys bars by title, so two layers sharing a title
 # used to delete each other's bar (and stack two different colour maps under one legend).
 BAR_CP = "Cp (surface)"
@@ -136,6 +138,8 @@ class VisualSettings:
     show_volume: bool = False
     iso_field: IsoField = IsoField.QCRITERION
     iso_level: float = PARAM_LIMITS["iso_level"].default
+    slice_three: bool = False          # three orthogonal planes through the slice point instead of one
+    lock_ranges: bool = False          # keep the current colour ranges (fair comparisons between results)
 
     def clamped(self) -> "VisualSettings":
         """Copy with all numeric options clamped to their limits."""
@@ -170,6 +174,8 @@ _DEPENDS: dict[str, tuple[str, ...]] = {
     "show_floor": ("floor",), "ambient_occlusion": ("lighting",),
     "show_iso": ("iso",), "iso_field": ("iso",), "iso_level": ("iso",),
     "show_volume": ("volume",),
+    "slice_three": ("slice",),
+    "lock_ranges": ("geometry", "streamlines", "slice"),
 }
 
 
@@ -433,6 +439,11 @@ class CFDViewport(QWidget):
         self._anim_paused = False          # paused by the main window (another mode is visible)
         self._ssao_on = False              # SSAO currently enabled in the renderer
         self._ssao_suspended = False       # SSAO temporarily off while particles animate
+        self._locked: dict[str, tuple[float, float]] = {}   # colour ranges frozen by "Lock colour ranges"
+        self._sweep_timer = QTimer(self)                     # slice sweep animation
+        self._sweep_timer.setInterval(70)
+        self._sweep_timer.timeout.connect(self._sweep_step)
+        self._sweep_dir = 1.0
 
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
@@ -533,7 +544,8 @@ class CFDViewport(QWidget):
         self._surface = None
         self._lines = None
         self._particles = None
-        for name in (ACTOR_STREAMLINES, ACTOR_PARTICLES, ACTOR_SLICE, ACTOR_GLYPHS, ACTOR_ISO, ACTOR_VOLUME):
+        for name in (ACTOR_STREAMLINES, ACTOR_PARTICLES, ACTOR_SLICE, ACTOR_GLYPHS, ACTOR_ISO, ACTOR_VOLUME,
+                     *ACTOR_SLICES_3):
             self._remove(name)
         self._set_volume_on(False)
         for bar in _ALL_BARS:
@@ -571,6 +583,8 @@ class CFDViewport(QWidget):
         settings = settings.clamped()
         old = self.settings
         self.settings = settings
+        if not settings.lock_ranges:
+            self._locked.clear()
         changed = [k for k in _DEPENDS if getattr(old, k) != getattr(settings, k)]
         layers: set[str] = set()
         for k in changed:
@@ -657,17 +671,30 @@ class CFDViewport(QWidget):
             return a[np.isfinite(a)]
 
         if field is ScalarField.PRESSURE and "Cp" in pd:
-            return "Cp", CP_CMAP, cp_clim(vals("Cp")), "Cp"
+            return "Cp", CP_CMAP, self._lock("Cp", lambda: cp_clim(vals("Cp"))), "Cp"
         if field is ScalarField.VORTICITY and "vorticity_mag" in pd:
-            v = vals("vorticity_mag")
-            hi = float(np.percentile(v, 99.0)) if v.size else 1.0
-            return "vorticity_mag", "inferno", (0.0, max(hi, 1e-6)), "Vorticity 1/s"
+            def vort() -> tuple[float, float]:
+                v = vals("vorticity_mag")
+                hi = float(np.percentile(v, 99.0)) if v.size else 1.0
+                return (0.0, max(hi, 1e-6))
+            return "vorticity_mag", "inferno", self._lock("vorticity_mag", vort), "Vorticity 1/s"
         if field is ScalarField.TOTAL_PRESSURE and "Cp0" in pd:
-            v = vals("Cp0")
-            lo = float(np.percentile(v, 1.0)) if v.size else 0.0
-            return "Cp0", "magma", (min(lo, 0.9), 1.0), "Total Cp0"
-        return "speed", self.settings.colormap, speed_clim(vals("speed") if "speed" in pd else None, v_inf), \
-            "Speed m/s"
+            def cp0() -> tuple[float, float]:
+                v = vals("Cp0")
+                lo = float(np.percentile(v, 1.0)) if v.size else 0.0
+                return (min(lo, 0.9), 1.0)
+            return "Cp0", "magma", self._lock("Cp0", cp0), "Total Cp0"
+        return "speed", self.settings.colormap, \
+            self._lock("speed", lambda: speed_clim(vals("speed") if "speed" in pd else None, v_inf)), "Speed m/s"
+
+    def _lock(self, key: str, compute: Any) -> tuple[float, float]:
+        """Colour range for ``key``: computed from the data, or - with *Lock colour ranges* on - the range
+        in effect when the lock was switched on (so two results are coloured on the same scale)."""
+        if self.settings.lock_ranges:
+            if key not in self._locked:
+                self._locked[key] = tuple(compute())
+            return self._locked[key]
+        return tuple(compute())
 
     @staticmethod
     def _bar_args(title: str, slot: int) -> dict[str, Any]:
@@ -696,7 +723,7 @@ class CFDViewport(QWidget):
         poly.point_data["Cp"] = np.asarray(cp, dtype=np.float32)
         actor = self.plotter.actors[ACTOR_GEOMETRY]
         try:
-            actor.mapper.scalar_range = cp_clim(cp)
+            actor.mapper.scalar_range = self._lock("Cp_surface", lambda: cp_clim(cp))
         except Exception:  # noqa: BLE001
             return False
         return True
@@ -715,7 +742,8 @@ class CFDViewport(QWidget):
         poly = src.compute_normals(cell_normals=False, split_vertices=False, auto_orient_normals=False)
         if mode == "cp":
             cp = np.asarray(poly.point_data["Cp"])
-            self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars="Cp", cmap=CP_CMAP, clim=cp_clim(cp),
+            self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars="Cp", cmap=CP_CMAP,
+                                  clim=self._lock("Cp_surface", lambda: cp_clim(cp)),
                                   smooth_shading=False, interpolation="phong", specular=0.35, specular_power=30,
                                   scalar_bar_args=self._bar_args(BAR_CP, 0), reset_camera=False)
         else:
@@ -894,6 +922,8 @@ class CFDViewport(QWidget):
     def _build_slice(self) -> None:
         self._remove(ACTOR_SLICE)
         self._remove(ACTOR_GLYPHS)
+        for name in ACTOR_SLICES_3:
+            self._remove(name)
         self._remove_layer_bar("slice")
         if self._dataset is None or self._model is None or not (self.settings.show_slice or self.settings.show_vectors):
             return
@@ -905,20 +935,104 @@ class CFDViewport(QWidget):
         org = np.clip(np.asarray(origin), lo + 1e-6, hi - 1e-6)
         v_inf = self._result.field.freestream_ms if self._result is not None else 1.0
         if s.show_slice:
-            sl = self._dataset.slice(normal=normal, origin=tuple(org))
-            if sl.n_points:
-                name, cmap, clim, title = self._scalar_spec(s.slice_scalar, sl)
-                view = np.asarray(sl.point_data[name], dtype=float).copy()
-                if "solid" in sl.point_data:            # cut the body out of the slice
-                    view[np.asarray(sl.point_data["solid"]) > 0] = np.nan
-                sl.point_data["slice_view"] = view
-                bar = f"{title} (slice)"
-                self._bar_titles["slice"] = bar
-                self.plotter.add_mesh(sl, name=ACTOR_SLICE, scalars="slice_view", cmap=cmap, clim=clim,
-                                      nan_color=PALETTE.bg_deep, opacity=0.92, lighting=False,
-                                      scalar_bar_args=self._bar_args(bar, 2), reset_camera=False)
+            if s.slice_three:
+                # Three orthogonal planes through the slice point; one shared colour range and legend.
+                planes = [(name, n) for name, n in zip(ACTOR_SLICES_3, ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+                                                                        (0.0, 0.0, 1.0)))]
+                cuts = [(name, self._dataset.slice(normal=n, origin=tuple(org))) for name, n in planes]
+                cuts = [(name, c) for name, c in cuts if c.n_points]
+                if cuts:
+                    merged = pv.merge([c for _n, c in cuts]) if len(cuts) > 1 else cuts[0][1]
+                    field, cmap, clim, title = self._scalar_spec(s.slice_scalar, merged)
+                    bar = f"{title} (slice)"
+                    self._bar_titles["slice"] = bar
+                    for k, (name, c) in enumerate(cuts):
+                        self._add_slice_mesh(c, name, field, cmap, clim, bar if k == 0 else None, opacity=0.85)
+            else:
+                sl = self._dataset.slice(normal=normal, origin=tuple(org))
+                if sl.n_points:
+                    field, cmap, clim, title = self._scalar_spec(s.slice_scalar, sl)
+                    bar = f"{title} (slice)"
+                    self._bar_titles["slice"] = bar
+                    self._add_slice_mesh(sl, ACTOR_SLICE, field, cmap, clim, bar)
         if s.show_vectors:
             self._build_glyphs(org, np.asarray(normal), lo, hi, v_inf)
+
+    def _add_slice_mesh(self, sl: Any, actor: str, field: str, cmap: str, clim: tuple[float, float],
+                        bar: Optional[str], opacity: float = 0.92) -> None:
+        view = np.asarray(sl.point_data[field], dtype=float).copy()
+        if "solid" in sl.point_data:            # cut the body out of the slice
+            view[np.asarray(sl.point_data["solid"]) > 0] = np.nan
+        sl.point_data["slice_view"] = view
+        kw: dict[str, Any] = dict(scalar_bar_args=self._bar_args(bar, 2)) if bar else dict(show_scalar_bar=False)
+        self.plotter.add_mesh(sl, name=actor, scalars="slice_view", cmap=cmap, clim=clim,
+                              nan_color=PALETTE.bg_deep, opacity=opacity, lighting=False, reset_camera=False, **kw)
+
+    # -- slice sweep ----------------------------------------------------------
+    slice_position_changed = Signal(float)
+
+    def set_slice_sweep(self, on: bool) -> None:
+        """Animate the slice plane back and forth through the flow (the slice is switched on if needed)."""
+        if on and self._dataset is not None:
+            if not self.settings.show_slice:
+                self.settings = replace(self.settings, show_slice=True)
+            self._sweep_timer.start()
+        else:
+            self._sweep_timer.stop()
+
+    @property
+    def sweeping(self) -> bool:
+        return self._sweep_timer.isActive()
+
+    def _sweep_step(self) -> None:
+        if self._dataset is None or self._closed:
+            self._sweep_timer.stop()
+            return
+        lim = PARAM_LIMITS["slice_position"]
+        pos = self.settings.slice_position + self._sweep_dir * 0.03
+        if pos >= lim.maximum or pos <= lim.minimum:
+            self._sweep_dir = -self._sweep_dir
+            pos = float(np.clip(pos, lim.minimum, lim.maximum))
+        self.settings = replace(self.settings, slice_position=pos)
+        try:
+            self._build_slice()
+            self.plotter.render()
+        except Exception as exc:  # noqa: BLE001 - never take the viewport down
+            log.debug("Slice sweep stopped: %s", exc)
+            self._sweep_timer.stop()
+            return
+        self.slice_position_changed.emit(pos)
+
+    # -- export / camera ------------------------------------------------------
+    def export_vtk(self, path: str | Path) -> Path:
+        """Save the flow field, the surface (with Cp) and the traced streamlines as one VTK multiblock
+        (``.vtm``, opens in ParaView with each part as its own block)."""
+        if self._dataset is None:
+            raise RuntimeError("There is no flow result to export yet.")
+        out = Path(path).with_suffix(".vtm")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        mb = pv.MultiBlock()
+        mb["flow_field"] = self._dataset
+        if self._surface is not None:
+            mb["surface"] = self._surface
+        elif self._mesh is not None:
+            mb["surface"] = self._mesh
+        if self._lines is not None and self._lines.n_points:
+            mb["streamlines"] = self._lines
+        mb.save(str(out))
+        log.info("Flow field exported: %s", out)
+        return out
+
+    def camera_state(self) -> list[list[float]]:
+        """Camera position, focal point and view-up (JSON-friendly)."""
+        return [list(map(float, v)) for v in self.plotter.camera_position]
+
+    def set_camera_state(self, state: Any) -> None:
+        try:
+            self.plotter.camera_position = [tuple(float(x) for x in v) for v in state]
+            self.plotter.render()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Ignoring an invalid camera bookmark: %s", exc)
 
     def _build_glyphs(self, origin: np.ndarray, normal: np.ndarray, lo: np.ndarray, hi: np.ndarray,
                       v_inf: float) -> None:
@@ -969,6 +1083,20 @@ class CFDViewport(QWidget):
                 return
             array, level = "qcriterion", float(np.percentile(pos, 50.0 + 49.5 * s.iso_level))
             opacity, what = 0.85, "vortex cores"
+        elif kind is IsoField.LAMBDA2:
+            if "lambda2" not in pd:
+                self.status_message.emit("This result has no λ2 data (re-run the solve to compute it).")
+                return
+            l2 = np.asarray(pd["lambda2"], dtype=float)
+            if "solid" in pd:
+                l2 = l2[np.asarray(pd["solid"]) == 0]
+            neg = l2[l2 < 0.0]
+            if neg.size < 20:
+                self.status_message.emit("No significant vortex cores in this flow (try a higher angle of attack).")
+                return
+            # λ2 < 0 inside cores; the slider picks how strong a core must be to be drawn.
+            array, level = "lambda2", float(np.percentile(neg, 50.0 - 49.5 * s.iso_level))
+            opacity, what = 0.85, "vortex cores (λ2)"
         elif kind is IsoField.SPEED:
             array, level = "speed", float(v_inf * (0.5 + s.iso_level))
             opacity, what = 0.35, f"speed = {level:.1f} m/s"
@@ -1115,19 +1243,71 @@ class CFDViewport(QWidget):
             log.warning("Camera change failed: %s", exc)
 
     # -- export ----------------------------------------------------------------
-    def save_screenshot(self, path: str | Path, target_width: int = 3840) -> Path:
-        """Save a high-resolution PNG (rendered at an integer up-scale of the window to ≈4K)."""
+    def save_screenshot(self, path: str | Path, target_width: int = 3840, transparent: bool = False) -> Path:
+        """Save a high-resolution PNG (rendered at an integer up-scale of the window to ≈4K).
+
+        ``transparent``: no background and no floor - for slides and papers."""
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         width = max(self.plotter.width(), 1)
         scale = max(1, int(math.ceil(target_width / width)))
-        try:
-            self.plotter.screenshot(str(out), scale=scale, transparent_background=False)
-        except TypeError:
-            self.plotter.screenshot(str(out), transparent_background=False)
+        if transparent:
+            self._transparent_screenshot(out, scale)
+        else:
+            try:
+                self.plotter.screenshot(str(out), scale=scale, transparent_background=False)
+            except TypeError:
+                self.plotter.screenshot(str(out), transparent_background=False)
         log.info("Screenshot saved: %s", out)
         self.screenshot_saved.emit(str(out))
         return out
+
+    def _transparent_screenshot(self, out: Path, scale: int) -> None:
+        """PNG with a real alpha channel, by difference matting.
+
+        The Qt OpenGL surface has no alpha channel, so VTK's ``transparent_background`` cannot work here.
+        Instead the frame is rendered twice, on black and on white: where they agree the pixel is opaque;
+        where they differ, ``alpha = 1 - (white - black)`` and the colour is recovered from the black
+        render. This is exact for opaque and semi-transparent layers (slices, isosurfaces) alike."""
+        from PIL import Image
+
+        ren = self.plotter.renderer
+        gradient = bool(ren.GetGradientBackground())
+        bg = tuple(ren.GetBackground())
+        hidden = []
+        for name in (ACTOR_FLOOR, ACTOR_FLOOR_GRID):
+            actor = self.plotter.actors.get(name)
+            if actor is not None and actor.GetVisibility():
+                actor.SetVisibility(False)
+                hidden.append(actor)
+        ssao = self._ssao_on
+        if ssao:                                      # SSAO darkens the background differently per colour
+            self.plotter.disable_ssao()
+            self._ssao_on = False
+        shots = []
+        try:
+            ren.SetGradientBackground(False)
+            for colour in ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)):
+                ren.SetBackground(*colour)
+                self.plotter.render()                 # screenshot() alone may reuse the last frame
+                try:
+                    img = self.plotter.screenshot(None, scale=scale, return_img=True)
+                except TypeError:
+                    img = self.plotter.screenshot(None, return_img=True)
+                shots.append(np.asarray(img)[..., :3].astype(np.float32) / 255.0)
+        finally:
+            ren.SetBackground(*bg)
+            ren.SetGradientBackground(gradient)
+            for actor in hidden:
+                actor.SetVisibility(True)
+            if ssao:
+                self._apply_ssao(self.settings.ambient_occlusion)
+            self.plotter.render()
+        black, white = shots
+        alpha = np.clip(1.0 - (white - black).mean(axis=2), 0.0, 1.0)
+        rgb = np.where(alpha[..., None] > 1e-3, black / np.maximum(alpha[..., None], 1e-3), 0.0)
+        rgba = np.dstack([np.clip(rgb, 0.0, 1.0), alpha])
+        Image.fromarray((rgba * 255.0 + 0.5).astype(np.uint8), "RGBA").save(str(out))
 
     def grab_frame(self) -> np.ndarray:
         """Current frame as an RGB uint8 array."""
@@ -1157,6 +1337,10 @@ class CFDViewport(QWidget):
                 if progress:
                     progress(int(100 * (i + 1) / frames))
                 QApplication.processEvents()
+            if out.suffix.lower() == ".mp4":
+                self._write_mp4(out, images, fps)
+                log.info("Video saved: %s", out)
+                return out
             h, w = images[0].shape[:2]
             pil = [Image.fromarray(np.ascontiguousarray(im)) for im in images]
             if w > 960:  # keep GIFs shareable
@@ -1177,6 +1361,27 @@ class CFDViewport(QWidget):
                 self._start_animation()
         log.info("Animation saved: %s", out)
         return out
+
+    @staticmethod
+    def _write_mp4(out: Path, images: list[np.ndarray], fps: int) -> None:
+        """H.264 MP4 (plays everywhere; far smaller and sharper than a GIF). Needs imageio-ffmpeg."""
+        try:
+            import imageio.v2 as iio
+        except ImportError as exc:
+            raise RuntimeError("MP4 export needs imageio (pip install imageio imageio-ffmpeg).") from exc
+        h, w = images[0].shape[:2]
+        h2, w2 = h - h % 2, w - w % 2              # H.264 with yuv420p needs even dimensions
+        try:
+            writer = iio.get_writer(str(out), fps=fps, codec="libx264", quality=8, pixelformat="yuv420p",
+                                    macro_block_size=1)
+        except Exception as exc:  # noqa: BLE001 - imageio-ffmpeg missing
+            raise RuntimeError("MP4 export needs the imageio-ffmpeg package (run setup_windows.bat again, or "
+                               "pip install imageio-ffmpeg).") from exc
+        try:
+            for im in images:
+                writer.append_data(np.ascontiguousarray(im[:h2, :w2]))
+        finally:
+            writer.close()
 
     # -- Qt events -------------------------------------------------------------
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802

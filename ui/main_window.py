@@ -389,7 +389,13 @@ class MainWindow(QMainWindow):
         a(m_file, "Export polar CSV…", self.export_csv, "", "The last polar sweep as CSV")
         a(m_file, "Export run history CSV…", self._export_runs, "", "Every solve of this session as CSV")
         a(m_file, "Save screenshot…", self.screenshot_dialog, "Ctrl+S", "4K screenshot of the active view")
-        a(m_file, "Record animation (GIF)…", self.record_gif, "", "Rotating flow animation")
+        a(m_file, "Save screenshot (transparent background)…", lambda: self.screenshot_dialog(transparent=True),
+          "Ctrl+Shift+S", "4K PNG of the 3-D view without background or floor - for slides and papers")
+        a(m_file, "Record animation (MP4 / GIF)…", self.record_gif, "", "Rotating flow animation")
+        m_file.addSeparator()
+        a(m_file, "Export flow field (ParaView / VTK)…", self.export_vtk, "",
+          "Flow field, surface Cp and streamlines as a VTK multiblock (.vtm)")
+        a(m_file, "Open result in ParaView", self.open_in_paraview, "", "Export and open the result in ParaView")
         m_file.addSeparator()
         a(m_file, "Open data folder", lambda: self._open_folder(get_paths().root), "", "Logs, cases and exports")
         m_file.addSeparator()
@@ -411,6 +417,12 @@ class MainWindow(QMainWindow):
         for key, label in (("iso", "Isometric view"), ("front", "Front view"), ("top", "Top view"),
                            ("side", "Side view"), ("reset", "Reset camera")):
             a(m_view, label, lambda k=key: self.cfd_view.view(k))
+        m_bm = m_view.addMenu("Camera bookmarks")
+        for i in range(1, 4):
+            a(m_bm, f"Go to view {i}", lambda n=i: self._goto_bookmark(n), f"Alt+{i}")
+        m_bm.addSeparator()
+        for i in range(1, 4):
+            a(m_bm, f"Save current view as {i}", lambda n=i: self._save_bookmark(n), f"Ctrl+Alt+{i}")
         m_view.addSeparator()
         left = self.left_dock.toggleViewAction()
         left.setText("Controls panel")
@@ -478,6 +490,8 @@ class MainWindow(QMainWindow):
         p.abort_requested.connect(self.abort)
         p.engine_changed.connect(self._set_engine)
         p.visuals_changed.connect(self.cfd_view.update_settings)
+        p.slice_sweep_requested.connect(self._on_slice_sweep)
+        self.cfd_view.slice_position_changed.connect(p.show_slice_position)
         p.sweep_requested.connect(self.run_sweep)
         p.export_requested.connect(self._on_export)
         self.cfd_view.file_dropped.connect(self.load_file)
@@ -1113,10 +1127,13 @@ class MainWindow(QMainWindow):
         base = sanitize_filename(model.name if model else "aeroflow")
         return f"{base}_{time.strftime('%Y%m%d_%H%M%S')}{suffix}"
 
-    def screenshot_dialog(self) -> None:
-        """Save a screenshot of the active view (4K for the 3-D view, all three charts for the polar)."""
+    def screenshot_dialog(self, transparent: bool = False) -> None:
+        """Save a screenshot of the active view (4K for the 3-D view, all three charts for the polar).
+        ``transparent``: 3-D view without background or floor, for slides and papers."""
         if self._recording:
             return
+        if transparent and self.mode != AppMode.CFD:
+            self._set_mode(AppMode.CFD)
         path, _ = QFileDialog.getSaveFileName(self, "Save screenshot", str(get_paths().exports / self._default_name(".png")),
                                               "PNG image (*.png)")
         if not path:
@@ -1127,7 +1144,7 @@ class MainWindow(QMainWindow):
             elif self.mode == AppMode.LIVE:
                 self.lab_view.save_png(path)
             else:
-                self.cfd_view.save_screenshot(path)
+                self.cfd_view.save_screenshot(path, transparent=transparent)
             log.success("Screenshot saved: %s", path)
             self.notify(f"Screenshot saved: {Path(path).name}", "success")
         except Exception as exc:  # noqa: BLE001
@@ -1139,10 +1156,14 @@ class MainWindow(QMainWindow):
             return
         if self.mode != AppMode.CFD:
             self._set_mode(AppMode.CFD)
-        path, _ = QFileDialog.getSaveFileName(self, "Save animation", str(get_paths().exports / self._default_name(".gif")),
-                                              "Animated GIF (*.gif)")
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Save animation", str(get_paths().exports / self._default_name(".mp4")),
+            "MP4 video (*.mp4);;Animated GIF (*.gif)")
         if not path:
             return
+        if Path(path).suffix.lower() not in (".mp4", ".gif"):
+            path += ".gif" if "gif" in chosen.lower() else ".mp4"
+        video = Path(path).suffix.lower() == ".mp4"
         # The recorder pumps the event loop between frames, so block re-entrant user actions meanwhile.
         self._recording = True
         self.left_dock.setEnabled(False)
@@ -1150,7 +1171,9 @@ class MainWindow(QMainWindow):
         self.mode_switch.setEnabled(False)
         self.sb_progress.show()
         try:
-            self.cfd_view.record_gif(path, progress=lambda pct: self.sb_progress.setValue(int(pct * 10)))
+            # MP4 is cheap per frame: twice the frames at 30 FPS for a smooth 5-second turn.
+            self.cfd_view.record_gif(path, frames=150 if video else 72, fps=30 if video else 24,
+                                     progress=lambda pct: self.sb_progress.setValue(int(pct * 10)))
             log.success("Animation saved: %s", path)
             self.notify(f"Animation saved: {Path(path).name}", "success")
         except Exception as exc:  # noqa: BLE001
@@ -1161,6 +1184,93 @@ class MainWindow(QMainWindow):
             self.menu_bar.setEnabled(True)
             self.mode_switch.setEnabled(True)
             self._progress_done()
+
+    def _on_slice_sweep(self, on: bool) -> None:
+        if on and not self.cfd_view.has_result:
+            self._status("Run a simulation first - the slice sweeps through the flow result.")
+            self.cfd_panel.stop_slice_sweep()
+            return
+        self.cfd_view.update_settings(self.cfd_panel.visual_settings(), immediate=True)
+        self.cfd_view.set_slice_sweep(on)
+
+    # -- VTK / ParaView ------------------------------------------------------------
+    def export_vtk(self, open_after: bool = False) -> Optional[Path]:
+        """Save the current flow result as a VTK multiblock (.vtm) for ParaView / other post-processors."""
+        if not self.cfd_view.has_result:
+            self._status("Run a simulation first - there is no flow field to export.")
+            return None
+        if open_after:
+            path = str(get_paths().exports / self._default_name(".vtm"))
+        else:
+            path, _ = QFileDialog.getSaveFileName(self, "Export flow field", str(get_paths().exports /
+                                                                                self._default_name(".vtm")),
+                                                  "VTK multiblock (*.vtm)")
+            if not path:
+                return None
+        try:
+            out = self.cfd_view.export_vtk(path)
+        except Exception as exc:  # noqa: BLE001
+            self._error("Export failed", str(exc))
+            return None
+        log.success("Flow field exported: %s", out)
+        if not open_after:
+            self.notify(f"Flow field exported: {out.name}", "success")
+        return out
+
+    @staticmethod
+    def _find_paraview() -> Optional[str]:
+        import glob
+        import shutil
+
+        exe = shutil.which("paraview")
+        if exe:
+            return exe
+        for root in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("LOCALAPPDATA", "")):
+            hits = sorted(glob.glob(os.path.join(root, "ParaView*", "bin", "paraview.exe")))
+            if hits:
+                return hits[-1]                       # newest version (sorted by folder name)
+        return None
+
+    def open_in_paraview(self) -> None:
+        exe = self._find_paraview()
+        if exe is None:
+            ans = QMessageBox.question(self, "ParaView not found",
+                                       "ParaView (free, from Kitware) was not found on this PC.\n\n"
+                                       "Open the ParaView download page?")
+            if ans == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl("https://www.paraview.org/download/"))
+            return
+        out = self.export_vtk(open_after=True)
+        if out is None:
+            return
+        import subprocess
+
+        try:
+            subprocess.Popen([exe, str(out)], close_fds=True)  # noqa: S603 - local ParaView executable
+            self.notify("Opening the result in ParaView…", "info")
+        except OSError as exc:
+            self._error("Could not start ParaView", str(exc))
+
+    # -- camera bookmarks --------------------------------------------------------------
+    def _save_bookmark(self, n: int) -> None:
+        import json
+
+        self._settings().setValue(f"camera/bookmark{n}", json.dumps(self.cfd_view.camera_state()))
+        self._status(f"Camera view {n} saved (Alt+{n} to return to it).")
+
+    def _goto_bookmark(self, n: int) -> None:
+        import json
+
+        raw = self._settings().value(f"camera/bookmark{n}", "")
+        if not raw:
+            self._status(f"No view saved as {n} yet - use Ctrl+Alt+{n} to save the current view.")
+            return
+        if self.mode != AppMode.CFD:
+            self._set_mode(AppMode.CFD)
+        try:
+            self.cfd_view.set_camera_state(json.loads(str(raw)))
+        except ValueError:
+            self._status(f"Camera view {n} is damaged - save it again.")
 
     def export_csv(self) -> None:
         """Export the polar as CSV."""

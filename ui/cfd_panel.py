@@ -556,6 +556,11 @@ class CFDPanel(QWidget):
             self.cmap.addItem(c)
         self.cmap.currentIndexChanged.connect(self._visual_changed)
         card.add(labeled_row("Colour map", self.cmap))
+        self.t_lock = ToggleSwitch("Lock colour ranges", d.lock_ranges,
+                                   "Keep the current colour scales for new results and settings, so two runs (e.g. "
+                                   "two angles of attack) are compared on the same scale")
+        self.t_lock.toggled.connect(self._visual_changed)
+        card.add(self.t_lock)
         self.stream_scalar = QComboBox()
         for f in ScalarField:
             self.stream_scalar.addItem(f.value, f)
@@ -578,6 +583,17 @@ class CFDPanel(QWidget):
         self.slice_axis.set_index(list(SliceAxis).index(d.slice_axis))
         self.slice_axis.changed.connect(lambda _i: self._visual_changed())
         card.add(self.slice_axis)
+        self.t_three = ToggleSwitch("3 planes", d.slice_three,
+                                    "Three orthogonal slices (X, Y and Z) through the slice point at once")
+        self.t_three.toggled.connect(self._visual_changed)
+        self.btn_sweep_slice = button("Sweep", "ghost", "play",
+                                      "Animate the slice plane back and forth through the flow")
+        self.btn_sweep_slice.setCheckable(True)
+        self.btn_sweep_slice.toggled.connect(self._on_sweep_toggled)
+        row_s = QHBoxLayout()
+        row_s.addWidget(self.t_three)
+        row_s.addWidget(self.btn_sweep_slice)
+        card.add_layout(row_s)
         self.slice_scalar = QComboBox()
         for f in ScalarField:
             self.slice_scalar.addItem(f.value, f)
@@ -774,7 +790,24 @@ class CFDPanel(QWidget):
             ambient_occlusion=self.t_ao.isChecked(), show_iso=self.t_iso.isChecked(),
             show_volume=self.t_volume.isChecked(),
             iso_field=combo_enum(self.iso_field, IsoField) or IsoField.QCRITERION,
-            iso_level=v["iso_level"].value())
+            iso_level=v["iso_level"].value(), slice_three=self.t_three.isChecked(),
+            lock_ranges=self.t_lock.isChecked())
+
+    slice_sweep_requested = Signal(bool)
+
+    def _on_sweep_toggled(self, on: bool) -> None:
+        if on and not self.t_slice.isChecked():
+            self.t_slice.setChecked(True)          # sweeping needs the slice
+        self.btn_sweep_slice.setText("Stop" if on else "Sweep")
+        self.slice_sweep_requested.emit(on)
+
+    def show_slice_position(self, pos: float) -> None:
+        """Mirror the sweeping slice position in the slider without triggering a rebuild."""
+        self.vs["slice_position"].set_value(pos, emit=False)
+
+    def stop_slice_sweep(self) -> None:
+        if self.btn_sweep_slice.isChecked():
+            self.btn_sweep_slice.setChecked(False)
 
     def focus_polar(self) -> None:
         """Expand the polar card (Polar Analysis mode)."""

@@ -23,6 +23,23 @@ from numpy.typing import NDArray
 
 from config.settings import FlowConditions
 
+
+def lambda2_criterion(gradient: NDArray[Any], chunk: int = 200_000) -> NDArray[np.float32]:
+    """λ2 vortex criterion (Jeong & Hussain 1995) from the velocity gradient (N, 9), row-major du_i/dx_j.
+
+    λ2 is the middle eigenvalue of S² + Ω² (S, Ω: symmetric / antisymmetric parts of the gradient); a
+    vortex core is where λ2 < 0. Unlike Q it does not mark regions of pure shear near walls as vortices."""
+    g = np.asarray(gradient, dtype=np.float64).reshape(-1, 3, 3)
+    out = np.empty(len(g), dtype=np.float32)
+    for k in range(0, len(g), chunk):                 # bounded memory on big OpenFOAM meshes
+        j = g[k:k + chunk]
+        s = 0.5 * (j + j.transpose(0, 2, 1))
+        w = 0.5 * (j - j.transpose(0, 2, 1))
+        m = s @ s + w @ w
+        out[k:k + chunk] = np.linalg.eigvalsh(m)[:, 1]
+    out[~np.isfinite(out)] = 0.0
+    return out
+
 FloatArray = NDArray[np.float64]
 
 
@@ -168,10 +185,12 @@ class FlowField:
             return ds
         try:
             if "velocity" in ds.point_data:
-                d = ds.compute_derivative(scalars="velocity", gradient=False, vorticity=True, qcriterion=True)
+                d = ds.compute_derivative(scalars="velocity", gradient=True, vorticity=True, qcriterion=True)
                 for name in ("vorticity", "qcriterion"):
                     if name in d.point_data:
                         ds.point_data[name] = np.asarray(d.point_data[name], dtype=np.float32)
+                if "gradient" in d.point_data:
+                    ds.point_data["lambda2"] = lambda2_criterion(np.asarray(d.point_data["gradient"]))
                 if "vorticity" in ds.point_data:
                     ds.point_data["vorticity_mag"] = np.linalg.norm(
                         np.asarray(ds.point_data["vorticity"]), axis=1).astype(np.float32)

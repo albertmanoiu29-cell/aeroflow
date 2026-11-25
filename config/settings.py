@@ -155,6 +155,7 @@ class IsoField(str, Enum):
     """Quantity drawn as a 3-D isosurface in the wind-tunnel view."""
 
     QCRITERION = "Vortex cores (Q-criterion)"
+    LAMBDA2 = "Vortex cores (λ2 criterion)"
     SPEED = "Speed shell"
     WAKE = "Wake (total-pressure loss)"
 
