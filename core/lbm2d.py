@@ -554,6 +554,7 @@ class FlowLab2D:
         if mask.shape != (self.ny, self.nx):
             raise ValueError(f"mask shape {mask.shape} != grid {(self.ny, self.nx)}")
         self._drain()
+        self.reset_average()                      # a new body makes a new mean flow
         self._pull_from_gpu()                     # edit the current populations, not a stale host copy
         self._gpu_state_dirty = True
         mask = mask.copy()
@@ -588,6 +589,8 @@ class FlowLab2D:
 
     def set_reynolds(self, re: float) -> None:
         """Change the Reynolds number based on the reference length (applies immediately)."""
+        if abs(float(np.clip(re, 10.0, 1.0e6)) - getattr(self, "reynolds", -1.0)) > 1e-9:
+            self.reset_average()
         self.reynolds = float(np.clip(re, 10.0, 1.0e6))
         self._update_tau()
 
@@ -616,6 +619,7 @@ class FlowLab2D:
     def reset(self) -> None:
         """Restart from uniform flow (the obstacle is kept)."""
         self._drain()
+        self.reset_average()
         self._gpu_state_dirty = True
         u0 = 0.0
         self.f[:] = _feq_np(np.ones((self.ny, self.nx), np.float32), np.full((self.ny, self.nx), u0, np.float32),
@@ -708,6 +712,7 @@ class FlowLab2D:
             log.warning("Live Flow Lab diverged; restarting from uniform flow (try a lower Reynolds number).")
             self.reset()
             return done
+        self._accumulate_average(done)
         q = 0.5 * self.u_lattice ** 2 * self.ref_length * done
         self.cd = float(force[0] / q)
         self.cl = float(force[1] / q)
@@ -872,6 +877,46 @@ class FlowLab2D:
             self.px[dead] = self._rng.uniform(0.0, 2.0, k)
             self.py[dead] = self._rng.uniform(0.0, ny - 1.0, k)
             self.page[dead] = 0.0
+
+    # -- time averages -------------------------------------------------------
+    def reset_average(self) -> None:
+        """Start the time averages afresh (also done on reset / new body / new Reynolds number)."""
+        shape = (self.ny, self.nx)
+        self._avg_w = 0.0
+        self._sum_u = np.zeros(shape)
+        self._sum_v = np.zeros(shape)
+        self._sum_q = np.zeros(shape)            # u^2 + v^2
+
+    def _accumulate_average(self, weight: int) -> None:
+        if self._sum_u.shape != self.ux.shape:
+            self.reset_average()
+        w = float(weight)
+        self._sum_u += w * self.ux
+        self._sum_v += w * self.uy
+        self._sum_q += w * (self.ux.astype(np.float64) ** 2 + self.uy.astype(np.float64) ** 2)
+        self._avg_w += w
+
+    @property
+    def average_time(self) -> float:
+        """Convective time t* covered by the averages."""
+        return self._avg_w * self.u_lattice / max(self.ref_length, 1e-9)
+
+    def mean_speed(self) -> F32:
+        """|<u>| / U_inf: the time-averaged flow (the mean wake), from the last reset of the averages."""
+        if self._avg_w <= 0.0:
+            return self.speed()
+        mu, mv = self._sum_u / self._avg_w, self._sum_v / self._avg_w
+        return (np.sqrt(mu * mu + mv * mv) / self.u_lattice).astype(np.float32)
+
+    def rms_fluctuation(self) -> F32:
+        """sqrt(<|u'|^2>) / U_inf with u' = u - <u>: where the flow is unsteady (shedding, turbulence)."""
+        if self._avg_w <= 0.0:
+            return np.zeros_like(self.ux)
+        mu, mv = self._sum_u / self._avg_w, self._sum_v / self._avg_w
+        var = np.maximum(self._sum_q / self._avg_w - (mu * mu + mv * mv), 0.0)
+        out = (np.sqrt(var) / self.u_lattice).astype(np.float32)
+        out[self.solid] = 0.0
+        return out
 
     # -- derived fields ----------------------------------------------------
     def speed(self) -> F32:

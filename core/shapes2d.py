@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -32,6 +33,7 @@ class Obstacle2D(str, Enum):
     """Built-in obstacles for the Live Flow Lab (values double as UI labels)."""
 
     AIRFOIL = "NACA airfoil"
+    AIRFOIL_FILE = "Airfoil from file (.dat)"
     CYLINDER = "Circular cylinder"
     SQUARE = "Square cylinder"
     PLATE = "Flat plate"
@@ -42,7 +44,7 @@ class Obstacle2D(str, Enum):
 
 
 #: Shapes whose reference length is the chord (streamlined) rather than the diameter (bluff).
-STREAMLINED: frozenset[Obstacle2D] = frozenset({Obstacle2D.AIRFOIL, Obstacle2D.PLATE, Obstacle2D.ELLIPSE,
+STREAMLINED: frozenset[Obstacle2D] = frozenset({Obstacle2D.AIRFOIL, Obstacle2D.AIRFOIL_FILE, Obstacle2D.PLATE, Obstacle2D.ELLIPSE,
                                                 Obstacle2D.MODEL_SECTION})
 
 
@@ -71,6 +73,70 @@ def naca_outline(code: str = "0012", points: int = 120) -> FloatArray:
     from core.geometry_manager import naca4_loop
 
     return naca4_loop(parse_naca4(code), points)
+
+
+def read_airfoil_dat(path: str | Path) -> tuple[str, FloatArray]:
+    """Read an airfoil coordinate file (UIUC / XFOIL ``.dat``) -> ``(name, closed outline)``.
+
+    Both layouts are accepted: **Selig** (one loop, trailing edge -> upper surface -> leading edge ->
+    lower surface -> trailing edge) and **Lednicer** (a line with the point counts, then the upper and
+    the lower surface, each from the leading edge). The outline is normalised to unit chord with the
+    leading edge at the origin and the chord line along +x.
+
+    Raises:
+        ValueError: when the file holds no usable coordinates.
+    """
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"Cannot read {p.name}: {exc}") from exc
+    name, rows = "", []
+    for line in text.splitlines():
+        parts = line.replace(",", " ").split()
+        try:
+            if len(parts) >= 2:
+                rows.append((float(parts[0]), float(parts[1])))
+                continue
+        except ValueError:
+            pass
+        if not rows and line.strip() and not name:
+            name = line.strip()[:60]
+    if len(rows) < 8:
+        raise ValueError(f"{p.name} does not contain airfoil coordinates (x y per line).")
+    pts = np.asarray(rows, dtype=float)
+    c0, c1 = pts[0]
+    lednicer = (c0 > 1.5 and c1 > 1.5 and float(c0).is_integer() and float(c1).is_integer()
+                and int(c0) + int(c1) <= len(pts) - 1)
+    if lednicer:                                                  # counts, then upper and lower (LE -> TE)
+        nu, nl = int(c0), int(c1)
+        upper, lower = pts[1:1 + nu], pts[1 + nu:1 + nu + nl]
+        if len(upper) < 3 or len(lower) < 3:
+            raise ValueError(f"{p.name}: the Lednicer point counts do not match the data.")
+        loop = np.vstack([upper[::-1], lower[1:]])
+    else:
+        loop = pts
+    loop = loop[np.isfinite(loop).all(axis=1)]
+    keep = np.concatenate([[True], np.linalg.norm(np.diff(loop, axis=0), axis=1) > 1e-9])
+    loop = loop[keep]
+    if len(loop) < 8:
+        raise ValueError(f"{p.name} has too few distinct points.")
+    le = loop[int(np.argmin(loop[:, 0]))]
+    te = 0.5 * (loop[0] + loop[-1])
+    chord = te - le
+    c = float(np.hypot(*chord))
+    if c < 1e-9:
+        raise ValueError(f"{p.name}: could not find the chord (leading and trailing edge coincide).")
+    ang = -math.atan2(chord[1], chord[0])
+    rot = np.array([[math.cos(ang), -math.sin(ang)], [math.sin(ang), math.cos(ang)]])
+    out = ((loop - le) @ rot.T) / c
+    return (name or p.stem), out
+
+
+def airfoil_file_outline(path: str | Path) -> ShapeOutline:
+    """Outline (pivot at the quarter chord) from an airfoil ``.dat`` file."""
+    name, pts = read_airfoil_dat(path)
+    return ShapeOutline(polygon_segments(pts), (0.25, 0.0), name)
 
 
 def builtin_outline(kind: Obstacle2D, naca_code: str = "2412") -> ShapeOutline:

@@ -21,9 +21,10 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from config.theme import PALETTE, mono_font
 from core import gasdynamics as gd
+from core import compute
 from core.geometry_manager import GeometryModel
 from core.shapes2d import (
-    mesh_section, naca_outline, polygon_segments, rasterize_segments, transform_segments,
+    mesh_section, naca_outline, polygon_segments, rasterize_segments, read_airfoil_dat, transform_segments,
 )
 from core.supersonic import Supersonic2D
 
@@ -35,6 +36,7 @@ class SBody(str, Enum):
     DIAMOND = "Diamond airfoil"
     PLATE = "Flat plate"
     AIRFOIL = "NACA airfoil"
+    AIRFOIL_FILE = "Airfoil from file (.dat)"
     CYLINDER = "Cylinder (bow shock)"
     CAPSULE = "Blunt capsule"
     MODEL = "Section of the 3-D model"
@@ -58,6 +60,7 @@ SUPER_RESOLUTIONS: dict[str, tuple[int, int]] = {
     "Balanced (320 × 190)": (320, 190),
     "Detailed (440 × 260)": (440, 260),
     "Ultra (600 × 350)": (600, 350),
+    "Extreme (960 × 560, GPU)": (960, 560),
 }
 DEFAULT_SUPER_RESOLUTION = "Balanced (320 × 190)"
 #: Bodies with a sharp nose whose attached shocks follow oblique-shock theory.
@@ -77,8 +80,8 @@ class BodyGeometry:
     lower_deflection: Optional[float]
 
 
-def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[GeometryModel]
-                  ) -> tuple[Optional[np.ndarray], tuple[float, float], bool]:
+def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[GeometryModel],
+                  airfoil_file: str = "") -> tuple[Optional[np.ndarray], tuple[float, float], bool]:
     """Unit-chord outline segments, pivot, and whether it is blunt (diameter-referenced)."""
     t = math.tan(math.radians(half_angle))
     if body is SBody.WEDGE:
@@ -90,6 +93,13 @@ def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[Geo
         return polygon_segments(np.array([[0.0, -h], [1.0, -h], [1.0, h], [0.0, h]])), (0.5, 0.0), False
     if body is SBody.AIRFOIL:
         return polygon_segments(naca_outline(naca)), (0.25, 0.0), False
+    if body is SBody.AIRFOIL_FILE:
+        if not airfoil_file:
+            return None, (0.0, 0.0), False
+        try:
+            return polygon_segments(read_airfoil_dat(airfoil_file)[1]), (0.25, 0.0), False
+        except ValueError:
+            return None, (0.0, 0.0), False
     if body is SBody.CYLINDER:
         a = np.linspace(0.0, 2.0 * math.pi, 120, endpoint=False)
         return polygon_segments(np.column_stack([0.5 * np.cos(a), 0.5 * np.sin(a)])), (0.0, 0.0), True
@@ -109,9 +119,9 @@ def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[Geo
 
 
 def build_body(body: SBody, nx: int, ny: int, size: float, aoa: float, half_angle: float,
-               naca: str = "0012", model: Optional[GeometryModel] = None) -> BodyGeometry:
+               naca: str = "0012", model: Optional[GeometryModel] = None, airfoil_file: str = "") -> BodyGeometry:
     """Place a body in the tunnel: nose at ~22 % of the length, centred vertically."""
-    segs_u, pivot, blunt = _unit_outline(body, half_angle, naca, model)
+    segs_u, pivot, blunt = _unit_outline(body, half_angle, naca, model, airfoil_file)
     if segs_u is None:
         return BodyGeometry(np.zeros((ny, nx), bool), None, 1.0, (0.0, 0.0), None, None)
     if blunt:
@@ -234,6 +244,7 @@ class SupersonicView(QWidget):
         self.aoa = 0.0
         self.size = 1.0
         self.naca = "0012"
+        self.airfoil_file = ""
         self.field = SField.MACH
         self.cmap = "turbo"
         self.show_sonic = True
@@ -286,6 +297,8 @@ class SupersonicView(QWidget):
         if name not in SUPER_RESOLUTIONS or name == self.resolution:
             return
         self.resolution = name
+        if "GPU" in name and not compute.use_gpu(wait=False):
+            self.status_message.emit("The Extreme grid is meant for the GPU - on the CPU it runs very slowly.")
         m = self.solver.mach
         self.solver.finish_step()                # let a batch in flight finish before dropping the solver
         self.solver = Supersonic2D(*SUPER_RESOLUTIONS[name], mach=m)
@@ -313,7 +326,10 @@ class SupersonicView(QWidget):
 
     def rebuild_body(self, reset: bool = False) -> None:
         s = self.solver
-        g = build_body(self.body, s.nx, s.ny, self.size, self.aoa, self.half_angle, self.naca, self._model)
+        g = build_body(self.body, s.nx, s.ny, self.size, self.aoa, self.half_angle, self.naca, self._model,
+                       self.airfoil_file)
+        if self.body is SBody.AIRFOIL_FILE and g.segments is None:
+            self.status_message.emit("Load an airfoil coordinate file (.dat) for this body.")
         if self.body is SBody.MODEL and g.segments is None:
             self.status_message.emit("Load a 3-D model in the Wind Tunnel first (its mid-span section is used).")
         self.geometry = g

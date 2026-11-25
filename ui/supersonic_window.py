@@ -33,6 +33,7 @@ from core import gasdynamics as gd
 from core.geometry_manager import GeometryModel
 from ui.cfd_panel import AccordionCard, ToggleSwitch, button, compact_combo, labeled_row, scroll_wrap
 from ui.device_selector import DeviceSelector
+from ui.widgets2d import AirfoilFileRow
 from utils.validators import validate_naca_code
 from visualization.supersonic_view import (
     BLUNT_BODIES, DEFAULT_SUPER_RESOLUTION, SUPER_RESOLUTIONS, SBody, SField, SupersonicView,
@@ -202,6 +203,8 @@ class SupersonicWindow(QMainWindow):
         self.naca.editingFinished.connect(self._geometry_changed)
         h.addWidget(self.naca, 1)
         body.add(self.naca_row)
+        self.file_row = AirfoilFileRow(self._load_airfoil_file)
+        body.add(self.file_row)
         lay.addWidget(body)
 
         disp = AccordionCard("Display")
@@ -344,9 +347,16 @@ class SupersonicWindow(QMainWindow):
         self.half.setEnabled(b in (SBody.WEDGE, SBody.DIAMOND))
         self.aoa.setEnabled(b not in (SBody.CYLINDER,))
         self.naca_row.setVisible(b is SBody.AIRFOIL)
+        self.file_row.setVisible(b is SBody.AIRFOIL_FILE)
+
+    def _load_airfoil_file(self, path: str) -> None:
+        self.view.airfoil_file = path
+        self._geometry_changed()
 
     def _body_changed(self, *_a: object) -> None:
         self._sync_body_ui()
+        if self._selected_body() is SBody.AIRFOIL_FILE and not self.view.airfoil_file:
+            self.file_row.browse()
         self._apply_params()
         self.view.set_body(self._selected_body())
         self._refresh_all()

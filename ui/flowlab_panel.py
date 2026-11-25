@@ -21,6 +21,7 @@ from config.theme import PALETTE, make_icon, mono_font, set_property
 from core.shapes2d import Obstacle2D
 from ui.cfd_panel import AccordionCard, ParamSlider, ToggleSwitch, button, compact_combo, labeled_row
 from ui.device_selector import DeviceSelector
+from ui.widgets2d import AirfoilFileRow
 from utils.validators import validate_naca_code
 from visualization.flowlab_view import DEFAULT_RESOLUTION, LAB_COLORMAPS, LAB_RESOLUTIONS, FlowLabView, LabField
 
@@ -152,6 +153,8 @@ class FlowLabPanel(QWidget):
         self.naca_status.setProperty("role", "muted")
         h.addWidget(self.naca_status)
         card.add(self.naca_row)
+        self.file_row = AirfoilFileRow(self._load_airfoil_file)
+        card.add(self.file_row)
         self.aoa = ParamSlider(PARAM_LIMITS["lab_aoa"])
         self.aoa.valueChanged.connect(self.view.set_aoa)          # live while dragging
         card.add(self.aoa)
@@ -187,10 +190,14 @@ class FlowLabPanel(QWidget):
         tips = {LabField.SPEED: "How fast the air moves", LabField.VORTICITY: "How the air spins (vortices)",
                 LabField.PRESSURE: "Pressure coefficient: blue suction, red high pressure",
                 LabField.SMOKE: "Only the smoke streaks, like a real smoke tunnel",
-                LabField.TEXTURE: "Every streamline at once as a flowing texture (line-integral convolution)"}
+                LabField.TEXTURE: "Every streamline at once as a flowing texture (line-integral convolution)",
+                LabField.MEAN_SPEED: "Speed averaged over time since the last restart / change: the mean wake "
+                                     "that a wind-tunnel probe would measure",
+                LabField.RMS: "How much the velocity fluctuates: bright where vortices shed or the flow is "
+                              "turbulent, dark where it is steady"}
         for i, f in enumerate(LabField):
             self.field.addItem(f.value, f)
-            self.field.setItemData(i, tips[f], Qt.ItemDataRole.ToolTipRole)
+            self.field.setItemData(i, tips.get(f, ""), Qt.ItemDataRole.ToolTipRole)
         self.field.setCurrentIndex(list(LabField).index(LabField.VORTICITY))
         self.field.currentIndexChanged.connect(lambda i: self.view.set_field(list(LabField)[i]))
         card.add(labeled_row("Show", self.field, "Which property of the air is coloured"))
@@ -237,6 +244,7 @@ class FlowLabPanel(QWidget):
     def _sync_body_ui(self) -> None:
         k = self._selected_kind()
         self.naca_row.setVisible(k is Obstacle2D.AIRFOIL)
+        self.file_row.setVisible(k is Obstacle2D.AIRFOIL_FILE)
         self.section_note.setVisible(k is Obstacle2D.MODEL_SECTION)
         self.aoa.setEnabled(k not in (Obstacle2D.CYLINDER, Obstacle2D.EMPTY))
         self.size.setEnabled(k is not Obstacle2D.EMPTY)
@@ -256,7 +264,14 @@ class FlowLabPanel(QWidget):
             self.naca_status.setText("")
             set_property(self.naca_status, "level", "")
         self._sync_body_ui()
+        if k is Obstacle2D.AIRFOIL_FILE and not self.view.airfoil_file:
+            self.file_row.browse()                    # first time: ask for the file right away
+            return
         self.view.set_obstacle(k, code if k is Obstacle2D.AIRFOIL else None)
+
+    def _load_airfoil_file(self, path: str) -> None:
+        self.view.airfoil_file = path
+        self.view.set_obstacle(Obstacle2D.AIRFOIL_FILE)
 
     def toggle_run(self) -> None:
         if self.view.running:

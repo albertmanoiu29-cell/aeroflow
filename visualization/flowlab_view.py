@@ -25,9 +25,12 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from config.theme import PALETTE, hex_to_rgb, mono_font
+from core import compute
 from core.geometry_manager import GeometryModel
 from core.lbm2d import FlowLab2D, line_integral_convolution
-from core.shapes2d import STREAMLINED, Obstacle2D, ShapeOutline, build_mask, builtin_outline, mesh_section
+from core.shapes2d import (
+    STREAMLINED, Obstacle2D, ShapeOutline, airfoil_file_outline, build_mask, builtin_outline, mesh_section,
+)
 
 log = logging.getLogger("aeroflow.viz.flowlab")
 
@@ -40,6 +43,8 @@ class LabField(str, Enum):
     PRESSURE = "Pressure"
     SMOKE = "Smoke"
     TEXTURE = "Flow texture (LIC)"
+    MEAN_SPEED = "Mean speed (time-averaged)"
+    RMS = "Unsteadiness (RMS fluctuation)"
 
 
 #: (cells along x, cells along y) for each resolution preset.
@@ -48,6 +53,7 @@ LAB_RESOLUTIONS: dict[str, tuple[int, int]] = {
     "Balanced (400 × 160)": (400, 160),
     "Detailed (560 × 224)": (560, 224),
     "Ultra (720 × 288)": (720, 288),
+    "Extreme (1440 × 576, GPU)": (1440, 576),
 }
 DEFAULT_RESOLUTION = "Balanced (400 × 160)"
 LAB_COLORMAPS: tuple[str, ...] = ("turbo", "viridis", "inferno", "plasma", "cividis", "magma")
@@ -134,6 +140,7 @@ class FlowLabView(QWidget):
         self.resolution = DEFAULT_RESOLUTION
         self.kind = Obstacle2D.AIRFOIL
         self.naca = "2412"
+        self.airfoil_file = ""             # .dat path for Obstacle2D.AIRFOIL_FILE
         self.aoa = 8.0
         self.size = 1.0
         self.reynolds = 2000.0
@@ -190,6 +197,8 @@ class FlowLabView(QWidget):
         if name not in LAB_RESOLUTIONS or name == self.resolution:
             return
         self.resolution = name
+        if "GPU" in name and not compute.use_gpu(wait=False):
+            self.status_message.emit("The Extreme grid is meant for the GPU - on the CPU it runs very slowly.")
         self.lab.resize(*LAB_RESOLUTIONS[name])
         self._rebuild_obstacle()
         self.lab.set_reynolds(self.reynolds)
@@ -266,6 +275,16 @@ class FlowLabView(QWidget):
                 outline = mesh_section(self._model.vertices, self._model.faces)
             if outline is None:
                 self.status_message.emit("The 3-D model has no cross-section at mid-span — showing an empty tunnel.")
+        elif self.kind is Obstacle2D.AIRFOIL_FILE:
+            outline = None
+            if self.airfoil_file:
+                try:
+                    outline = airfoil_file_outline(self.airfoil_file)
+                except ValueError as exc:
+                    self.status_message.emit(str(exc))
+            if outline is None:
+                self.status_message.emit("Load an airfoil coordinate file (.dat) - showing a NACA 2412 meanwhile.")
+                outline = builtin_outline(Obstacle2D.AIRFOIL, "2412")
         else:
             try:
                 outline = builtin_outline(self.kind, self.naca)
@@ -385,6 +404,18 @@ class FlowLabView(QWidget):
             lo, hi = -1.5, 1.5
             lut = self._lut_for("icefire")
             legend = "Pressure Cp  blue = suction · red = high pressure"
+        elif f is LabField.MEAN_SPEED:
+            val = lab.mean_speed()
+            lo, hi = 0.0, 1.8
+            lut = self._lut_for(self.cmap)
+            legend = (f"Time-averaged speed  {lo:.1f} – {hi:.1f} × U∞   over {lab.average_time:.1f} t*  "
+                      "(the mean wake behind the unsteady flow)")
+        elif f is LabField.RMS:
+            val = lab.rms_fluctuation()
+            lo, hi = 0.0, 0.5
+            lut = self._lut_for("inferno")
+            legend = (f"RMS velocity fluctuation  0 – {hi:.1f} × U∞   over {lab.average_time:.1f} t*  "
+                      "(bright = vortex shedding / turbulence)")
         elif f is LabField.TEXTURE:
             val = lab.speed()
             lo, hi = 0.0, 1.8
