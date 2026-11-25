@@ -272,6 +272,39 @@ class SolverResult:
 # ---------------------------------------------------------------------------
 # Polar
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Stability:
+    """Longitudinal static stability (stick-fixed) about the moment reference point (taken as the CG).
+
+    Static margin = (x_np - x_cg) / c: positive means statically stable (a nose-up gust creates a
+    nose-down moment)."""
+
+    cl_alpha_per_deg: float
+    cm_alpha_per_deg: float
+    dcm_dcl: float
+    cm0: float
+    static_margin: float
+    x_neutral_point_m: float
+    x_moment_ref_m: float
+    alpha_trim_deg: float
+
+    @property
+    def stable(self) -> bool:
+        return self.static_margin > 0.0
+
+    def summary(self) -> str:
+        trim = "none in range" if math.isnan(self.alpha_trim_deg) else f"{self.alpha_trim_deg:.1f}°"
+        if abs(self.static_margin) < 0.005:
+            verdict = "neutral: the CG is at the neutral point"
+        elif self.stable:
+            verdict = "statically stable"
+        else:
+            verdict = "statically UNSTABLE: the CG is behind the neutral point"
+        return (f"CLα {self.cl_alpha_per_deg * 57.2958:.2f}/rad · Cmα {self.cm_alpha_per_deg * 57.2958:+.3f}/rad · "
+                f"static margin {100 * self.static_margin:+.1f} % c ({verdict}) · neutral point x = "
+                f"{self.x_neutral_point_m:.3f} m (CG {self.x_moment_ref_m:.3f} m) · trim α {trim}")
+
+
 @dataclass
 class PolarData:
     """Aerodynamic polar: coefficients versus angle of attack.
@@ -341,6 +374,37 @@ class PolarData:
                 t = cl[i] / (cl[i] - cl[i + 1])
                 return float(a[i] + t * (a[i + 1] - a[i]))
         return math.nan
+
+    def stability(self) -> Optional["Stability"]:
+        """Longitudinal static stability from the linear (attached-flow) part of the polar."""
+        a, cl, cm = self.alpha_deg, self.cl, self.cm
+        if len(a) < 3:
+            return None
+        # linear range: up to 60 % of the way from zero lift to CL,max on either side, at least 3 points
+        stall = self.alpha_stall_deg
+        sel = (a <= stall - 3.0) & (a >= min(-4.0, float(a.min())))
+        sel &= np.abs(cl) <= 0.85 * max(abs(self.cl_max), 1e-9)
+        if sel.sum() < 3:
+            sel = np.ones_like(a, dtype=bool)
+        if sel.sum() < 3 or np.ptp(a[sel]) < 1e-6:
+            return None
+        cla = float(np.polyfit(a[sel], cl[sel], 1)[0])          # per degree
+        cma = float(np.polyfit(a[sel], cm[sel], 1)[0])
+        cm0 = float(np.polyval(np.polyfit(cl[sel], cm[sel], 1), 0.0)) if np.ptp(cl[sel]) > 1e-9 else float("nan")
+        if abs(cla) < 1e-9:
+            return None
+        dcm_dcl = cma / cla
+        static_margin = -dcm_dcl                                  # fraction of the reference chord
+        x_np = float(self.moment_ref[0]) + static_margin * self.ref_length_m
+        trim = float("nan")
+        sgn = np.sign(cm)
+        cross = np.nonzero(np.diff(sgn) != 0)[0]
+        if cross.size:
+            k = int(cross[0])
+            trim = float(a[k] - cm[k] * (a[k + 1] - a[k]) / (cm[k + 1] - cm[k]))
+        return Stability(cl_alpha_per_deg=cla, cm_alpha_per_deg=cma, dcm_dcl=dcm_dcl, cm0=cm0,
+                         static_margin=static_margin, x_neutral_point_m=x_np, x_moment_ref_m=float(self.moment_ref[0]),
+                         alpha_trim_deg=trim)
 
     def cl_at(self, alpha_deg: float) -> float:
         """Linearly interpolated CL (clamped at the sweep ends)."""

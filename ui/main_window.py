@@ -1034,8 +1034,12 @@ class MainWindow(QMainWindow):
         summary = (f"CL,max {polar.cl_max:.3f} @ {polar.alpha_stall_deg:.1f}° · L/D max {polar.ld_max:.1f} @ "
                    f"{polar.alpha_best_ld_deg:.1f}° · α0 {'n/a' if math.isnan(za) else f'{za:.2f}°'} · "
                    f"Re {polar.reynolds:.2e}")
-        self.polar_headline.setText(summary)
-        self.cfd_panel.set_polar_summary(summary.replace(" · ", "\n"))
+        stab = polar.stability()
+        self.polar_headline.setText(summary + ("" if stab is None else "\n" + stab.summary()))
+        self.cfd_panel.set_polar_summary(summary.replace(" · ", "\n")
+                                         + ("" if stab is None else "\n" + stab.summary().replace(" · ", "\n")))
+        if stab is not None:
+            log.info("Stability: %s", stab.summary())
         log.success("Polar complete: %s", summary)
         self.notify(f"Polar complete — CL,max {polar.cl_max:.2f}, best L/D {polar.ld_max:.1f}", "success")
         self._status(f"Polar complete ({len(polar.alpha_deg)} points).")

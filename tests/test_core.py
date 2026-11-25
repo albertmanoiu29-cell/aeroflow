@@ -212,3 +212,19 @@ def test_derived_visual_fields(solver: InstantSolver, wing) -> None:
     assert float(cp0[~solid].min()) < 0.99                          # the (thin) wing wake loses total pressure
     assert (np.asarray(ds.point_data["qcriterion"]) > 0).any()      # tip / trailing vortex cores exist
     assert res.field.prepare_visual() is ds                         # cached
+
+
+def test_polar_stability_neutral_point() -> None:
+    """Cm = Cm0 - h*CL about the CG gives a static margin h (and a neutral point h*c behind the CG)."""
+    from core.results import PolarData
+
+    a = np.arange(-6.0, 14.0, 1.0)
+    cl = 0.1 * (a + 2.0)
+    polar = PolarData(alpha_deg=a, cl=cl, cd=0.02 + 0.05 * cl ** 2, cm=0.05 - 0.12 * cl, ref_length_m=2.0,
+                      moment_ref=(1.0, 0.0, 0.0))
+    st = polar.stability()
+    assert st is not None and st.stable
+    assert st.static_margin == pytest.approx(0.12, abs=1e-6)
+    assert st.x_neutral_point_m == pytest.approx(1.0 + 0.12 * 2.0, abs=1e-6)
+    assert st.cl_alpha_per_deg == pytest.approx(0.1, abs=1e-9)
+    assert st.alpha_trim_deg == pytest.approx(0.05 / 0.012 - 2.0, abs=0.05)   # Cm = 0 where CL = 0.05/0.12
