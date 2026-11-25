@@ -497,6 +497,7 @@ class MainWindow(QMainWindow):
         p.visuals_changed.connect(self.cfd_view.update_settings)
         p.slice_sweep_requested.connect(self._on_slice_sweep)
         p.probe_mode_changed.connect(self.cfd_view.set_probe_mode)
+        p.clear_seeds_requested.connect(self.cfd_view.clear_user_seeds)
         self.cfd_view.probe_line_ready.connect(self._show_line_probe)
         self.cfd_view.slice_position_changed.connect(p.show_slice_position)
         p.sweep_requested.connect(self.run_sweep)

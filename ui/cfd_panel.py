@@ -543,21 +543,29 @@ class CFDPanel(QWidget):
         self.t_vectors = ToggleSwitch("Arrows", d.show_vectors, "Velocity arrows on the slice plane showing flow direction")
         self.t_floor = ToggleSwitch("Floor grid", d.show_floor, "Wind-tunnel floor grid under the model")
         self.t_seeds = ToggleSwitch("Seed rake", d.show_seed_rake, "Show where the streamlines start")
+        self.t_oil = ToggleSwitch("Oil flow", d.show_oilflow,
+                                  "Surface oil-flow streaks: the direction of the air right at the skin - shows "
+                                  "attachment and separation lines and the tip roll-up")
         self.t_ao = ToggleSwitch("Shadows", d.ambient_occlusion,
                                  "Ambient occlusion: soft contact shadows (needs a recent GPU driver; paused while animating)")
         grid = QGridLayout()
         for i, t in enumerate((self.t_stream, self.t_particles, self.t_cp, self.t_slice, self.t_vectors,
-                               self.t_floor, self.t_seeds, self.t_ao)):
+                               self.t_floor, self.t_seeds, self.t_ao, self.t_oil)):
             grid.addWidget(t, i // 2, i % 2)
             t.toggled.connect(self._visual_changed)
         card.add_layout(grid)
-        self.probe = SegmentedControl(["No probe", "Point", "Line"],
+        self.probe = SegmentedControl(["Off", "Point", "Line", "Seed"],
                                       ["Normal mouse: rotate / zoom the view",
                                        "Click anywhere on the slice, a streamline or the model to read the local "
                                        "speed, Cp, total pressure and vorticity",
-                                       "Click two points to plot the flow along the line between them"])
-        self.probe.changed.connect(lambda i: self.probe_mode_changed.emit(("off", "point", "line")[i]))
-        card.add(labeled_row("Probe", self.probe, "Read flow values with the mouse"))
+                                       "Click two points to plot the flow along the line between them",
+                                       "Click on the slice or the model to release a bundle of streamlines from "
+                                       "that spot (e.g. at a wing tip to see the tip vortex)"])
+        self.probe.changed.connect(lambda i: self.probe_mode_changed.emit(("off", "point", "line", "seed")[i]))
+        card.add(labeled_row("Mouse tool", self.probe, "Probe the flow or place streamline seeds with the mouse"))
+        self.btn_clear_seeds = button("Clear seeds", "ghost", "", "Remove the streamlines placed with the Seed tool")
+        self.btn_clear_seeds.clicked.connect(self.clear_seeds_requested.emit)
+        card.add(self.btn_clear_seeds)
         self.cmap = QComboBox()
         for c in DEFAULT_COLORMAPS:
             self.cmap.addItem(c)
@@ -798,10 +806,12 @@ class CFDPanel(QWidget):
             show_volume=self.t_volume.isChecked(),
             iso_field=combo_enum(self.iso_field, IsoField) or IsoField.QCRITERION,
             iso_level=v["iso_level"].value(), slice_three=self.t_three.isChecked(),
+            show_oilflow=self.t_oil.isChecked(),
             lock_ranges=self.t_lock.isChecked())
 
     slice_sweep_requested = Signal(bool)
     probe_mode_changed = Signal(str)
+    clear_seeds_requested = Signal()
 
     def _on_sweep_toggled(self, on: bool) -> None:
         if on and not self.t_slice.isChecked():

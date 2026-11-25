@@ -58,6 +58,8 @@ ACTOR_VOLUME = "vortex_cloud"
 #: The three planes of the "three orthogonal slices" mode.
 ACTOR_SLICES_3 = ("slice_x", "slice_y", "slice_z")
 ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE = "probe_a", "probe_b", "probe_line"
+ACTOR_OIL = "oil_flow"
+ACTOR_USER_LINES = "user_streamlines"
 #: Solid colours of the three isosurface kinds (they overlay the colour-mapped layers).
 ISO_COLORS = {IsoField.QCRITERION: "#5EEAD4", IsoField.LAMBDA2: "#F472B6", IsoField.SPEED: "#FBBF24", IsoField.WAKE: "#A78BFA"}
 # Scalar-bar titles must be unique per layer: PyVista keys bars by title, so two layers sharing a title
@@ -140,6 +142,7 @@ class VisualSettings:
     iso_field: IsoField = IsoField.QCRITERION
     iso_level: float = PARAM_LIMITS["iso_level"].default
     slice_three: bool = False          # three orthogonal planes through the slice point instead of one
+    show_oilflow: bool = False         # surface oil-flow streaks on the body
     lock_ranges: bool = False          # keep the current colour ranges (fair comparisons between results)
 
     def clamped(self) -> "VisualSettings":
@@ -176,6 +179,7 @@ _DEPENDS: dict[str, tuple[str, ...]] = {
     "show_iso": ("iso",), "iso_field": ("iso",), "iso_level": ("iso",),
     "show_volume": ("volume",),
     "slice_three": ("slice",),
+    "show_oilflow": ("oilflow",),
     "lock_ranges": ("geometry", "streamlines", "slice"),
 }
 
@@ -430,6 +434,7 @@ class CFDViewport(QWidget):
         self.probe_label.setMargin(10)
         self.probe_label.hide()
         self._probe_mode = "off"
+        self._user_seeds: list[np.ndarray] = []      # click-placed streamline seed clusters
         self._probe_a: Optional[np.ndarray] = None
 
         self.settings = VisualSettings()
@@ -539,6 +544,7 @@ class CFDViewport(QWidget):
     def set_geometry(self, model: Optional[GeometryModel], reset_camera: bool = True) -> None:
         """Show a new geometry. Any previous flow result is cleared (it belonged to the old shape)."""
         self._model = model
+        self._user_seeds = []                              # seeds belonged to the previous shape
         self._mesh = model_polydata(model) if model is not None else None
         self._geo_poly, self._geo_mode = None, None        # a new mesh: never recolour the old actor
         self.clear_result(render=False, rebuild_geometry=False)
@@ -556,7 +562,7 @@ class CFDViewport(QWidget):
         self._lines = None
         self._particles = None
         for name in (ACTOR_STREAMLINES, ACTOR_PARTICLES, ACTOR_SLICE, ACTOR_GLYPHS, ACTOR_ISO, ACTOR_VOLUME,
-                     *ACTOR_SLICES_3, ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE):
+                     *ACTOR_SLICES_3, ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE, ACTOR_OIL, ACTOR_USER_LINES):
             self._remove(name)
         self._set_volume_on(False)
         for bar in _ALL_BARS:
@@ -581,7 +587,8 @@ class CFDViewport(QWidget):
             self._dataset = None
         self._surface = result.surface.to_pyvista() if result.surface is not None else None
         self.hud.update_kpis(result.kpis, result.engine)
-        self._rebuild({"geometry", "streamlines", "particles", "slice", "seeds", "iso", "volume"})
+        self._rebuild({"geometry", "streamlines", "particles", "slice", "seeds", "iso", "volume", "oilflow",
+                       "userlines"})
 
     @property
     def has_result(self) -> bool:
@@ -641,6 +648,10 @@ class CFDViewport(QWidget):
                 self._build_iso()
             if "volume" in layers:
                 self._build_volume()
+            if "oilflow" in layers:
+                self._build_oilflow()
+            if "userlines" in layers:
+                self._build_user_lines()
         except Exception as exc:  # a failed layer must never take the viewport down
             log.exception("Visualisation update failed: %s", exc)
             self.status_message.emit(f"Visualisation update failed: {exc}")
@@ -1028,7 +1039,7 @@ class CFDViewport(QWidget):
         for name in (ACTOR_PROBE, ACTOR_PROBE_B, ACTOR_PROBE_LINE):
             self._remove(name)
         self.probe_label.hide()
-        if mode in ("point", "line"):
+        if mode in ("point", "line", "seed"):
             try:
                 self.plotter.enable_point_picking(callback=self._on_pick, left_clicking=True, picker="cell",
                                                   show_message=False, show_point=False,
@@ -1037,8 +1048,10 @@ class CFDViewport(QWidget):
                 log.warning("Picking unavailable: %s", exc)
                 self.status_message.emit(f"Probing is not available: {exc}")
                 return
-            self.status_message.emit("Probe: click on the slice, a streamline or the model." if mode == "point"
-                                     else "Line probe: click the start point, then the end point.")
+            self.status_message.emit({"point": "Probe: click on the slice, a streamline or the model.",
+                                      "line": "Line probe: click the start point, then the end point.",
+                                      "seed": "Seed: click on the slice or the model to release streamlines "
+                                              "from that spot."}[mode])
         self.plotter.render()
 
     def _sample(self, points: np.ndarray) -> dict[str, np.ndarray]:
@@ -1069,7 +1082,9 @@ class CFDViewport(QWidget):
                 self.status_message.emit("Run a simulation first - the probe reads the flow result.")
             return
         p = np.asarray(point, dtype=float).reshape(3)
-        if self._probe_mode == "point":
+        if self._probe_mode == "seed":
+            self._add_user_seed(p)
+        elif self._probe_mode == "point":
             self._marker(ACTOR_PROBE, p, PALETTE.warning)
             s = self._sample(p[None, :])
             v_inf = self._result.field.freestream_ms if self._result is not None else 1.0
@@ -1116,6 +1131,86 @@ class CFDViewport(QWidget):
                 s["v_inf"] = np.array([self._result.field.freestream_ms if self._result is not None else 1.0])
                 self.probe_line_ready.emit(s)
         self.plotter.render()
+
+    # -- surface oil flow ---------------------------------------------------------
+    def _build_oilflow(self) -> None:
+        """Oil-flow pattern: streaks of the near-wall flow traced over the body surface.
+
+        The velocity is sampled just off the wall (along the outward normal), projected onto the
+        surface and integrated as surface streamlines from seeds spread over the body - like the
+        oil-paint streaks of a wind-tunnel test (attachment / separation lines, tip roll-up)."""
+        self._remove(ACTOR_OIL)
+        if not self.settings.show_oilflow or self._dataset is None or self._mesh is None:
+            return
+        base = self._surface if self._surface is not None else self._mesh
+        poly = base.compute_normals(point_normals=True, cell_normals=False, auto_orient_normals=True,
+                                    split_vertices=False)
+        nrm = np.asarray(poly.point_data["Normals"], dtype=float)
+        off = 0.012 * self._ref_length()
+        s = self._sample(np.asarray(poly.points) + off * nrm)
+        if "velocity" not in s:
+            self.status_message.emit("This result has no velocity field near the surface.")
+            return
+        v = np.nan_to_num(s["velocity"])
+        poly.point_data["wallflow"] = v - (v * nrm).sum(1)[:, None] * nrm
+        rng = np.random.default_rng(11)
+        n_seed = min(poly.n_points, 1600)
+        seeds = pv.PolyData(np.asarray(poly.points)[rng.choice(poly.n_points, n_seed, replace=False)])
+        try:
+            lines = poly.streamlines_from_source(seeds, vectors="wallflow", surface_streamlines=True,
+                                                 integration_direction="both", initial_step_length=0.5,
+                                                 step_unit="cl", max_steps=300,
+                                                 max_length=0.35 * self._ref_length(), compute_vorticity=False)
+        except TypeError:             # older PyVista: max_time instead of max_length
+            lines = poly.streamlines_from_source(seeds, vectors="wallflow", surface_streamlines=True,
+                                                 integration_direction="both", max_steps=300,
+                                                 max_time=0.35 * self._ref_length())
+        if lines is None or lines.n_points == 0:
+            self.status_message.emit("No oil-flow streaks could be traced on this surface.")
+            return
+        self.plotter.add_mesh(lines, name=ACTOR_OIL, color="#F8FAFC", opacity=0.85, line_width=1.3,
+                              lighting=False, pickable=False, reset_camera=False)
+
+    # -- user-seeded streamlines --------------------------------------------------
+    def _add_user_seed(self, p: np.ndarray) -> None:
+        """A small ball of seeds at ``p``; the bundle shows the path of the air through that spot."""
+        r = 0.02 * self._ref_length()
+        k = np.arange(14) + 0.5
+        phi, th = np.arccos(1 - 2 * k / 14), np.pi * (1 + 5 ** 0.5) * k
+        ball = np.column_stack([np.sin(phi) * np.cos(th), np.sin(phi) * np.sin(th), np.cos(phi)]) * r
+        self._user_seeds.append(p[None, :] + ball)
+        self._build_user_lines()
+
+    def clear_user_seeds(self) -> None:
+        self._user_seeds = []
+        self._remove(ACTOR_USER_LINES)
+        self.plotter.render()
+
+    def _build_user_lines(self) -> None:
+        self._remove(ACTOR_USER_LINES)
+        if not self._user_seeds or self._dataset is None:
+            return
+        ds = self._dataset
+        b = ds.bounds
+        diag = math.sqrt((b[1] - b[0]) ** 2 + (b[3] - b[2]) ** 2 + (b[5] - b[4]) ** 2)
+        src = pv.PolyData(np.vstack(self._user_seeds))
+        kw: dict[str, Any] = dict(vectors="velocity", integrator_type=45, integration_direction="both",
+                                  initial_step_length=0.2, step_unit="cl", min_step_length=0.02,
+                                  max_step_length=0.5, max_steps=12000, terminal_speed=1e-6, max_error=1e-6,
+                                  compute_vorticity=False)
+        try:
+            lines = ds.streamlines_from_source(src, max_length=2.0 * diag, **kw)
+        except TypeError:
+            lines = ds.streamlines_from_source(src, max_time=2.0 * diag, **kw)
+        if lines is None or lines.n_points == 0:
+            return
+        try:
+            tubes = lines.tube(radius=0.6 * self.settings.tube_radius * self._ref_length(), n_sides=10,
+                               capping=False)
+        except Exception:  # noqa: BLE001
+            tubes = lines
+        self.plotter.add_mesh(tubes, name=ACTOR_USER_LINES, color="#F472B6", smooth_shading=False,
+                              specular=0.3, pickable=False, reset_camera=False)
 
     # -- spanwise Cp sections ----------------------------------------------------
     def section_cp(self, fractions: list[float], show_cuts: bool = True) -> list[dict[str, Any]]:
