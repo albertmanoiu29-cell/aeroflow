@@ -84,6 +84,28 @@ class SolverCancelled(Exception):
     """Raised inside a solve when the cancel callback returns True."""
 
 
+def karman_tsien(cp0: FloatArray, mach: float) -> FloatArray:
+    """Kármán-Tsien compressibility correction of incompressible pressure coefficients.
+
+    ``Cp = Cp0 / (β + M²/(1+β) · Cp0/2)`` with ``β = sqrt(1 - M²)``. More accurate than Prandtl-Glauert
+    (``Cp0/β``) at high suction; valid below the critical Mach number. M < 0.05 returns ``cp0``."""
+    m = float(min(max(mach, 0.0), 0.95))
+    if m < 0.05:
+        return cp0
+    b = math.sqrt(1.0 - m * m)
+    den = b + (m * m / (1.0 + b)) * 0.5 * cp0
+    return cp0 / np.maximum(den, 0.25 * b)          # guard: the rule breaks down near Cp -> -2β(1+β)/M²
+
+
+def critical_cp(mach: float, gamma: float = 1.4) -> float:
+    """Pressure coefficient at which the local flow reaches Mach 1 (isentropic). -inf for M = 0."""
+    m = float(mach)
+    if m <= 1e-6:
+        return float("-inf")
+    g = gamma
+    return 2.0 / (g * m * m) * (((2.0 + (g - 1.0) * m * m) / (g + 1.0)) ** (g / (g - 1.0)) - 1.0)
+
+
 def _smoothstep(x: FloatArray | float) -> FloatArray | float:
     """Smooth 0 -> 1 ramp on [0, 1]."""
     t = np.clip(x, 0.0, 1.0)
@@ -669,6 +691,7 @@ class InstantSolver:
         vel -= ((vel * prep.nrm).sum(1))[:, None] * prep.nrm          # tangential surface velocity
         cp_pot = np.clip(1.0 - (vel * vel).sum(1), -8.0, 1.0)
         cp_pot = 0.5 * cp_pot + 0.5 * cp_pot[prep.nbr].mean(axis=1)   # damp discretisation noise
+        cp_pot = karman_tsien(cp_pot, cond.mach)          # thickness pressures at the flight Mach number
 
         vortex = self._vortex_lattice(prep, dhat, alpha, beta, cond.mach, s_ref, l_ref)
         zhat = np.array([0.0, 0.0, 1.0])
@@ -715,6 +738,11 @@ class InstantSolver:
             aspect_ratio=float(info.aspect_ratio), stalled=bool(stalled), stall_alpha_deg=float(a_stall_deg))
         if re < 5.0e4:
             warnings.append(f"Reynolds number {re:.1e} is very low; viscous estimates are rough.")
+        cp_star = critical_cp(cond.mach)
+        if cond.mach > 0.3 and float(cp_final.min()) < cp_star:
+            warnings.append(f"Local flow is supersonic (Cp min {float(cp_final.min()):.2f} < critical Cp "
+                            f"{cp_star:.2f} at M {cond.mach:.2f}): shocks form that this engine does not "
+                            "model - use the Supersonic Lab or a compressible solver.")
         return _Aero(kpis, dhat, lhat, sigma, cp_final, cp_pot, vortex, float(cd_f + cd_sep + cd_stall), warnings)
 
     @staticmethod

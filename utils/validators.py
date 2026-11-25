@@ -206,7 +206,9 @@ def validate_flow_conditions(conditions: FlowConditions) -> tuple[FlowConditions
     if mach > 0.85:
         result.warn(f"Mach {mach:.2f}: transonic/supersonic effects are not modelled by the Instant Engine.", "velocity")
     elif mach > 0.3:
-        result.warn(f"Mach {mach:.2f} exceeds 0.3: incompressible assumptions become approximate.", "velocity")
+        result.warn(f"Mach {mach:.2f}: compressibility corrections are applied (Prandtl-Glauert lift, "
+                    "Kármán-Tsien surface pressures); they hold until the flow turns locally supersonic.",
+                    "velocity")
     return safe_conditions, result
 
 
