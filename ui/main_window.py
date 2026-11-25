@@ -450,6 +450,8 @@ class MainWindow(QMainWindow):
         a(m_sim, "Abort", self.abort, "Esc", "Stop the running solve or sweep")
         a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
           "Sweep sideslip, speed (Reynolds / Mach), altitude or angle of attack and plot CL, CD, CM, L/D")
+        a(m_sim, "Grid convergence check…", self.grid_check, "",
+          "Solve on the Coarse, Medium and Fine grids: Richardson extrapolation and the grid convergence index")
         m_sim.addSeparator()
         a(m_sim, "Use Instant Aero Engine", lambda: self._set_engine(SolverEngine.INSTANT))
         a(m_sim, "Use OpenFOAM", lambda: self._set_engine(SolverEngine.OPENFOAM))
@@ -1236,6 +1238,31 @@ class MainWindow(QMainWindow):
         dlg = SectionCpDialog(self.cfd_view, self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.show()
+
+    def grid_check(self) -> None:
+        model = self.geometry_mgr.model
+        if model is None:
+            self._status("Load or generate a geometry first.")
+            return
+        from ui.workers import GridCheckWorker
+
+        self._status("Grid convergence check: solving on three grids…")
+        self.tasks.start(GridCheckWorker(self.solver, model, self.cfd_panel.conditions()),
+                         on_result=self._on_grid_check, on_error=lambda m, tb: self._error("Grid check failed", m),
+                         on_progress=self._progress, on_finished=self._progress_done)
+
+    def _on_grid_check(self, text: str) -> None:
+        log.info("Grid convergence check:
+%s", text)
+        box = QMessageBox(self)
+        box.setWindowTitle("Grid convergence check")
+        box.setText("Instant Aero Engine, current flow conditions.")
+        box.setInformativeText(text + "
+
+GCI: estimated relative uncertainty of the fine-grid value "
+                               "(Roache / Celik et al. 2008). The Instant engine's resolution is the number of surface "
+                               "elements.")
+        box.exec()
 
     def open_param_study(self) -> None:
         model = self.geometry_mgr.model

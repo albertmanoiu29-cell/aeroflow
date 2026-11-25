@@ -374,3 +374,20 @@ class TaskManager(QObject):
         if not done:
             log.warning("Some background tasks did not stop within %d ms.", timeout_ms)
         return done
+
+
+class GridCheckWorker(BaseWorker):
+    """Grid convergence check (Instant engine on three grids). Result: report text."""
+
+    title = "Grid convergence check"
+
+    def __init__(self, solver: InstantSolver, model: GeometryModel, conditions: FlowConditions) -> None:
+        super().__init__()
+        self.solver, self.model, self.conditions = solver, model, conditions
+
+    def work(self) -> Any:
+        from core.convergence import describe, grid_check
+
+        results, sizes = grid_check(self.solver, self.model, self.conditions,
+                                    progress=lambda k, q: self.report(k / 3.0, f"Solving on the {q} grid"))
+        return describe(results, sizes)
