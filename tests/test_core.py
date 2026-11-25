@@ -281,7 +281,7 @@ def test_main_window_imports() -> None:
     """Guards against syntax errors in the UI modules (the other tests do not import them)."""
     import importlib
 
-    for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog",
+    for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel"):
         importlib.import_module(mod)
 

@@ -465,6 +465,10 @@ class MainWindow(QMainWindow):
         a(m_sim, "Abort", self.abort, "Esc", "Stop the running solve or sweep")
         a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
           "Sweep sideslip, speed (Reynolds / Mach), altitude or angle of attack and plot CL, CD, CM, L/D")
+        a(m_sim, "Pin result for comparison", self.pin_result, "",
+          "Remember the current result as 'A' to compare later results against")
+        a(m_sim, "Compare with pinned result…", self.compare_results, "Ctrl+Shift+K",
+          "Side-by-side 3-D views (linked cameras), coefficient differences and a ΔCp surface")
         a(m_sim, "Grid convergence check…", self.grid_check, "",
           "Solve on the Coarse, Medium and Fine grids: Richardson extrapolation and the grid convergence index")
         m_sim.addSeparator()
@@ -1354,6 +1358,30 @@ class MainWindow(QMainWindow):
         self.cfd_panel.apply_units()
         if self.result is not None:
             self.cfd_view.hud.update_kpis(self.result.kpis, self.result.engine)
+
+    _pinned_result: Optional[tuple[GeometryModel, SolverResult]] = None
+
+    def pin_result(self) -> None:
+        model = self.geometry_mgr.model
+        if self.result is None or model is None:
+            self._status("Run a simulation first - there is no result to pin.")
+            return
+        self._pinned_result = (model, self.result)
+        self.notify("Result pinned as A - change something, solve, then Simulation ▸ Compare.", "info")
+
+    def compare_results(self) -> None:
+        model = self.geometry_mgr.model
+        if self._pinned_result is None:
+            self._status("Pin a result first (Simulation ▸ Pin result for comparison).")
+            return
+        if self.result is None or model is None:
+            self._status("Run a simulation to compare against the pinned result.")
+            return
+        from ui.compare import CompareWindow
+
+        win = CompareWindow(self._pinned_result[0], self._pinned_result[1], model, self.result, self)
+        win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        win.show()
 
     def open_section_cp(self) -> None:
         if not self.cfd_view.has_result:

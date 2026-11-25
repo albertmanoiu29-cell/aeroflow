@@ -768,14 +768,14 @@ class CFDViewport(QWidget):
         mode = self._geometry_mode()
         scalar = self.settings.surface_scalar
         if mode == "cp" and scalar not in self._surface.point_data:
-            if scalar != "Cp":
+            if scalar not in ("Cp", "dCp"):
                 self.status_message.emit(f"This result has no {SURFACE_LABELS.get(scalar, scalar)} data "
                                          "(OpenFOAM results only) - showing Cp.")
             scalar = "Cp"
         if mode == "cp" and scalar == "Cp" and self._update_surface_cp(np.asarray(self._surface.point_data["Cp"])):
             return                                        # same mesh, new pressures: no rebuild needed
         self._remove(ACTOR_GEOMETRY)
-        for bar in (BAR_CP, BAR_CF, BAR_YPLUS):
+        for bar in (BAR_CP, BAR_CF, BAR_YPLUS, "dCp (B-A)"):
             self._remove_bar(bar)
         self._geo_poly, self._geo_mode = None, None
         if mode is None:
@@ -783,7 +783,15 @@ class CFDViewport(QWidget):
         # Normals are computed once here, so add_mesh needs no smooth_shading pass of its own.
         src = self._surface if mode == "cp" else self._mesh
         poly = src.compute_normals(cell_normals=False, split_vertices=False, auto_orient_normals=False)
-        if mode == "cp" and scalar != "Cp":
+        if mode == "cp" and scalar == "dCp":
+            d = np.asarray(poly.point_data["dCp"], dtype=float)
+            m = float(np.percentile(np.abs(d[np.isfinite(d)]), 99.0)) if np.isfinite(d).any() else 1.0
+            self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars="dCp", cmap=CP_CMAP, clim=(-max(m, 1e-6), max(m, 1e-6)),
+                                  smooth_shading=False, interpolation="phong", specular=0.35, specular_power=30,
+                                  scalar_bar_args=self._bar_args(BAR_CP, 0) | {"title": "dCp (B-A)"},
+                                  reset_camera=False)
+            self._bar_titles["geometry_d"] = "dCp (B-A)"
+        elif mode == "cp" and scalar != "Cp":
             vals = np.asarray(poly.point_data[scalar], dtype=float)
             hi = float(np.percentile(vals[np.isfinite(vals)], 99.0)) if np.isfinite(vals).any() else 1.0
             self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars=scalar,
