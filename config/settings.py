@@ -149,6 +149,7 @@ class ScalarField(str, Enum):
     PRESSURE = "Pressure coefficient"
     VORTICITY = "Vorticity (swirl)"
     TOTAL_PRESSURE = "Total pressure (wake)"
+    MACH = "Mach number (compressible OpenFOAM)"
 
 
 class IsoField(str, Enum):

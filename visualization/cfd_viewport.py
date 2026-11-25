@@ -706,6 +706,11 @@ class CFDViewport(QWidget):
                 a = a[np.asarray(pd["solid"]) == 0]
             return a[np.isfinite(a)]
 
+        if field is ScalarField.MACH and "Mach" in pd:
+            def mach() -> tuple[float, float]:
+                v = vals("Mach")
+                return (0.0, max(float(np.percentile(v, 99.5)) if v.size else 1.0, 0.05))
+            return "Mach", "turbo", self._lock("Mach", mach), "Mach"
         if field is ScalarField.PRESSURE and "Cp" in pd:
             return "Cp", CP_CMAP, self._lock("Cp", lambda: cp_clim(vals("Cp"))), "Cp"
         if field is ScalarField.VORTICITY and "vorticity_mag" in pd:

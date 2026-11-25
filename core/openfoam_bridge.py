@@ -321,6 +321,7 @@ class CaseSettings:
     n_procs: int = 1
     write_interval: int = OPENFOAM.write_interval
     boundary_layers: Optional[int] = None      # prism layers on the body (None: the quality preset's value)
+    compressible: bool = False                 # perfect-gas air (fluid / rhoSimpleFoam) instead of incompressible
 
 
 @dataclass(frozen=True)
@@ -423,6 +424,13 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
             "0/omega": _field_turb(layout, "omega", "[0 0 -1 0 0 0 0]", omega_in, "omegaWallFunction"),
             "0/nut": _field_nut(layout),
         }
+        if settings.compressible:
+            phys = _cmp_physical(atm.dynamic_viscosity)
+            files.update({"constant/physicalProperties": phys, "constant/thermophysicalProperties": phys,
+                          "0/U": _cmp_u(layout), "system/fvSchemes": _cmp_fv_schemes(),
+                          "system/fvSolution": _cmp_fv_solution(), "system/fvConstraints": _cmp_fv_constraints()})
+            files.update(_cmp_fields(atm.pressure_pa, atm.temperature_k))
+            files.pop("constant/transportProperties", None)
         for rel, text in files.items():
             (case_dir / rel).write_text(text, encoding="utf-8")
         (case_dir / "case.foam").write_text("", encoding="utf-8")
@@ -664,8 +672,11 @@ def _control_dict(c: CaseLayout, info: GeometryInfo, cond: FlowConditions, s: Ca
     lift_dir = (-math.sin(a), 0.0, math.cos(a))
     iters = int(max(10, s.iterations))
     write = int(max(1, min(s.write_interval, iters)))
-    return _header("dictionary", "controlDict") + f"""application     simpleFoam;
-solver          incompressibleFluid;
+    application = "rhoSimpleFoam" if s.compressible else "simpleFoam"
+    solver = "fluid" if s.compressible else "incompressibleFluid"
+    rho_line = "rho             rho;" if s.compressible else "rho             rhoInf;"
+    return _header("dictionary", "controlDict") + f"""application     {application};
+solver          {solver};
 
 startFrom       latestTime;
 startTime       0;
@@ -692,7 +703,7 @@ functions
         writeInterval   1;
         log             yes;
         patches         ("body.*");
-        rho             rhoInf;
+        {rho_line}
         rhoInf          {c.rho:.9g};
         CofR            {_vec(info.moment_ref_point)};
         dragDir         {_vec(drag_dir)};
@@ -968,6 +979,175 @@ boundaryField
 """
 
 
+# ---------------------------------------------------------------------------
+# Compressible (perfect-gas air) case files - modelled on OpenFOAM's aerofoilNACA0012Steady tutorial
+# ---------------------------------------------------------------------------
+_FAR = '"(inlet|outlet|tunnelWalls)"'
+
+
+def _cmp_physical(mu: float) -> str:
+    return _header("dictionary", "physicalProperties") + f"""thermoType
+{{
+    type            hePsiThermo;
+    mixture         pureMixture;
+    transport       const;
+    thermo          hConst;
+    equationOfState perfectGas;
+    specie          specie;
+    energy          sensibleEnthalpy;
+}}
+
+mixture
+{{
+    specie          {{ molWeight 28.9; }}
+    thermodynamics  {{ Cp 1005; Hf 0; hf 0; }}
+    transport       {{ mu {mu:.6g}; Pr 0.71; }}
+}}
+"""
+
+
+def _cmp_u(c: CaseLayout) -> str:
+    u = _vec(c.freestream)
+    return _header("volVectorField", "U", "0") + f"""dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform {u};
+
+boundaryField
+{{
+    {_FAR}
+    {{
+        type            freestreamVelocity;
+        freestreamValue uniform {u};
+        value           uniform {u};
+    }}
+    "body.*"
+    {{
+        type            noSlip;
+    }}
+}}
+"""
+
+
+def _cmp_scalar(name: str, dims: str, value: float, far: str, wall: str) -> str:
+    return _header("volScalarField", name, "0") + f"""dimensions      {dims};
+
+internalField   uniform {value:.9g};
+
+boundaryField
+{{
+    {_FAR}
+    {{
+{far}
+    }}
+    "body.*"
+    {{
+{wall}
+    }}
+}}
+"""
+
+
+def _cmp_fields(p_inf: float, t_inf: float) -> dict[str, str]:
+    return {
+        "0/p": _cmp_scalar("p", "[1 -1 -2 0 0 0 0]", p_inf,
+                           f"        type            freestreamPressure;\n        freestreamValue uniform {p_inf:.9g};\n"
+                           f"        value           uniform {p_inf:.9g};",
+                           "        type            zeroGradient;"),
+        "0/T": _cmp_scalar("T", "[0 0 0 1 0 0 0]", t_inf,
+                           f"        type            inletOutlet;\n        inletValue      uniform {t_inf:.9g};\n"
+                           f"        value           uniform {t_inf:.9g};",
+                           "        type            zeroGradient;"),
+        "0/alphat": _cmp_scalar("alphat", "[1 -1 -1 0 0 0 0]", 0.0,
+                                "        type            calculated;\n        value           uniform 0;",
+                                "        type            compressible::alphatWallFunction;\n"
+                                "        value           uniform 0;"),
+    }
+
+
+def _cmp_fv_schemes() -> str:
+    return _header("dictionary", "fvSchemes") + """ddtSchemes      { default steadyState; }
+
+gradSchemes
+{
+    default         Gauss linear;
+    limited         cellLimited Gauss linear 1;
+    grad(U)         $limited;
+    grad(k)         $limited;
+    grad(omega)     $limited;
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind limited;
+    energy          bounded Gauss linearUpwind limited;
+    div(phi,h)      $energy;
+    div(phi,e)      $energy;
+    div(phi,K)      $energy;
+    div(phi,Ekp)    $energy;
+    turbulence      bounded Gauss upwind;
+    div(phi,k)      $turbulence;
+    div(phi,omega)  $turbulence;
+    div(((rho*nuEff)*dev2(T(grad(U)))))    Gauss linear;
+}
+
+laplacianSchemes      { default Gauss linear corrected; }
+interpolationSchemes  { default linear; }
+snGradSchemes         { default corrected; }
+wallDist              { method meshWave; }
+"""
+
+
+def _cmp_fv_solution() -> str:
+    # PIMPLE (OpenFOAM.org modular 'fluid' solver, steady via steadyState ddt) and SIMPLE (ESI rhoSimpleFoam)
+    return _header("dictionary", "fvSolution") + """solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        DIC;
+        tolerance       1e-8;
+        relTol          0.01;
+    }
+    "(U|k|omega|h|e)"
+    {
+        solver          PBiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-10;
+        relTol          0.1;
+    }
+}
+
+PIMPLE
+{
+    nNonOrthogonalCorrectors 0;
+    residualControl { p 1e-6; U 1e-5; "(k|omega|h)" 1e-5; }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors 0;
+    transonic       no;
+    consistent      no;
+    pMinFactor      0.1;
+    pMaxFactor      2;
+    residualControl { p 1e-6; U 1e-5; "(k|omega|h|e)" 1e-5; }
+}
+
+relaxationFactors
+{
+    fields          { p 0.3; rho 0.01; }
+    equations       { U 0.7; h 0.7; e 0.7; "(k|omega)" 0.7; }
+}
+"""
+
+
+def _cmp_fv_constraints() -> str:
+    return _header("dictionary", "fvConstraints") + """#includeConstraint limitPressure(minFactor=0.1, maxFactor=2)
+#includeConstraint limitTemperature(min=101, max=1000)
+"""
+
+
 def _field_nut(c: CaseLayout) -> str:
     lateral = "        type            slip;" if c.lateral_type == "slip" else \
         "        type            calculated;\n        value           uniform 0;"
@@ -1118,9 +1298,12 @@ class OpenFOAMRunner:
             return argv
         raise OpenFOAMError("OpenFOAM is not available.")
 
-    def _stages(self, n_procs: int) -> list[_Stage]:
+    def _stages(self, n_procs: int, compressible: bool = False) -> list[_Stage]:
         """Pipeline for the detected flavour."""
-        solver = "foamRun -solver incompressibleFluid" if self.env.uses_foam_run else "simpleFoam"
+        if compressible:
+            solver = "foamRun -solver fluid" if "foamRun" in self.env.executables else "rhoSimpleFoam"
+        else:
+            solver = "foamRun -solver incompressibleFluid" if self.env.uses_foam_run else "simpleFoam"
         stages = [
             _Stage("Generating background mesh (blockMesh)", "blockMesh", 0.03, "blockMesh"),
             _Stage("Extracting surface features", self.env.feature_command, 0.02, "features"),
@@ -1150,7 +1333,7 @@ class OpenFOAMRunner:
         self._case_dir = case_dir
         report = RunReport(case_dir=case_dir, success=False)
         t0 = time.perf_counter()
-        stages = self._stages(settings.n_procs)
+        stages = self._stages(settings.n_procs, settings.compressible)
         mesh_names = {"blockMesh", "features", "snappyHexMesh", "checkMesh"}
         if mesh_only:
             stages = [s for s in stages if s.log_name in mesh_names]
@@ -1463,6 +1646,9 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
     cond, _ = validate_flow_conditions(settings.conditions)
     v_inf = max(cond.velocity_ms, 1e-9)
     q_kin = 0.5 * v_inf * v_inf
+    # Incompressible: p is kinematic gauge pressure (p/rho). Compressible: absolute pressure in Pa.
+    p_ref = cond.atmosphere.pressure_pa if settings.compressible else 0.0
+    q_p = 0.5 * cond.atmosphere.density * v_inf * v_inf if settings.compressible else q_kin
     if "U" not in internal.point_data and "U" in internal.cell_data:
         internal = internal.cell_data_to_point_data()
     if "U" not in internal.point_data:
@@ -1472,7 +1658,12 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
     internal.point_data["speed"] = np.linalg.norm(vel, axis=1).astype(np.float32)
     p = np.asarray(internal.point_data["p"], dtype=np.float32) if "p" in internal.point_data else \
         np.zeros(internal.n_points, np.float32)
-    internal.point_data["Cp"] = (p / q_kin).astype(np.float32)
+    internal.point_data["Cp"] = ((p - p_ref) / q_p).astype(np.float32)
+    if "T" not in internal.point_data and "T" in internal.cell_data:
+        internal = internal.cell_data_to_point_data()
+    if "T" in internal.point_data:                    # local Mach number (perfect-gas air)
+        t = np.maximum(np.asarray(internal.point_data["T"], dtype=np.float32), 1.0)
+        internal.point_data["Mach"] = (internal.point_data["speed"] / np.sqrt(1.4 * 287.05 * t)).astype(np.float32)
     internal.set_active_vectors("velocity")
 
     surface: Optional[SurfaceField] = None
@@ -1481,9 +1672,10 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
         surface = _surface_from_block(merged)
         if surface is not None:
             extra = {"yPlus": surface.extra["yPlus"]} if "yPlus" in surface.extra else {}
-            if "wss" in surface.extra:
-                extra["Cf"] = (surface.extra["wss"] / q_kin).astype(np.float32)     # skin-friction coefficient
-            surface = SurfaceField(surface.vertices, surface.faces, (surface.cp / q_kin).astype(np.float32), extra)
+            if "wss" in surface.extra:                 # kinematic (incompressible) or Pa (compressible)
+                extra["Cf"] = (surface.extra["wss"] / q_p).astype(np.float32)        # skin-friction coefficient
+            surface = SurfaceField(surface.vertices, surface.faces, ((surface.cp - p_ref) / q_p).astype(np.float32),
+                                   extra)
 
     info = model.info
     atm = cond.atmosphere

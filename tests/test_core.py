@@ -315,3 +315,30 @@ def test_project_round_trip(tmp_path) -> None:
         zf.writestr("geometry.stl", b"")
     with pytest.raises(ProjectError, match="newer"):
         load_project(newer, tmp_path / "scratch")
+
+
+def test_openfoam_compressible_case_files(tmp_path) -> None:
+    from config.settings import FlowConditions, GeometryPreset, GridQuality
+    from core import openfoam_bridge as ob
+    from core.geometry_manager import build_preset
+
+    m = build_preset(GeometryPreset.NACA_0012)
+    m = getattr(m, "model", m)
+    st = ob.CaseSettings(conditions=FlowConditions(velocity_ms=200.0, altitude_m=5000.0), quality=GridQuality.COARSE,
+                         iterations=50, compressible=True)
+    lay = ob.write_case(m, st, tmp_path / "case")
+    d = lay.case_dir
+    phys = (d / "constant/physicalProperties").read_text()
+    assert "hePsiThermo" in phys and "perfectGas" in phys
+    p = (d / "0/p").read_text()
+    assert "freestreamPressure" in p and "[1 -1 -2 0 0 0 0]" in p          # absolute pressure in Pa
+    t_inf = st.conditions.atmosphere.temperature_k
+    assert f"{t_inf:.9g}" in (d / "0/T").read_text()
+    assert "compressible::alphatWallFunction" in (d / "0/alphat").read_text()
+    ctrl = (d / "system/controlDict").read_text()
+    assert "solver          fluid;" in ctrl and "rho             rho;" in ctrl
+    assert "freestreamVelocity" in (d / "0/U").read_text()
+    # incompressible stays as it was
+    lay2 = ob.write_case(m, ob.CaseSettings(conditions=FlowConditions()), tmp_path / "inc")
+    assert "incompressibleFluid" in (lay2.case_dir / "system/controlDict").read_text()
+    assert not (lay2.case_dir / "0/T").exists()

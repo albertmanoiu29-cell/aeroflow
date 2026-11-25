@@ -562,6 +562,13 @@ class CFDPanel(QWidget):
         ob.addWidget(labeled_row("CPU cores", self.of_procs,
                                  "MPI ranks for OpenFOAM (snappyHexMesh still meshes on one core). "
                                  "OpenFOAM itself runs on the CPU only; the GPU is used by the Labs."))
+        self.of_flow = QComboBox()
+        self.of_flow.addItem("Auto (compressible from Mach 0.3)", "auto")
+        self.of_flow.addItem("Incompressible (simpleFoam)", "incompressible")
+        self.of_flow.addItem("Compressible air (rhoSimpleFoam / fluid)", "compressible")
+        ob.addWidget(labeled_row("Flow model", self.of_flow,
+                                 "Compressible solves density and temperature too (perfect-gas air): needed above "
+                                 "about Mach 0.3 for accurate pressures; slices can then show the local Mach number."))
         self.of_layers = QSpinBox()
         self.of_layers.setRange(-1, 15)
         self.of_layers.setValue(-1)
@@ -837,6 +844,11 @@ class CFDPanel(QWidget):
     def openfoam_iterations(self) -> int:
         """Max OpenFOAM iterations."""
         return int(self.of_iters.value())
+
+    def openfoam_compressible(self) -> bool:
+        """Whether OpenFOAM should solve compressible air for the current conditions."""
+        mode = self.of_flow.currentData()
+        return mode == "compressible" or (mode == "auto" and self.conditions().mach >= 0.3)
 
     def openfoam_layers(self) -> Optional[int]:
         """Requested prism layers (None: the grid preset's number)."""

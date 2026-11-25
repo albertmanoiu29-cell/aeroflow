@@ -925,7 +925,8 @@ class MainWindow(QMainWindow):
                 return
         settings = CaseSettings(cond, quality, iterations=self.cfd_panel.openfoam_iterations(),
                                 n_procs=self.cfd_panel.openfoam_procs(),
-                                boundary_layers=self.cfd_panel.openfoam_layers())
+                                boundary_layers=self.cfd_panel.openfoam_layers(),
+                                compressible=self.cfd_panel.openfoam_compressible())
         worker = OpenFOAMWorker(self.of_env, model, settings)
         worker.signals.residuals.connect(self._on_residuals)
         worker.signals.coefficients.connect(self._on_live_coefficients)
@@ -1014,7 +1015,8 @@ class MainWindow(QMainWindow):
                 settings = CaseSettings(self.cfd_panel.conditions(), self.cfd_panel.quality_value(),
                                     iterations=self.cfd_panel.openfoam_iterations(),
                                     n_procs=self.cfd_panel.openfoam_procs(),
-                                    boundary_layers=self.cfd_panel.openfoam_layers())
+                                    boundary_layers=self.cfd_panel.openfoam_layers(),
+                                    compressible=self.cfd_panel.openfoam_compressible())
             worker = OpenFOAMPolarWorker(self.of_env, model, settings, angles)
             worker.signals.message.connect(self._on_worker_message)
         else:
