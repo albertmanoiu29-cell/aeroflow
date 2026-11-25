@@ -433,6 +433,15 @@ class MainWindow(QMainWindow):
         m_view.addSeparator()
         a(m_view, "Spanwise Cp sections…", self.open_section_cp, "Ctrl+Shift+C",
           "Chordwise pressure distributions at several stations along the span")
+        m_units = m_view.addMenu("Units")
+        ugroup = QActionGroup(self)
+        self._unit_actions: dict[str, QAction] = {}
+        for name, label in (("SI", "SI (m/s, m, N)"), ("Imperial", "Imperial (kt, ft, lbf)")):
+            act = QAction(label, self, checkable=True)
+            act.triggered.connect(lambda _c=False, n=name: self._set_units(n))
+            ugroup.addAction(act)
+            m_units.addAction(act)
+            self._unit_actions[name] = act
         m_bm = m_view.addMenu("Camera bookmarks")
         for i in range(1, 4):
             a(m_bm, f"Go to view {i}", lambda n=i: self._goto_bookmark(n), f"Alt+{i}")
@@ -529,6 +538,7 @@ class MainWindow(QMainWindow):
         self.tasks.busy_changed.connect(self._on_busy)
         compute_relay().changed.connect(self._on_compute_changed)
         self._on_compute_changed()
+        self._set_units(str(self._settings().value("ui/units", "SI")))
 
     # =====================================================================
     # Persistence
@@ -1333,6 +1343,17 @@ class MainWindow(QMainWindow):
         dlg.set_data(data)
         dlg.show()
         dlg.raise_()
+
+    def _set_units(self, name: str) -> None:
+        from config import units
+
+        units.set_system(name)
+        self._settings().setValue("ui/units", name)
+        for n, act in getattr(self, "_unit_actions", {}).items():
+            act.setChecked(n == name)
+        self.cfd_panel.apply_units()
+        if self.result is not None:
+            self.cfd_view.hud.update_kpis(self.result.kpis, self.result.engine)
 
     def open_section_cp(self) -> None:
         if not self.cfd_view.has_result:

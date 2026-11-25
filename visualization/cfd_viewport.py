@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget,
 )
 
+from config import units
 from config.settings import (
     PARAM_LIMITS, SUPPORTED_MESH_EXTENSIONS, IsoField, ScalarField, SeedShape, SliceAxis,
 )
@@ -276,12 +277,17 @@ class _MetricCard(QFrame):
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(0)
         cap = QLabel(caption)
+        self._cap = cap
         cap.setProperty("role", "metric-caption")
         self.value = QLabel("—")
         self.value.setProperty("role", "metric")
         self.value.setFont(mono_font(16, bold=True))
         lay.addWidget(cap)
         lay.addWidget(self.value)
+
+    def set_caption(self, text: str) -> None:
+        if self._cap.text() != text:
+            self._cap.setText(text)
 
     def set_value(self, text: str, level: Optional[str] = None) -> None:
         """Update the value (optionally colouring it by ``level``)."""
@@ -328,10 +334,13 @@ class KpiHud(QFrame):
         self.cards["cl"].set_value(f"{kpis.cl:+.3f}", stall)
         self.cards["cd"].set_value(f"{kpis.cd:.4f}")
         self.cards["ld"].set_value(f"{kpis.l_over_d:.1f}", "success" if kpis.l_over_d > 10 else None)
-        self.cards["lift"].set_value(_eng(kpis.lift_n))
-        self.cards["drag"].set_value(_eng(kpis.drag_n))
+        f = units.scale("force")
+        self.cards["lift"].set_value(_eng(kpis.lift_n * f))
+        self.cards["drag"].set_value(_eng(kpis.drag_n * f))
+        self.cards["lift"].set_caption(f"LIFT  {units.unit('force')}")
+        self.cards["drag"].set_caption(f"DRAG  {units.unit('force')}")
         self.cards["re"].set_value(_eng(kpis.reynolds))          # "3.42M": compact, never clipped
-        txt = f"{engine} · α {kpis.alpha_deg:+.1f}° · V {kpis.velocity_ms:.0f} m/s"
+        txt = f"{engine} · α {kpis.alpha_deg:+.1f}° · V {units.fmt(kpis.velocity_ms, 'speed', 0)}"
         if kpis.stalled:
             txt += " · STALL"
         self.engine.setText(txt)

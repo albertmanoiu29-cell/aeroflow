@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
+from config import units
 from config.settings import (
     DEFAULT_COLORMAPS, PARAM_LIMITS, FlowConditions, GeometryPreset, GridQuality, IsoField, ParamLimit,
     ReferenceAreaMode, ScalarField, SeedShape, SliceAxis, SolverEngine,
@@ -126,6 +127,7 @@ class ParamSlider(QWidget):
         lay.addWidget(self.spin, 1, 1)
         lay.setColumnStretch(0, 1)
         self._updating = False
+        self._k = 1.0                       # display = k * SI value (unit conversion; SI by default)
         self.slider.valueChanged.connect(self._from_slider)
         self.slider.sliderReleased.connect(lambda: self.valueCommitted.emit(self.value()))
         self.spin.valueChanged.connect(self._from_spin)
@@ -144,15 +146,16 @@ class ParamSlider(QWidget):
             v = round(v / step) * step
         v = self.limit.clamp(v)
         self._updating = True
-        self.spin.setValue(v)
+        self.spin.setValue(v * self._k)
         self._updating = False
         self.valueChanged.emit(v)
         if not self.slider.isSliderDown():
             self.valueCommitted.emit(v)
 
-    def _from_spin(self, v: float) -> None:
+    def _from_spin(self, d: float) -> None:
         if self._updating:
             return
+        v = d / self._k
         self._updating = True
         self.slider.setValue(self._to_slider(v))
         self._updating = False
@@ -160,14 +163,27 @@ class ParamSlider(QWidget):
         self.valueCommitted.emit(v)
 
     def value(self) -> float:
-        """Current value."""
-        return float(self.spin.value())
+        """Current value (always in the parameter's SI unit)."""
+        return self.limit.clamp(float(self.spin.value()) / self._k)
+
+    def set_display_unit(self, scale: float, unit: str, decimals: Optional[int] = None) -> None:
+        """Show (and accept typing in) another unit: display = ``scale`` x SI value. The value is kept."""
+        v = self.value()
+        self._k = float(scale) if scale > 0 else 1.0
+        self._updating = True
+        self.spin.setDecimals(self.limit.decimals if decimals is None else decimals)
+        self.spin.setRange(self.limit.minimum * self._k, self.limit.maximum * self._k)
+        self.spin.setSingleStep(self.limit.step * self._k)
+        self.spin.setValue(v * self._k)
+        self._updating = False
+        self.unit.setText(unit)
+        self.unit.setVisible(bool(unit))
 
     def set_value(self, v: float, emit: bool = False) -> None:
         """Set the value (clamped). Signals are only emitted when ``emit`` is True."""
         v = self.limit.clamp(v)
         self._updating = True
-        self.spin.setValue(v)
+        self.spin.setValue(v * self._k)
         self.slider.setValue(self._to_slider(v))
         self._updating = False
         if emit:
@@ -755,8 +771,19 @@ class CFDPanel(QWidget):
 
     def _update_atmo_label(self, cond: FlowConditions) -> None:
         atm = cond.atmosphere
-        self.atmo_label.setText(f"ρ {atm.density:.4f} kg/m³ · T {atm.temperature_k - 273.15:.1f} °C · "
-                                f"Mach {cond.mach:.3f}")
+        t_c = atm.temperature_k - 273.15
+        temp = f"{t_c:.1f} °C" if units.system() == "SI" else f"{t_c * 1.8 + 32.0:.1f} °F"
+        dens = units.fmt(atm.density, "density", 4 if units.system() == "SI" else 6)
+        self.atmo_label.setText(f"ρ {dens} · T {temp} · Mach {cond.mach:.3f}")
+
+    def apply_units(self, _system: str = "") -> None:
+        """Show the flow-condition sliders in the current unit system (values stay the same)."""
+        for key, qty, dec_si, dec_imp in (("velocity", "speed", 1, 1), ("altitude", "altitude", 0, 0),
+                                          ("temp_offset", "temp_delta", 1, 1)):
+            s = self.sliders.get(key)
+            if s is not None:
+                s.set_display_unit(units.scale(qty), units.unit(qty), dec_si if units.system() == "SI" else dec_imp)
+        self._update_atmo_label(self.conditions())
 
     def _visual_changed(self, *_args: object) -> None:
         self._visual_timer.start()
