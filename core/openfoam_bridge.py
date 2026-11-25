@@ -37,7 +37,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Final, Optional, Sequence
@@ -62,7 +62,7 @@ IS_WINDOWS: Final[bool] = platform.system() == "Windows"
 CREATE_NO_WINDOW: Final[int] = 0x08000000 if IS_WINDOWS else 0
 CREATE_NEW_PROCESS_GROUP: Final[int] = 0x00000200 if IS_WINDOWS else 0
 
-_RE_TIME = re.compile(r"^\s*Time\s*=\s*([0-9.eE+-]+)\s*$")
+_RE_TIME = re.compile(r"^\s*Time\s*=\s*([0-9.eE+-]+)\s*[a-zA-Z]*\s*$")   # OpenFOAM 12+ appends a unit: "1s"
 _RE_RESIDUAL = re.compile(r"Solving for\s+(\w+),\s*Initial residual\s*=\s*([0-9.eE+-]+)")
 _RE_COEFF = re.compile(r"\b(Cd|Cl|Cm|CmPitch|Cs)\s*[:=]\s*([-+0-9.eE]+)")
 _RE_SNAPPY_PHASE = re.compile(r"^(Castellated mesh|Snapping|Layer addition|Refinement phase|Morph iteration)")
@@ -320,6 +320,7 @@ class CaseSettings:
     iterations: int = 600
     n_procs: int = 1
     write_interval: int = OPENFOAM.write_interval
+    boundary_layers: Optional[int] = None      # prism layers on the body (None: the quality preset's value)
 
 
 @dataclass(frozen=True)
@@ -373,6 +374,8 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
         raise OpenFOAMError(f"Cannot create case directory {case_dir}: {exc}") from exc
 
     preset = OPENFOAM_MESH_PRESETS[settings.quality]
+    if settings.boundary_layers is not None:
+        preset = replace(preset, boundary_layers=int(max(0, min(settings.boundary_layers, 20))))
     lo = np.asarray(info.bounds_min, dtype=float)
     hi = np.asarray(info.bounds_max, dtype=float)
     dim = max(info.chord_m, info.span_m, info.height_m, 1e-6)
@@ -699,6 +702,21 @@ functions
         lRef            {info.chord_m:.9g};
         Aref            {info.reference_area_m2:.9g};
     }}
+    wallShearStress
+    {{
+        type            wallShearStress;
+        libs            ("libfieldFunctionObjects.so");
+        patches         ("body.*");
+        writeControl    writeTime;
+        log             false;
+    }}
+    yPlus
+    {{
+        type            yPlus;
+        libs            ("libfieldFunctionObjects.so");
+        writeControl    writeTime;
+        log             false;
+    }}
 }}
 """
 
@@ -1008,6 +1026,7 @@ class RunReport:
     coefficients: dict[str, float] = field(default_factory=dict)
     elapsed_s: float = 0.0
     message: str = ""
+    mesh_quality: str = ""                  # checkMesh summary (cells, non-orthogonality, skewness, verdict)
 
 
 @dataclass(frozen=True)
@@ -1105,7 +1124,8 @@ class OpenFOAMRunner:
         stages = [
             _Stage("Generating background mesh (blockMesh)", "blockMesh", 0.03, "blockMesh"),
             _Stage("Extracting surface features", self.env.feature_command, 0.02, "features"),
-            _Stage("Meshing around geometry (snappyHexMesh)", "snappyHexMesh -overwrite", 0.25, "snappyHexMesh"),
+            _Stage("Meshing around geometry (snappyHexMesh)", "snappyHexMesh -overwrite", 0.24, "snappyHexMesh"),
+            _Stage("Checking mesh quality (checkMesh)", "checkMesh", 0.01, "checkMesh"),
         ]
         has_mpi = "mpirun" in self.env.executables and "decomposePar" in self.env.executables
         if n_procs > 1 and has_mpi:
@@ -1135,6 +1155,11 @@ class OpenFOAMRunner:
             code, tail = self._run_stage(case_dir, stage, done, settings.iterations if is_solver else 0, report)
             if self.aborted:
                 raise OpenFOAMAborted("Simulation aborted by the user.")
+            if stage.log_name == "checkMesh":
+                report.mesh_quality = summarise_check_mesh(case_dir / "logs" / "log.checkMesh")
+                self._on_log(f"  Mesh: {report.mesh_quality}")
+                done += stage.weight
+                continue                       # informative only: a few failed checks do not stop the run
             if code != 0:
                 hint = _failure_hint(stage.log_name, tail)
                 raise OpenFOAMError(f"{stage.name} failed (exit code {code}). {hint}\n--- last output ---\n{tail}")
@@ -1233,6 +1258,27 @@ class OpenFOAMRunner:
         self._on_residual(iteration, dict(values))
 
 
+def summarise_check_mesh(log_path: Path) -> str:
+    """One line from a checkMesh log: cell count, worst non-orthogonality and skewness, and the verdict."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "checkMesh did not run"
+    parts = []
+    m = re.search(r"^\s*cells:\s+(\d+)", text, re.M)
+    if m:
+        parts.append(f"{int(m.group(1)):,} cells")
+    m = re.search(r"Mesh non-orthogonality Max:\s*([\d.eE+-]+)", text)
+    if m:
+        parts.append(f"max non-orthogonality {float(m.group(1)):.1f}°")
+    m = re.search(r"Max skewness = ([\d.eE+-]+)", text)
+    if m:
+        parts.append(f"max skewness {float(m.group(1)):.2f}")
+    m = re.search(r"Failed (\d+) mesh checks", text)
+    parts.append(f"{m.group(1)} quality check(s) failed" if m else ("mesh OK" if "Mesh OK" in text else "verdict n/a"))
+    return ", ".join(parts)
+
+
 def _is_float(s: str) -> bool:
     try:
         float(s)
@@ -1325,7 +1371,14 @@ def _surface_from_block(block: Any) -> Optional[SurfaceField]:
         faces = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
         p = np.asarray(surf.point_data["p"], dtype=np.float32) if "p" in surf.point_data else \
             np.zeros(surf.n_points, np.float32)
-        return SurfaceField(np.asarray(surf.points, np.float32), faces.astype(np.int32), p)
+        extra: dict[str, np.ndarray] = {}
+        if "wallShearStress" not in surf.point_data and "wallShearStress" in surf.cell_data:
+            surf = surf.cell_data_to_point_data()
+        if "wallShearStress" in surf.point_data:      # kinematic (m^2/s^2) in incompressible solvers
+            extra["wss"] = np.linalg.norm(np.asarray(surf.point_data["wallShearStress"], dtype=np.float32), axis=1)
+        if "yPlus" in surf.point_data:
+            extra["yPlus"] = np.asarray(surf.point_data["yPlus"], dtype=np.float32)
+        return SurfaceField(np.asarray(surf.points, np.float32), faces.astype(np.int32), p, extra)
     except Exception as exc:
         log.warning("Could not extract the body surface from OpenFOAM output: %s", exc)
         return None
@@ -1414,7 +1467,10 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
         merged = body_blocks[0] if len(body_blocks) == 1 else pv.merge(body_blocks)
         surface = _surface_from_block(merged)
         if surface is not None:
-            surface = SurfaceField(surface.vertices, surface.faces, (surface.cp / q_kin).astype(np.float32))
+            extra = {"yPlus": surface.extra["yPlus"]} if "yPlus" in surface.extra else {}
+            if "wss" in surface.extra:
+                extra["Cf"] = (surface.extra["wss"] / q_kin).astype(np.float32)     # skin-friction coefficient
+            surface = SurfaceField(surface.vertices, surface.faces, (surface.cp / q_kin).astype(np.float32), extra)
 
     info = model.info
     atm = cond.atmosphere
@@ -1436,6 +1492,14 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
     warnings: list[str] = []
     if not co:
         warnings.append("No force coefficients were found in postProcessing; CL/CD are unavailable.")
+    if surface is not None and "yPlus" in surface.extra and len(surface.extra["yPlus"]):
+        yp = float(np.median(surface.extra["yPlus"]))
+        if not 30.0 <= yp <= 300.0:
+            warnings.append(f"Median y+ on the body is {yp:.0f}; the wall functions used here want 30-300 - "
+                            f"{'refine' if yp > 300 else 'coarsen'} the near-wall cells (boundary layers / "
+                            "resolution) for reliable friction and drag.")
+    if report.mesh_quality:
+        log.info("Mesh quality: %s", report.mesh_quality)
     final = {k: v[-1] for k, v in report.residuals.items() if v}
     if final and max(final.values()) > 1e-2:
         warnings.append("Residuals are still high — the solution may not be converged.")
@@ -1444,6 +1508,7 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
                         geometry_name=model.name, elapsed_s=report.elapsed_s, warnings=warnings,
                         residuals=report.residuals,
                         extra={"case_dir": str(layout.case_dir), "cells": layout.cells,
+                               "mesh_quality": report.mesh_quality,
                                "iterations": report.iterations, "vtk_file": str(path)})
 
 

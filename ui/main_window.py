@@ -904,7 +904,8 @@ class MainWindow(QMainWindow):
             if ans == QMessageBox.StandardButton.Cancel:
                 return
         settings = CaseSettings(cond, quality, iterations=self.cfd_panel.openfoam_iterations(),
-                                n_procs=self.cfd_panel.openfoam_procs())
+                                n_procs=self.cfd_panel.openfoam_procs(),
+                                boundary_layers=self.cfd_panel.openfoam_layers())
         worker = OpenFOAMWorker(self.of_env, model, settings)
         worker.signals.residuals.connect(self._on_residuals)
         worker.signals.coefficients.connect(self._on_live_coefficients)
@@ -928,6 +929,7 @@ class MainWindow(QMainWindow):
         self.residual_chart.add_residuals(iteration, values)
 
     def _on_live_coefficients(self, iteration: int, coeffs: dict[str, float]) -> None:
+        self.residual_chart.add_coefficients(iteration, coeffs)
         self._status(f"Iteration {iteration}: CL {coeffs.get('Cl', math.nan):+.4f} · CD {coeffs.get('Cd', math.nan):.5f}")
 
     def _on_solve_finished(self) -> None:

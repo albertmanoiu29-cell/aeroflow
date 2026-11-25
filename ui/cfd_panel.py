@@ -546,6 +546,13 @@ class CFDPanel(QWidget):
         ob.addWidget(labeled_row("CPU cores", self.of_procs,
                                  "MPI ranks for OpenFOAM (snappyHexMesh still meshes on one core). "
                                  "OpenFOAM itself runs on the CPU only; the GPU is used by the Labs."))
+        self.of_layers = QSpinBox()
+        self.of_layers.setRange(-1, 15)
+        self.of_layers.setValue(-1)
+        self.of_layers.setSpecialValueText("Auto")
+        ob.addWidget(labeled_row("Boundary layers", self.of_layers,
+                                 "Prism-cell layers grown on the body (Auto: 2 / 3 / 4 for Coarse / Medium / Fine). "
+                                 "More layers resolve skin friction better; check y+ afterwards (Surface shows: y+)."))
         card.add(self.of_box)
         self.of_box.setVisible(False)
         self.live = ToggleSwitch("Live update", True, "Re-solve automatically with the Instant engine when you release a slider")
@@ -610,6 +617,13 @@ class CFDPanel(QWidget):
                                    "two angles of attack) are compared on the same scale")
         self.t_lock.toggled.connect(self._visual_changed)
         card.add(self.t_lock)
+        self.surface_scalar = QComboBox()
+        for key, label in (("Cp", "Pressure Cp"), ("Cf", "Skin friction Cf"), ("yPlus", "y+ (wall mesh)")):
+            self.surface_scalar.addItem(label, key)
+        self.surface_scalar.setToolTip("What colours the model surface. Skin friction and y+ come from OpenFOAM "
+                                       "results; y+ between 30 and 300 suits the wall functions used.")
+        self.surface_scalar.currentIndexChanged.connect(self._visual_changed)
+        card.add(labeled_row("Surface shows", self.surface_scalar))
         self.stream_scalar = QComboBox()
         for f in ScalarField:
             self.stream_scalar.addItem(f.value, f)
@@ -797,6 +811,11 @@ class CFDPanel(QWidget):
         """Max OpenFOAM iterations."""
         return int(self.of_iters.value())
 
+    def openfoam_layers(self) -> Optional[int]:
+        """Requested prism layers (None: the grid preset's number)."""
+        v = int(self.of_layers.value())
+        return None if v < 0 else v
+
     def openfoam_procs(self) -> int:
         """Requested MPI ranks."""
         return int(self.of_procs.value())
@@ -842,7 +861,7 @@ class CFDPanel(QWidget):
             show_volume=self.t_volume.isChecked(),
             iso_field=combo_enum(self.iso_field, IsoField) or IsoField.QCRITERION,
             iso_level=v["iso_level"].value(), slice_three=self.t_three.isChecked(),
-            show_oilflow=self.t_oil.isChecked(),
+            show_oilflow=self.t_oil.isChecked(), surface_scalar=self.surface_scalar.currentData() or "Cp",
             lock_ranges=self.t_lock.isChecked())
 
     slice_sweep_requested = Signal(bool)

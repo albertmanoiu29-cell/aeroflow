@@ -69,7 +69,10 @@ BAR_STREAM_SPEED = "Speed m/s (lines)"
 BAR_STREAM_CP = "Cp (lines)"
 BAR_SLICE_SPEED = "Speed m/s (slice)"
 BAR_SLICE_CP = "Cp (slice)"
-_ALL_BARS = (BAR_CP, BAR_STREAM_SPEED, BAR_STREAM_CP, BAR_SLICE_SPEED, BAR_SLICE_CP)
+BAR_CF, BAR_YPLUS = "Cf (surface)", "y+ (surface)"
+_ALL_BARS = (BAR_CP, BAR_STREAM_SPEED, BAR_STREAM_CP, BAR_SLICE_SPEED, BAR_SLICE_CP, BAR_CF, BAR_YPLUS)
+#: Body colourings offered by the "Surface shows" option.
+SURFACE_LABELS = {"Cp": "pressure coefficient Cp", "Cf": "skin friction Cf", "yPlus": "wall distance y+"}
 #: Diverging map for every Cp display (surface, slice, streamlines): blue = suction, white = Cp 0, red = high.
 CP_CMAP = "coolwarm"
 
@@ -143,6 +146,7 @@ class VisualSettings:
     iso_level: float = PARAM_LIMITS["iso_level"].default
     slice_three: bool = False          # three orthogonal planes through the slice point instead of one
     show_oilflow: bool = False         # surface oil-flow streaks on the body
+    surface_scalar: str = "Cp"         # body colouring: "Cp", "Cf" (skin friction) or "yPlus" (OpenFOAM)
     lock_ranges: bool = False          # keep the current colour ranges (fair comparisons between results)
 
     def clamped(self) -> "VisualSettings":
@@ -180,6 +184,7 @@ _DEPENDS: dict[str, tuple[str, ...]] = {
     "show_volume": ("volume",),
     "slice_three": ("slice",),
     "show_oilflow": ("oilflow",),
+    "surface_scalar": ("geometry",),
     "lock_ranges": ("geometry", "streamlines", "slice"),
 }
 
@@ -752,17 +757,35 @@ class CFDViewport(QWidget):
 
     def _build_geometry(self) -> None:
         mode = self._geometry_mode()
-        if mode == "cp" and self._update_surface_cp(np.asarray(self._surface.point_data["Cp"])):
+        scalar = self.settings.surface_scalar
+        if mode == "cp" and scalar not in self._surface.point_data:
+            if scalar != "Cp":
+                self.status_message.emit(f"This result has no {SURFACE_LABELS.get(scalar, scalar)} data "
+                                         "(OpenFOAM results only) - showing Cp.")
+            scalar = "Cp"
+        if mode == "cp" and scalar == "Cp" and self._update_surface_cp(np.asarray(self._surface.point_data["Cp"])):
             return                                        # same mesh, new pressures: no rebuild needed
         self._remove(ACTOR_GEOMETRY)
-        self._remove_bar(BAR_CP)
+        for bar in (BAR_CP, BAR_CF, BAR_YPLUS):
+            self._remove_bar(bar)
         self._geo_poly, self._geo_mode = None, None
         if mode is None:
             return
         # Normals are computed once here, so add_mesh needs no smooth_shading pass of its own.
         src = self._surface if mode == "cp" else self._mesh
         poly = src.compute_normals(cell_normals=False, split_vertices=False, auto_orient_normals=False)
-        if mode == "cp":
+        if mode == "cp" and scalar != "Cp":
+            vals = np.asarray(poly.point_data[scalar], dtype=float)
+            hi = float(np.percentile(vals[np.isfinite(vals)], 99.0)) if np.isfinite(vals).any() else 1.0
+            self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars=scalar,
+                                  cmap="viridis" if scalar == "Cf" else "turbo",
+                                  clim=self._lock(f"{scalar}_surface", lambda: (0.0, max(hi, 1e-9))),
+                                  smooth_shading=False, interpolation="phong", specular=0.35, specular_power=30,
+                                  scalar_bar_args=self._bar_args(BAR_CF if scalar == "Cf" else BAR_YPLUS, 0)
+                                  | {"fmt": "%.4f" if scalar == "Cf" else "%.0f"},
+                                  reset_camera=False)
+            self.status_message.emit(f"Body coloured by {SURFACE_LABELS[scalar]} (legend: top bar).")
+        elif mode == "cp":
             cp = np.asarray(poly.point_data["Cp"])
             self.plotter.add_mesh(poly, name=ACTOR_GEOMETRY, scalars="Cp", cmap=CP_CMAP,
                                   clim=self._lock("Cp_surface", lambda: cp_clim(cp)),

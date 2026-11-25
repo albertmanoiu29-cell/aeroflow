@@ -217,6 +217,8 @@ class SurfaceField:
     vertices: NDArray[np.float32]
     faces: NDArray[np.int32]
     cp: NDArray[np.float32]
+    #: further per-vertex fields, e.g. ``Cf`` (skin friction) and ``yPlus`` from OpenFOAM
+    extra: dict[str, NDArray[np.float32]] = field(default_factory=dict)
     _cached: Any = field(default=None, init=False, repr=False)
 
     def to_pyvista(self) -> Any:
@@ -229,6 +231,9 @@ class SurfaceField:
         flat = np.column_stack([np.full(n, 3, dtype=np.int64), self.faces.astype(np.int64)]).ravel()
         poly = pv.PolyData(np.asarray(self.vertices, dtype=np.float32), flat)
         poly.point_data["Cp"] = np.asarray(self.cp, dtype=np.float32)
+        for name, arr in self.extra.items():
+            if len(arr) == poly.n_points:
+                poly.point_data[name] = np.asarray(arr, dtype=np.float32)
         self._cached = poly
         return poly
 

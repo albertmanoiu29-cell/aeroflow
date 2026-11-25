@@ -120,9 +120,22 @@ class ResidualChart(QWidget):
         self.status = QLabel("Residuals appear here while OpenFOAM runs.")
         self.status.setProperty("role", "muted")
         self.status.setWordWrap(True)
+        # Force coefficients against iteration: a converged run has flat CL / CD (residuals alone can mislead).
+        self.coef_plot = pg.PlotWidget()
+        _style_plot(self.coef_plot, "Iteration", "CL  ·  10 × CD")
+        self.coef_plot.addLegend(offset=(-8, 8), labelTextColor=PALETTE.text_muted,
+                                 brush=pg.mkBrush(PALETTE.surface_alt))
+        self.c_cl = self.coef_plot.plot(name="CL", pen=pg.mkPen(PALETTE.cyan, width=1.8))
+        self.c_cd = self.coef_plot.plot(name="10 × CD", pen=pg.mkPen(PALETTE.warning, width=1.8))
+        self.coef_card = _card("Force coefficients", self.coef_plot)
+        self.coef_card.hide()
+        self._coef_it: list[float] = []
+        self._coef_cl: list[float] = []
+        self._coef_cd: list[float] = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(_card("Convergence", self.plot))
+        lay.addWidget(self.coef_card)
         lay.addWidget(self.status)
         self._iters: list[float] = []
         self._data: dict[str, list[float]] = {}
@@ -149,8 +162,28 @@ class ResidualChart(QWidget):
         for c in self._curves.values():
             self.plot.removeItem(c)
         self._curves.clear()
+        self._coef_it.clear()
+        self._coef_cl.clear()
+        self._coef_cd.clear()
+        self.c_cl.setData([], [])
+        self.c_cd.setData([], [])
+        self.coef_card.hide()
         self._dirty = False
         self.status.setText(message)
+
+    def add_coefficients(self, iteration: int, coeffs: dict[str, float]) -> None:
+        """Append the live CL / CD of one iteration (OpenFOAM forceCoeffs)."""
+        if "Cl" not in coeffs and "Cd" not in coeffs:
+            return
+        if self._coef_it and self._coef_it[-1] == float(iteration):
+            self._coef_cl[-1] = float(coeffs.get("Cl", math.nan))
+            self._coef_cd[-1] = 10.0 * float(coeffs.get("Cd", math.nan))
+        else:
+            self._coef_it.append(float(iteration))
+            self._coef_cl.append(float(coeffs.get("Cl", math.nan)))
+            self._coef_cd.append(10.0 * float(coeffs.get("Cd", math.nan)))
+        self.coef_card.show()
+        self._schedule()
 
     def add_residuals(self, iteration: int, values: dict[str, float]) -> None:
         """Append one iteration's initial residuals."""
@@ -180,6 +213,10 @@ class ResidualChart(QWidget):
         if not self._dirty:
             return
         self._dirty = False
+        if self._coef_it:
+            xi = np.asarray(self._coef_it)
+            self.c_cl.setData(xi, np.asarray(self._coef_cl), connect="finite")
+            self.c_cd.setData(xi, np.asarray(self._coef_cd), connect="finite")
         x = np.asarray(self._iters)
         for name, series in self._data.items():
             y = np.asarray(series, dtype=float)
