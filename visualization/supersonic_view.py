@@ -39,6 +39,7 @@ class SBody(str, Enum):
     AIRFOIL_FILE = "Airfoil from file (.dat)"
     CYLINDER = "Cylinder (bow shock)"
     CAPSULE = "Blunt capsule"
+    INLET = "Supersonic inlet (ramp + cowl)"
     MODEL = "Section of the 3-D model"
 
 
@@ -64,7 +65,7 @@ SUPER_RESOLUTIONS: dict[str, tuple[int, int]] = {
 }
 DEFAULT_SUPER_RESOLUTION = "Balanced (320 × 190)"
 #: Bodies with a sharp nose whose attached shocks follow oblique-shock theory.
-SHARP_BODIES = {SBody.WEDGE, SBody.DIAMOND, SBody.PLATE}
+SHARP_BODIES = {SBody.WEDGE, SBody.DIAMOND, SBody.PLATE, SBody.INLET}
 BLUNT_BODIES = {SBody.CYLINDER, SBody.CAPSULE}
 
 
@@ -118,9 +119,35 @@ def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[Geo
     return None, (0.0, 0.0), False
 
 
+def _inlet(nx: int, ny: int, ramp_deg: float, size: float, design_mach: float) -> BodyGeometry:
+    """External-compression supersonic inlet: a ramp turns the flow by ``ramp_deg`` and a cowl lip is
+    placed where the ramp shock meets it at ``design_mach`` (shock-on-lip, the design condition)."""
+    t = math.tan(math.radians(ramp_deg))
+    x0, y0 = 0.18 * nx, 0.22 * ny                       # ramp corner (bottom wall raised clear of the edge)
+    run = 0.30 * nx * size
+    y_top = y0 + run * t                                 # ramp crest, then a flat duct floor
+    beta = gd.oblique_shock_beta(design_mach, ramp_deg) if design_mach > 1.0 else None
+    beta = beta if beta is not None else 45.0
+    h_cap = 0.30 * ny * size                             # capture height above the crest
+    y_lip = y_top + h_cap
+    x_lip = x0 + (y_lip - y0) / math.tan(math.radians(beta))
+    x_lip = max(x_lip, x0 + run + 4.0)                   # lip at or behind the ramp crest
+    lip_t = max(3.0, 0.012 * ny)
+    end = nx + 2.0
+    ramp = np.array([[x0, y0], [x0 + run, y_top], [end, y_top], [end, y0 - 3.0], [x0, y0 - 3.0]])
+    cowl = np.array([[x_lip, y_lip], [end, y_lip + 0.2 * lip_t], [end, y_lip + lip_t + 2.0],
+                     [x_lip + 6.0 * lip_t, y_lip + lip_t]])
+    segs = np.concatenate([polygon_segments(ramp), polygon_segments(cowl)])
+    mask = rasterize_segments(segs, nx, ny)
+    return BodyGeometry(mask, segs, run / max(math.cos(math.radians(ramp_deg)), 1e-9), (x0, y0), ramp_deg, None)
+
+
 def build_body(body: SBody, nx: int, ny: int, size: float, aoa: float, half_angle: float,
-               naca: str = "0012", model: Optional[GeometryModel] = None, airfoil_file: str = "") -> BodyGeometry:
+               naca: str = "0012", model: Optional[GeometryModel] = None, airfoil_file: str = "",
+               design_mach: float = 2.5) -> BodyGeometry:
     """Place a body in the tunnel: nose at ~22 % of the length, centred vertically."""
+    if body is SBody.INLET:
+        return _inlet(nx, ny, half_angle, size, design_mach)
     segs_u, pivot, blunt = _unit_outline(body, half_angle, naca, model, airfoil_file)
     if segs_u is None:
         return BodyGeometry(np.zeros((ny, nx), bool), None, 1.0, (0.0, 0.0), None, None)
@@ -327,7 +354,7 @@ class SupersonicView(QWidget):
     def rebuild_body(self, reset: bool = False) -> None:
         s = self.solver
         g = build_body(self.body, s.nx, s.ny, self.size, self.aoa, self.half_angle, self.naca, self._model,
-                       self.airfoil_file)
+                       self.airfoil_file, design_mach=max(s.mach, 1.2))
         if self.body is SBody.AIRFOIL_FILE and g.segments is None:
             self.status_message.emit("Load an airfoil coordinate file (.dat) for this body.")
         if self.body is SBody.MODEL and g.segments is None:

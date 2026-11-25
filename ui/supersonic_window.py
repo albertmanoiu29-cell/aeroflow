@@ -350,8 +350,8 @@ class SupersonicWindow(QMainWindow):
 
     def _sync_body_ui(self) -> None:
         b = self._selected_body()
-        self.half.setEnabled(b in (SBody.WEDGE, SBody.DIAMOND))
-        self.aoa.setEnabled(b not in (SBody.CYLINDER,))
+        self.half.setEnabled(b in (SBody.WEDGE, SBody.DIAMOND, SBody.INLET))
+        self.aoa.setEnabled(b not in (SBody.CYLINDER, SBody.INLET))
         self.naca_row.setVisible(b is SBody.AIRFOIL)
         self.file_row.setVisible(b is SBody.AIRFOIL_FILE)
 
