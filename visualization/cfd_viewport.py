@@ -1117,6 +1117,50 @@ class CFDViewport(QWidget):
                 self.probe_line_ready.emit(s)
         self.plotter.render()
 
+    # -- spanwise Cp sections ----------------------------------------------------
+    def section_cp(self, fractions: list[float], show_cuts: bool = True) -> list[dict[str, Any]]:
+        """Chordwise Cp at spanwise stations (fractions of the semi-span from the centre towards +y).
+
+        Cuts the displayed surface (Instant or OpenFOAM) with planes y = const. Each entry: ``frac``,
+        ``y``, ``chord``, ``x_c`` (0 at the local leading edge), ``cp`` and ``upper`` (bool mask)."""
+        for k in range(12):
+            self._remove(f"section_{k}")
+        surf = self._surface
+        if surf is None or "Cp" not in surf.point_data or self._model is None:
+            return []
+        info = self._model.info
+        y_mid = 0.5 * (info.bounds_min[1] + info.bounds_max[1])
+        half = 0.5 * (info.bounds_max[1] - info.bounds_min[1])
+        out: list[dict[str, Any]] = []
+        for k, frac in enumerate(fractions[:12]):
+            y = y_mid + float(np.clip(frac, 0.0, 0.995)) * half
+            cut = surf.slice(normal=(0.0, 1.0, 0.0), origin=(0.0, y, 0.0))
+            if cut.n_points < 6:
+                continue
+            p = np.asarray(cut.points)
+            cp = np.asarray(cut.point_data["Cp"], dtype=float)
+            i_le, i_te = int(np.argmin(p[:, 0])), int(np.argmax(p[:, 0]))
+            le, te = p[i_le], p[i_te]
+            chord = float(te[0] - le[0])
+            if chord <= 1e-9:
+                continue
+            x_c = (p[:, 0] - le[0]) / chord
+            # upper surface: above the straight line from the leading to the trailing edge
+            z_line = le[2] + (p[:, 0] - le[0]) * (te[2] - le[2]) / chord
+            upper = p[:, 2] >= z_line
+            out.append({"frac": float(frac), "y": float(y), "chord": chord, "x_c": x_c, "cp": cp, "upper": upper})
+            if show_cuts:
+                self.plotter.add_mesh(cut, name=f"section_{k}", color=PALETTE.warning, line_width=3,
+                                      lighting=False, pickable=False, reset_camera=False,
+                                      render_lines_as_tubes=False)
+        self.plotter.render()
+        return out
+
+    def clear_sections(self) -> None:
+        for k in range(12):
+            self._remove(f"section_{k}")
+        self.plotter.render()
+
     # -- export / camera ------------------------------------------------------
     def export_vtk(self, path: str | Path) -> Path:
         """Save the flow field, the surface (with Cp) and the traced streamlines as one VTK multiblock

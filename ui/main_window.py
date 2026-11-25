@@ -417,6 +417,9 @@ class MainWindow(QMainWindow):
         for key, label in (("iso", "Isometric view"), ("front", "Front view"), ("top", "Top view"),
                            ("side", "Side view"), ("reset", "Reset camera")):
             a(m_view, label, lambda k=key: self.cfd_view.view(k))
+        m_view.addSeparator()
+        a(m_view, "Spanwise Cp sections…", self.open_section_cp, "Ctrl+Shift+C",
+          "Chordwise pressure distributions at several stations along the span")
         m_bm = m_view.addMenu("Camera bookmarks")
         for i in range(1, 4):
             a(m_bm, f"Go to view {i}", lambda n=i: self._goto_bookmark(n), f"Alt+{i}")
@@ -1199,6 +1202,18 @@ class MainWindow(QMainWindow):
         dlg.set_data(data)
         dlg.show()
         dlg.raise_()
+
+    def open_section_cp(self) -> None:
+        if not self.cfd_view.has_result:
+            self._status("Run a simulation first - the sections cut the surface pressure of the result.")
+            return
+        if self.mode != AppMode.CFD:
+            self._set_mode(AppMode.CFD)
+        from ui.section_cp import SectionCpDialog
+
+        dlg = SectionCpDialog(self.cfd_view, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
 
     def open_param_study(self) -> None:
         model = self.geometry_mgr.model
