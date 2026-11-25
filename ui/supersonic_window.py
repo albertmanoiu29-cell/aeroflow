@@ -147,7 +147,13 @@ class SupersonicWindow(QMainWindow):
         sim.add(self.device)
         snap = button("Save snapshot…", "ghost", "camera", "Save the current view as PNG")
         snap.clicked.connect(self._snapshot)
-        sim.add(snap)
+        self.btn_rec = button("Record video…", "ghost", "camera", "Record the running simulation to an MP4 video")
+        self.btn_rec.setCheckable(True)
+        self.btn_rec.toggled.connect(self._toggle_recording)
+        row_media = QHBoxLayout()
+        row_media.addWidget(snap)
+        row_media.addWidget(self.btn_rec)
+        sim.add_layout(row_media)
         lay.addWidget(sim)
 
         flow = AccordionCard("Free stream")
@@ -406,6 +412,32 @@ class SupersonicWindow(QMainWindow):
         self.btn_run.setText("Pause" if running else "Run")
         self.btn_run.setIcon(make_icon("pause" if running else "play", 16, PALETTE.on_accent))
         self.btn_step.setEnabled(not running)
+
+
+    def _toggle_recording(self, on: bool) -> None:
+        import time
+
+        from PySide6.QtWidgets import QFileDialog
+
+        if on:
+            default = get_paths().exports / f"supersonic_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+            path, _ = QFileDialog.getSaveFileName(self, "Record video", str(default), "MP4 video (*.mp4)")
+            if not path:
+                self.btn_rec.setChecked(False)
+                return
+            try:
+                self.view.start_recording(path)
+            except RuntimeError as exc:
+                self.btn_rec.setChecked(False)
+                self.status_label.setText(str(exc))
+                return
+            self.btn_rec.setText("Stop recording")
+            self.status_label.setText(f"Recording to {path} - press Stop recording to finish.")
+        else:
+            out = self.view.stop_recording()
+            self.btn_rec.setText("Record video…")
+            if out is not None:
+                self.status_label.setText(f"Video saved: {out}")
 
     def _snapshot(self) -> None:
         default = get_paths().exports / f"supersonic_{time.strftime('%Y%m%d_%H%M%S')}.png"

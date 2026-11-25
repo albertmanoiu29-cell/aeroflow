@@ -128,7 +128,13 @@ class FlowLabPanel(QWidget):
         card.add(self.device)
         snap = button("Save snapshot…", "ghost", "camera", "Save the current view as a PNG image")
         snap.clicked.connect(self._snapshot)
-        card.add(snap)
+        self.btn_rec = button("Record video…", "ghost", "camera", "Record the running simulation to an MP4 video")
+        self.btn_rec.setCheckable(True)
+        self.btn_rec.toggled.connect(self._toggle_recording)
+        row_media = QHBoxLayout()
+        row_media.addWidget(snap)
+        row_media.addWidget(self.btn_rec)
+        card.add_layout(row_media)
         return card
 
     def _body_card(self) -> AccordionCard:
@@ -285,6 +291,32 @@ class FlowLabPanel(QWidget):
         self.btn_play.setText("Pause" if running else "Run")
         self.btn_play.setIcon(make_icon("pause" if running else "play", 16, PALETTE.on_accent))
         self.btn_step.setEnabled(not running)
+
+
+    def _toggle_recording(self, on: bool) -> None:
+        import time
+
+        from PySide6.QtWidgets import QFileDialog
+
+        if on:
+            default = get_paths().exports / f"flowlab_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+            path, _ = QFileDialog.getSaveFileName(self, "Record video", str(default), "MP4 video (*.mp4)")
+            if not path:
+                self.btn_rec.setChecked(False)
+                return
+            try:
+                self.view.start_recording(path)
+            except RuntimeError as exc:
+                self.btn_rec.setChecked(False)
+                self.status_message.emit(str(exc))
+                return
+            self.btn_rec.setText("Stop recording")
+            self.status_message.emit(f"Recording to {path} - press Stop recording to finish.")
+        else:
+            out = self.view.stop_recording()
+            self.btn_rec.setText("Record video…")
+            if out is not None:
+                self.status_message.emit(f"Video saved: {out}")
 
     def _snapshot(self) -> None:
         import time

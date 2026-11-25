@@ -374,6 +374,8 @@ class SupersonicView(QWidget):
         if done:
             self._step_ms = 0.7 * self._step_ms + 0.3 * self.solver.last_step_ms
         self._render()
+        if self._recorder is not None:
+            self._recorder.capture()
         # GUI time per frame, excluding the wait for the solver: when drawing takes longer than a 60 FPS
         # frame, the next batch is sized to the actual frame so the solver never idles between frames.
         if self._last_tick > 0.0:
@@ -587,5 +589,26 @@ class SupersonicView(QWidget):
         self.readout.raise_()
         self.legend.raise_()
 
+    # -- video recording --------------------------------------------------------
+    _recorder = None
+
+    @property
+    def recording(self) -> bool:
+        return self._recorder is not None
+
+    def start_recording(self, path: str) -> None:
+        """Record the running simulation to MP4 (starts the simulation if paused)."""
+        from visualization.recorder import FrameRecorder
+
+        self._recorder = FrameRecorder(self, path)
+        if not self.running:
+            self.start()
+
+    def stop_recording(self):
+        rec, self._recorder = self._recorder, None
+        return rec.close() if rec is not None else None
+
     def shutdown(self) -> None:
+        if self._recorder is not None:
+            self.stop_recording()
         self.timer.stop()

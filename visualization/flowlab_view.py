@@ -335,6 +335,8 @@ class FlowLabView(QWidget):
             # excluded so the budget cannot lock itself at one step per frame.
             self._step_ms = 0.7 * self._step_ms + 0.3 * self.lab.last_step_ms
         self._render()
+        if self._recorder is not None:
+            self._recorder.capture()
         # GUI time per frame without the wait for the solver: slow frames get a bigger batch, so the
         # solver keeps working through the whole frame instead of idling.
         if self._last_tick > 0.0:
@@ -497,5 +499,26 @@ class FlowLabView(QWidget):
         self.readout.raise_()
         self.legend.raise_()
 
+    # -- video recording --------------------------------------------------------
+    _recorder = None
+
+    @property
+    def recording(self) -> bool:
+        return self._recorder is not None
+
+    def start_recording(self, path: str) -> None:
+        """Record the running simulation to MP4 (starts the simulation if paused)."""
+        from visualization.recorder import FrameRecorder
+
+        self._recorder = FrameRecorder(self, path)
+        if not self.running:
+            self.start()
+
+    def stop_recording(self):
+        rec, self._recorder = self._recorder, None
+        return rec.close() if rec is not None else None
+
     def shutdown(self) -> None:
+        if self._recorder is not None:
+            self.stop_recording()
         self.timer.stop()
