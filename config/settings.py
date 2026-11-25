@@ -417,6 +417,10 @@ PARAM_LIMITS: Final[dict[str, ParamLimit]] = {
                            "Height above sea level. Higher means thinner, less dense air."),
     "temp_offset": ParamLimit("Temperature offset", "K", -40.0, 40.0, 0.0, 1, 1.0,
                               "How much hotter or colder than a standard day. 0 is standard."),
+    "ground_h": ParamLimit("Ground height h/b", "", 0.0, 1.0, 0.0, 2, 0.01,
+                           "Height of the wing above the ground as a fraction of the span (0 = free flight, no "
+                           "ground). Close to the ground (h/b < 0.3) the wing gets more lift and much less induced "
+                           "drag - ground effect. Instant engine only."),
     # --- Streamline / visual controls ----------------------------------------
     "streamline_count": ParamLimit("Streamline count", "", 10.0, 300.0, 80.0, 0, 5.0,
                                    "How many flow lines are released upstream of the model."),
@@ -478,6 +482,7 @@ class FlowConditions:
     beta_deg: float = PARAM_LIMITS["beta"].default
     altitude_m: float = PARAM_LIMITS["altitude"].default
     temperature_offset_k: float = PARAM_LIMITS["temp_offset"].default
+    ground_h_over_b: float = 0.0          # 0: free flight; > 0: ground plane at h = this * span below the wing
 
     def clamped(self) -> "FlowConditions":
         """Return a copy with every field clamped to its physically meaningful range."""
@@ -488,6 +493,7 @@ class FlowConditions:
             beta_deg=PARAM_LIMITS["beta"].clamp(self.beta_deg),
             altitude_m=PARAM_LIMITS["altitude"].clamp(self.altitude_m),
             temperature_offset_k=PARAM_LIMITS["temp_offset"].clamp(self.temperature_offset_k),
+            ground_h_over_b=PARAM_LIMITS["ground_h"].clamp(self.ground_h_over_b),
         )
 
     @property

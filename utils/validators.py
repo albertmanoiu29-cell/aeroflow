@@ -176,7 +176,7 @@ class ValidationResult:
 # ---------------------------------------------------------------------------
 _FLOW_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("velocity_ms", "velocity"), ("alpha_deg", "alpha"), ("beta_deg", "beta"),
-    ("altitude_m", "altitude"), ("temperature_offset_k", "temp_offset"),
+    ("altitude_m", "altitude"), ("temperature_offset_k", "temp_offset"), ("ground_h_over_b", "ground_h"),
 )
 
 

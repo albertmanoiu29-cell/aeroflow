@@ -228,3 +228,22 @@ def test_polar_stability_neutral_point() -> None:
     assert st.x_neutral_point_m == pytest.approx(1.0 + 0.12 * 2.0, abs=1e-6)
     assert st.cl_alpha_per_deg == pytest.approx(0.1, abs=1e-9)
     assert st.alpha_trim_deg == pytest.approx(0.05 / 0.012 - 2.0, abs=0.05)   # Cm = 0 where CL = 0.05/0.12
+
+
+def test_ground_effect_cuts_induced_drag() -> None:
+    """Image-method ground effect vs the Prandtl/Wieselsberger fit phi = 1 - exp(-2.48 (2h/b)^0.768)."""
+    from config.settings import FlowConditions, GeometryPreset, GridQuality
+    from core.geometry_manager import build_preset
+    from core.instant_solver import InstantSolver
+
+    s = InstantSolver(warmup=False)
+    m = build_preset(GeometryPreset.NACA_2412)
+    prep = s.prepare(getattr(m, "model", m), GridQuality.COARSE)
+    free = s.coefficients(prep, FlowConditions(alpha_deg=5.0))
+    k_free = free.cd_induced / free.cl ** 2
+    for h in (0.2, 0.5):
+        g = s.coefficients(prep, FlowConditions(alpha_deg=5.0, ground_h_over_b=h))
+        phi = (g.cd_induced / g.cl ** 2) / k_free
+        ref = 1.0 - math.exp(-2.48 * (2.0 * h) ** 0.768)
+        assert g.cl > free.cl
+        assert phi == pytest.approx(ref, abs=0.06)

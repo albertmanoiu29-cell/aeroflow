@@ -600,8 +600,13 @@ class InstantSolver:
 
     # -- lifting solution ------------------------------------------------
     def _vortex_lattice(self, prep: PreparedGeometry, dhat: FloatArray, alpha: float, beta: float,
-                        mach: float, s_ref: float, l_ref: float) -> Optional[_VortexSystem]:
-        """Weissinger-type lifting solution including stall blending."""
+                        mach: float, s_ref: float, l_ref: float, ground_h_over_b: float = 0.0
+                        ) -> Optional[_VortexSystem]:
+        """Weissinger-type lifting solution including stall blending.
+
+        ``ground_h_over_b`` > 0 adds a ground plane that distance (times the span) below the lifting line:
+        every horseshoe gets a mirror image of opposite strength (image method), which is exactly the
+        flat-ground boundary condition. It raises the lift slope and cuts the induced drag."""
         sec = prep.sections
         if sec is None or sec.n_valid < 3:
             return None
@@ -616,6 +621,15 @@ class InstantSolver:
 
         bound, legs = _horseshoe_terms(ctrl, a, b, xhat, eps2=(0.002 * c_mean) ** 2)
         w_mat = ((bound + legs) @ zhat)                       # (n, n): control i, horseshoe j
+        a_img = b_img = None
+        if ground_h_over_b > 1e-6:
+            span = float(np.max(b[:, 1]) - np.min(a[:, 1]))
+            z_ground = float(np.mean(0.5 * (a[:, 2] + b[:, 2]))) - ground_h_over_b * max(span, 1e-9)
+            a_img, b_img = a.copy(), b.copy()
+            a_img[:, 2] = 2.0 * z_ground - a[:, 2]
+            b_img[:, 2] = 2.0 * z_ground - b[:, 2]
+            bi, li = _horseshoe_terms(ctrl, a_img, b_img, xhat, eps2=(0.002 * c_mean) ** 2)
+            w_mat = w_mat - ((bi + li) @ zhat)               # images carry -gamma
         # Thick, bluff sections do not generate planform lift (a sphere must have CL = 0).
         lift_eff = 1.0 - _smoothstep((sec.tc[idx] - 0.45) / 0.45)
         a_eff = alpha - sec.alpha0[idx]
@@ -631,6 +645,9 @@ class InstantSolver:
         bnd_m, leg_m = _horseshoe_terms(mid, a, b, xhat, eps2=(0.002 * c_mean) ** 2)
         bnd_m[np.arange(n), np.arange(n)] = 0.0               # no self-induction of a bound segment
         v_ind = np.einsum("pkc,k->pc", bnd_m + leg_m, gamma)
+        if a_img is not None:                                 # the ground's images also induce at the wing
+            bnd_i, leg_i = _horseshoe_terms(mid, a_img, b_img, xhat, eps2=(0.002 * c_mean) ** 2)
+            v_ind = v_ind - np.einsum("pkc,k->pc", bnd_i + leg_i, gamma)
         v_loc = dhat[None, :] + v_ind
         force = gamma[:, None] * np.cross(v_loc, b - a)
         f_tot = force.sum(axis=0)
@@ -693,7 +710,8 @@ class InstantSolver:
         cp_pot = 0.5 * cp_pot + 0.5 * cp_pot[prep.nbr].mean(axis=1)   # damp discretisation noise
         cp_pot = karman_tsien(cp_pot, cond.mach)          # thickness pressures at the flight Mach number
 
-        vortex = self._vortex_lattice(prep, dhat, alpha, beta, cond.mach, s_ref, l_ref)
+        vortex = self._vortex_lattice(prep, dhat, alpha, beta, cond.mach, s_ref, l_ref,
+                                      float(getattr(cond, "ground_h_over_b", 0.0)))
         zhat = np.array([0.0, 0.0, 1.0])
         lhat = zhat - (zhat @ dhat) * dhat
         lhat /= max(np.linalg.norm(lhat), 1e-12)
@@ -738,6 +756,10 @@ class InstantSolver:
             aspect_ratio=float(info.aspect_ratio), stalled=bool(stalled), stall_alpha_deg=float(a_stall_deg))
         if re < 5.0e4:
             warnings.append(f"Reynolds number {re:.1e} is very low; viscous estimates are rough.")
+        h_b = float(getattr(cond, "ground_h_over_b", 0.0))
+        if 0.0 < h_b < 0.08:
+            warnings.append(f"Very close to the ground (h/b {h_b:.2f}): the lifting-line ground-effect model "
+                            "overestimates the effect below about h/b = 0.08.")
         cp_star = critical_cp(cond.mach)
         if cond.mach > 0.3 and float(cp_final.min()) < cp_star:
             warnings.append(f"Local flow is supersonic (Cp min {float(cp_final.min()):.2f} < critical Cp "

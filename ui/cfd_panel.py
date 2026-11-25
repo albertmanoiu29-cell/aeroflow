@@ -470,7 +470,7 @@ class CFDPanel(QWidget):
         card = AccordionCard("Flow conditions")
         self.cards["flow"] = card
         self.sliders: dict[str, ParamSlider] = {}
-        for key in ("velocity", "alpha", "beta", "altitude", "temp_offset"):
+        for key in ("velocity", "alpha", "beta", "altitude", "temp_offset", "ground_h"):
             s = ParamSlider(PARAM_LIMITS[key])
             s.valueChanged.connect(lambda _v: self.conditions_changed.emit(self.conditions()))
             s.valueCommitted.connect(lambda _v: self.conditions_committed.emit(self.conditions()))
@@ -719,12 +719,14 @@ class CFDPanel(QWidget):
         s = self.sliders
         return FlowConditions(velocity_ms=s["velocity"].value(), alpha_deg=s["alpha"].value(),
                               beta_deg=s["beta"].value(), altitude_m=s["altitude"].value(),
-                              temperature_offset_k=s["temp_offset"].value())
+                              temperature_offset_k=s["temp_offset"].value(),
+                              ground_h_over_b=s["ground_h"].value())
 
     def set_conditions(self, cond: FlowConditions, commit: bool = True) -> None:
         """Move every flow slider to ``cond`` (e.g. from the run history); optionally trigger a re-solve."""
         for key, value in (("velocity", cond.velocity_ms), ("alpha", cond.alpha_deg), ("beta", cond.beta_deg),
-                           ("altitude", cond.altitude_m), ("temp_offset", cond.temperature_offset_k)):
+                           ("altitude", cond.altitude_m), ("temp_offset", cond.temperature_offset_k),
+                           ("ground_h", getattr(cond, "ground_h_over_b", 0.0))):
             self.sliders[key].set_value(value)
         self.conditions_changed.emit(self.conditions())
         if commit:
