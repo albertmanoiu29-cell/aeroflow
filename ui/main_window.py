@@ -1252,14 +1252,11 @@ class MainWindow(QMainWindow):
                          on_progress=self._progress, on_finished=self._progress_done)
 
     def _on_grid_check(self, text: str) -> None:
-        log.info("Grid convergence check:
-%s", text)
+        log.info("Grid convergence check:\n%s", text)
         box = QMessageBox(self)
         box.setWindowTitle("Grid convergence check")
         box.setText("Instant Aero Engine, current flow conditions.")
-        box.setInformativeText(text + "
-
-GCI: estimated relative uncertainty of the fine-grid value "
+        box.setInformativeText(text + "\n\nGCI: estimated relative uncertainty of the fine-grid value "
                                "(Roache / Celik et al. 2008). The Instant engine's resolution is the number of surface "
                                "elements.")
         box.exec()

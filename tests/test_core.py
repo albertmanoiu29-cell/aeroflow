@@ -263,3 +263,24 @@ def test_flap_deflection_adds_lift_and_keeps_mesh_closed() -> None:
     clean = s.coefficients(s.prepare(m, GridQuality.COARSE), cond)
     flap = s.coefficients(s.prepare(flapped, GridQuality.COARSE), cond)
     assert flap.cl > clean.cl + 0.2 and flap.cm < clean.cm          # more lift, nose-down moment
+
+
+def test_richardson_recovers_order_and_limit() -> None:
+    from core.convergence import richardson
+
+    def f(n: float) -> float:
+        return 2.0 - 0.8 * (n ** -0.5) ** 2          # second order in h = N^-1/2
+
+    r = richardson("x", f(9000), f(2500), f(600), 9000, 2500, 600)
+    assert r.observed_order == pytest.approx(2.0, abs=1e-6)
+    assert r.extrapolated == pytest.approx(2.0, abs=1e-9)
+    assert 0.0 < r.gci_fine < 0.01
+
+
+def test_main_window_imports() -> None:
+    """Guards against syntax errors in the UI modules (the other tests do not import them)."""
+    import importlib
+
+    for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog",
+                "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel"):
+        importlib.import_module(mod)
