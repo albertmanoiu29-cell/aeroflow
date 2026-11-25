@@ -35,7 +35,7 @@ from ui.cfd_panel import AccordionCard, ToggleSwitch, button, compact_combo, lab
 from ui.device_selector import DeviceSelector
 from utils.validators import validate_naca_code
 from visualization.supersonic_view import (
-    BLUNT_BODIES, DEFAULT_SUPER_RESOLUTION, SHARP_BODIES, SUPER_RESOLUTIONS, SBody, SField, SupersonicView,
+    BLUNT_BODIES, DEFAULT_SUPER_RESOLUTION, SUPER_RESOLUTIONS, SBody, SField, SupersonicView,
 )
 from visualization.telemetry_charts import _card, _style_plot
 

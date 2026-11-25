@@ -28,3 +28,6 @@ cases/
 
 # Packaging: downloaded third-party installers
 packaging/redist/
+
+# The launcher exe when copied next to main.py for a source checkout
+/AeroFlow*.exe

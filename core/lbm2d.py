@@ -453,6 +453,12 @@ def _advect_dye_np(dye: F32, out: F32, ux: F32, uy: F32, solid: NDArray[np.bool_
     out[solid] = 0.0
 
 
+def _bilinear(a: F32, i0: NDArray[np.int64], j0: NDArray[np.int64], fx: F32, fy: F32) -> F32:
+    """Bilinear interpolation of ``a`` at cells (j0, i0) + fractional offsets (fy, fx)."""
+    return ((1 - fx) * (1 - fy) * a[j0, i0] + fx * (1 - fy) * a[j0, i0 + 1]
+            + (1 - fx) * fy * a[j0 + 1, i0] + fx * fy * a[j0 + 1, i0 + 1])
+
+
 # ---------------------------------------------------------------------------
 # The simulation object
 # ---------------------------------------------------------------------------
@@ -854,11 +860,8 @@ class FlowLab2D:
             fx = np.clip(self.px - i0, 0.0, 1.0)
             fy = np.clip(self.py - j0, 0.0, 1.0)
 
-            def bil(a: F32) -> F32:
-                return ((1 - fx) * (1 - fy) * a[j0, i0] + fx * (1 - fy) * a[j0, i0 + 1]
-                        + (1 - fx) * fy * a[j0 + 1, i0] + fx * fy * a[j0 + 1, i0 + 1])
-            self.px += bil(self.ux) * dt * 0.5
-            self.py += bil(self.uy) * dt * 0.5
+            self.px += _bilinear(self.ux, i0, j0, fx, fy) * dt * 0.5
+            self.py += _bilinear(self.uy, i0, j0, fx, fy) * dt * 0.5
         self.page += dt
         ix = np.clip(self.px.astype(np.int64), 0, nx - 1)
         iy = np.clip(self.py.astype(np.int64), 0, ny - 1)

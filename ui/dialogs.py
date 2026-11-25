@@ -6,6 +6,7 @@ import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlencode
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -14,9 +15,17 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from config.settings import APP_NAME, APP_VERSION, OPENFOAM_SETUP_URLS, get_paths
+from config.settings import APP_NAME, APP_VERSION, OPENFOAM_SETUP_URLS, PROJECT_URL, get_paths
 from config.theme import make_logo_pixmap, make_section_label, mono_font, set_property
 from core.openfoam_bridge import OpenFOAMEnvironment, setup_instructions
+
+
+def open_issue_page(report: str) -> None:
+    """Open a pre-filled 'new issue' page in the browser (nothing is sent until the user submits it)."""
+    body = ("**What happened?**\n\n\n**What did you expect?**\n\n\n**Steps to reproduce**\n1. \n\n"
+            "**System**\n```\n" + report + "\n```\n")
+    query = urlencode({"title": "", "body": body})
+    QDesktopServices.openUrl(QUrl(f"{PROJECT_URL}/issues/new?{query}"))
 
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
@@ -259,7 +268,8 @@ OpenFOAM (optional)
 class HelpDialog(QDialog):
     """Quick start, keyboard shortcuts, engines and about."""
 
-    def __init__(self, parent: Optional[QWidget] = None, log_dir: Optional[Path] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, log_dir: Optional[Path] = None, tab: str = "",
+                 openfoam: str = "") -> None:
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} — Help")
         self.setMinimumSize(680, 520)
@@ -286,15 +296,44 @@ class HelpDialog(QDialog):
             tabs.addTab(box, name)
         about = QLabel(
             f"<p><b>{APP_NAME}</b> {APP_VERSION}</p>"
-            "<p>Built with PySide6, PyVista / VTK, NumPy, SciPy, trimesh and pyqtgraph.</p>"
+            "<p>Built with PySide6, PyVista / VTK, NumPy, SciPy, numba, CuPy, trimesh and pyqtgraph.</p>"
+            f"<p>Project page, releases and issue tracker: <a href='{PROJECT_URL}'>{PROJECT_URL}</a></p>"
             "<p>OpenFOAM® is a registered trademark of OpenCFD Ltd. AeroFlow Studio is not affiliated "
-            "with or endorsed by OpenCFD or the OpenFOAM Foundation.</p>"
+            "with or endorsed by OpenCFD or the OpenFOAM Foundation. NVIDIA and CUDA are trademarks of "
+            "NVIDIA Corporation.</p>"
             f"<p>Log files: <code>{(log_dir or get_paths().logs)}</code></p>")
         about.setWordWrap(True)
         about.setTextFormat(Qt.TextFormat.RichText)
-        about.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        about.setOpenExternalLinks(True)
+        about.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         about.setAlignment(Qt.AlignmentFlag.AlignTop)
         tabs.addTab(about, "About")
+        # System report: what to paste into a bug report (home folder replaced by ~).
+        from utils.sysinfo import system_report
+
+        sysw = QWidget()
+        sl = QVBoxLayout(sysw)
+        sl.setContentsMargins(6, 6, 6, 6)
+        self.report = system_report(openfoam or None)
+        box = QPlainTextEdit(self.report)
+        box.setReadOnly(True)
+        box.setFont(mono_font(11))
+        sl.addWidget(box, 1)
+        row = QHBoxLayout()
+        copy = QPushButton("Copy to clipboard")
+        copy.clicked.connect(lambda: (QGuiApplication.clipboard().setText(self.report), copy.setText("Copied ✓")))
+        issue = QPushButton("Report a problem…")
+        issue.setToolTip("Opens a new GitHub issue in your browser with this report filled in (you can edit it "
+                         "before anything is sent)")
+        issue.clicked.connect(lambda: open_issue_page(self.report))
+        row.addWidget(copy)
+        row.addWidget(issue)
+        row.addStretch(1)
+        sl.addLayout(row)
+        tabs.addTab(sysw, "System")
+        names = [tabs.tabText(i).lower() for i in range(tabs.count())]
+        if tab.lower() in names:
+            tabs.setCurrentIndex(names.index(tab.lower()))
         root.addWidget(tabs, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)

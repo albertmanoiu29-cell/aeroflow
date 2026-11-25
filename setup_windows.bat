@@ -48,6 +48,14 @@ if not exist "%VPY%" (
 )
 
 rem ---- 3. Install the libraries into .venv ------------------------------------------------------
+"%VPY%" -c "import urllib.request; urllib.request.urlopen('https://pypi.org/simple/pip/', timeout=15)" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: Cannot reach the Python package index ^(https://pypi.org^).
+    echo The libraries are downloaded from there: check the internet connection, proxy or firewall,
+    echo then run this setup again.
+    goto :fail
+)
 echo.
 echo Installing libraries (first time takes a few minutes)...
 "%VPY%" -m pip install --upgrade pip wheel

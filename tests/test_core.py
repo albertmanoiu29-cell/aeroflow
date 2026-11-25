@@ -193,7 +193,7 @@ def test_span_load_integrates_to_wing_cl(solver: InstantSolver, wing) -> None:
     assert {"span_eta", "span_cl", "span_chord", "span_y"} <= set(ex)
     eta = np.asarray(ex["span_eta"])
     assert -1.0 <= eta.min() < -0.8 and 0.8 < eta.max() <= 1.0
-    trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    trapz = getattr(np, "trapezoid", None) or np.trapz
     y, chord, cl = (np.asarray(ex[k]) for k in ("span_y", "span_chord", "span_cl"))
     cl_int = float(trapz(cl * chord, y)) / res.kpis.ref_area_m2
     assert cl_int == pytest.approx(res.kpis.cl, rel=0.15)

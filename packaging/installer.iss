@@ -50,6 +50,17 @@ WelcomeLabel2=This will install [name/ver] on your computer.%n%nThe installer al
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "openwith"; Description: "Add AeroFlow Studio to ""Open with"" for 3-D model files (.stl, .obj, .ply, .off)"; GroupDescription: "File types:"; Flags: unchecked
+
+[Registry]
+; "Open with" entries only (per user): the user's default program for these files is left untouched.
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Model"; ValueType: string; ValueData: "3-D model (AeroFlow Studio)"; Flags: uninsdeletekey; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Model\DefaultIcon"; ValueType: string; ValueData: "{app}\aeroflow.ico"; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\AeroFlowStudio.Model\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.stl\OpenWithProgids"; ValueType: string; ValueName: "AeroFlowStudio.Model"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.obj\OpenWithProgids"; ValueType: string; ValueName: "AeroFlowStudio.Model"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.ply\OpenWithProgids"; ValueType: string; ValueName: "AeroFlowStudio.Model"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
+Root: HKCU; Subkey: "Software\Classes\.off\OpenWithProgids"; ValueType: string; ValueName: "AeroFlowStudio.Model"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 
 [Files]
 ; The application (sources run by the private Python environment)
@@ -89,6 +100,7 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 [UninstallDelete]
 ; Everything the setup created inside the program folder (user data lives in %APPDATA%\aeroflow_studio)
 Type: filesandordirs; Name: "{app}\.venv"
+Type: files; Name: "{app}\setup.log"
 Type: filesandordirs; Name: "{app}\config\__pycache__"
 Type: filesandordirs; Name: "{app}\core\__pycache__"
 Type: filesandordirs; Name: "{app}\ui\__pycache__"
@@ -99,6 +111,15 @@ Type: dirifempty; Name: "{app}"
 [Code]
 var
   LibrariesOk: Boolean;
+
+{ Silent / scripted installs: exit code 10 tells the caller that the library setup failed. }
+function GetCustomSetupExitCode(): Integer;
+begin
+  if LibrariesOk then
+    Result := 0
+  else
+    Result := 10;
+end;
 
 function SetupSucceeded(): Boolean;
 begin
@@ -146,12 +167,19 @@ begin
               '/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0 Include_doc=0 SimpleInstall=1',
               '', SW_SHOW, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
-    MsgBox('Python 3.12 could not be installed (code ' + IntToStr(Code) + ').' + #13#10#13#10 +
+    SuppressibleMsgBox('Python 3.12 could not be installed (code ' + IntToStr(Code) + ').' + #13#10#13#10 +
            'Install 64-bit Python 3.12 from https://www.python.org/downloads/windows/ and then run ' +
-           '"AeroFlow Studio - repair libraries" from the Start menu.', mbError, MB_OK);
+           '"AeroFlow Studio - repair libraries" from the Start menu.', mbError, MB_OK, IDOK);
     Exit;
   end;
   Result := FindPython();
+end;
+
+{ Text inside a PowerShell single-quoted string: ' becomes ''. }
+function PsQuote(S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
 end;
 
 procedure RunLibrarySetup();
@@ -167,14 +195,19 @@ begin
     Exit;
   WizardForm.StatusLabel.Caption := 'Installing the Python libraries (about 5-10 minutes, see the console window)...';
   WizardForm.ProgressGauge.Style := npbstMarquee;
-  Cmd := '/c set "AEROFLOW_UNATTENDED=1" && set "AEROFLOW_PYTHON=' + Python + '" && call "' +
-         ExpandConstant('{app}\setup_windows.bat') + '"';
-  if Exec(ExpandConstant('{cmd}'), Cmd, ExpandConstant('{app}'), SW_SHOW, ewWaitUntilTerminated, Code) and (Code = 0) then
+  { The console shows the progress; PowerShell's Tee-Object also keeps it in setup.log for support. }
+  { stderr is merged inside cmd (PowerShell 5.1 would print native stderr as red error records). }
+  Cmd := '-NoProfile -ExecutionPolicy Bypass -Command "$env:AEROFLOW_UNATTENDED=''1''; ' +
+         '$env:AEROFLOW_PYTHON=''' + PsQuote(Python) + '''; ' +
+         '& $env:ComSpec /c ''"' + PsQuote(ExpandConstant('{app}\setup_windows.bat')) + '" 2>&1'' | Tee-Object -FilePath ''' +
+         PsQuote(ExpandConstant('{app}\setup.log')) + '''; exit $LASTEXITCODE"';
+  if Exec('powershell.exe', Cmd, ExpandConstant('{app}'), SW_SHOW, ewWaitUntilTerminated, Code) and (Code = 0) then
     LibrariesOk := True
   else
-    MsgBox('The Python libraries could not be installed completely (code ' + IntToStr(Code) + ').' + #13#10#13#10 +
+    SuppressibleMsgBox('The Python libraries could not be installed completely (code ' + IntToStr(Code) + ').' + #13#10#13#10 +
            'Check your internet connection, then run "AeroFlow Studio - repair libraries" from the Start menu ' +
-           '(or setup_windows.bat in the program folder) to finish the setup.', mbError, MB_OK);
+           '(or setup_windows.bat in the program folder) to finish the setup.' + #13#10#13#10 +
+           'The full output is in ' + ExpandConstant('{app}\setup.log'), mbError, MB_OK, IDOK);
   WizardForm.ProgressGauge.Style := npbstNormal;
 end;
 

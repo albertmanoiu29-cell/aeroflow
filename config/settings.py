@@ -36,6 +36,9 @@ APP_NAME: Final[str] = "AeroFlow Studio"
 APP_ID: Final[str] = "aeroflow_studio"
 APP_VERSION: Final[str] = "1.4.0"
 ORG_NAME: Final[str] = "AeroFlow"
+#: Public project page (releases, issue tracker) and the GitHub "owner/repo" used by the update check.
+PROJECT_URL: Final[str] = "https://github.com/albertmanoiu29-cell/aeroflow"
+GITHUB_REPO: Final[str] = "albertmanoiu29-cell/aeroflow"
 ORG_DOMAIN: Final[str] = "aeroflow.studio"
 
 # ---------------------------------------------------------------------------

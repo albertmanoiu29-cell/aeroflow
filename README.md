@@ -2,6 +2,10 @@
 
 **Drag-and-drop 3-D CFD, streamline visualisation and polar analysis, in one desktop app.**
 
+[Download the Windows installer](https://github.com/albertmanoiu29-cell/aeroflow/releases/latest) ·
+[Changelog](CHANGELOG.md) · [Report a problem](https://github.com/albertmanoiu29-cell/aeroflow/issues)
+(or *Help ▸ Report a problem* in the app)
+
 You can import an STL or OBJ file, or start from one of the six built-in shapes, and press **Run** to get:
 
 - 3-D streamlines.

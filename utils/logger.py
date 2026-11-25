@@ -47,7 +47,7 @@ def _success(self: logging.Logger, message: object, *args: Any, **kwargs: Any) -
         self._log(SUCCESS_LEVEL, message, args, **kwargs)  # noqa: SLF001
 
 
-setattr(logging.Logger, "success", _success)
+logging.Logger.success = _success
 
 ROOT_LOGGER_NAME: Final[str] = "aeroflow"
 _LOG_FORMAT: Final[str] = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"

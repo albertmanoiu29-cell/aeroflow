@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -43,16 +44,19 @@ from core.openfoam_bridge import CaseSettings, OpenFOAMEnvironment
 from core.polar_generator import default_export_name, export_html_report, export_polar_csv
 from core.results import PolarData, SolverResult
 from ui.cfd_panel import CFDPanel, SegmentedControl, scroll_wrap
+from core.updates import ReleaseInfo, is_newer
 from ui.device_selector import compute_relay
-from ui.dialogs import ExportReportDialog, HelpDialog, OpenFOAMSetupDialog
+from ui.dialogs import ExportReportDialog, HelpDialog, OpenFOAMSetupDialog, open_issue_page
 from ui.flowlab_panel import FlowLabPanel
 from ui.run_history import RunHistoryWidget
 from ui.toast import ToastManager
+from ui.updates_ui import UpdateChecker, UpdateDialog
 from ui.workers import (
     DetectOpenFOAMWorker, InstantSolveWorker, LoadGeometryWorker, OpenFOAMWorker, PolarSweepWorker, RepairWorker,
     SweepRequest, TaskManager,
 )
 from utils.logger import ConsoleLogWidget, get_logger
+from utils.sysinfo import system_report
 from utils.validators import sanitize_filename, validate_sweep
 from visualization.cfd_viewport import CFDViewport
 from visualization.flowlab_view import FlowLabView
@@ -102,6 +106,10 @@ class MainWindow(QMainWindow):
         self._supersonic: Optional[Any] = None              # the Supersonic Lab window (created on demand)
         self.toasts = ToastManager(self, bottom_margin=STATUS_BAR_HEIGHT + 14)
         self._restore_compute_device()
+        self._update_checker = UpdateChecker(self)
+        self._update_checker.finished.connect(self._on_update_result)
+        self._update_manual = False
+        self._latest_release: Optional[ReleaseInfo] = None
 
         self._build_top_bar()
         self._build_central()
@@ -332,6 +340,13 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.sb_engine)
         sb.addWidget(self._divider())
         sb.addWidget(self.sb_msg, 1)
+        self.sb_update = QPushButton("")
+        self.sb_update.setProperty("role", "ghost")
+        self.sb_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sb_update.setToolTip("A newer version is available — click for details")
+        self.sb_update.clicked.connect(self._show_update_dialog)
+        self.sb_update.hide()
+        sb.addPermanentWidget(self.sb_update)
         self.sb_device = QLabel("")
         self.sb_device.setFont(mono_font(11))
         self.sb_device.setProperty("role", "muted")
@@ -367,6 +382,8 @@ class MainWindow(QMainWindow):
         a = self._action
         m_file = mb.addMenu("&File")
         a(m_file, "Import geometry…", self.import_dialog, "Ctrl+O", "Load an STL / OBJ / PLY / OFF / VTK mesh")
+        self.m_recent = m_file.addMenu("Open recent")
+        self.m_recent.aboutToShow.connect(self._fill_recent_menu)
         m_file.addSeparator()
         a(m_file, "Export report…", self.export_report, "Ctrl+E", "Self-contained HTML engineering report")
         a(m_file, "Export polar CSV…", self.export_csv, "", "The last polar sweep as CSV")
@@ -429,6 +446,17 @@ class MainWindow(QMainWindow):
         m_help = mb.addMenu("&Help")
         a(m_help, "Help and shortcuts", self.show_help, "F1")
         a(m_help, "Open log folder", lambda: self._open_folder(get_paths().logs))
+        m_help.addSeparator()
+        a(m_help, "Check for updates…", lambda: self.check_for_updates(manual=True), "",
+          "Look for a newer release on GitHub")
+        self._act_auto_update = QAction("Check for updates automatically", self, checkable=True)
+        self._act_auto_update.setChecked(self._auto_update_enabled())
+        self._act_auto_update.toggled.connect(lambda on: self._settings().setValue("updates/auto", bool(on)))
+        m_help.addAction(self._act_auto_update)
+        a(m_help, "Report a problem…", lambda: open_issue_page(system_report(self._openfoam_summary())), "",
+          "Open a pre-filled GitHub issue in your browser")
+        m_help.addSeparator()
+        a(m_help, f"About {APP_NAME}", lambda: self.show_help(tab="About"))
 
     def _connect(self) -> None:
         self._preview_timer = QTimer(self)
@@ -550,6 +578,7 @@ class MainWindow(QMainWindow):
         if not accel.HAVE_NUMBA:
             log.warning("numba is not installed: the CPU solvers run 10-20x slower. Run setup_windows.bat "
                         "(or: pip install numba) to enable the compiled kernels.")
+        QTimer.singleShot(4000, self._maybe_auto_check_updates)    # after start-up work has settled
 
     def _set_mode(self, mode: AppMode) -> None:
         if self._closing or self._recording:
@@ -626,6 +655,8 @@ class MainWindow(QMainWindow):
 
     def _on_loaded(self, res: LoadResult) -> None:
         model = res.model
+        if model.source is not None:
+            self._add_recent(model.source)
         log.success("Loaded %s with %s: %d triangles", model.name, res.loader, model.triangle_count)
         for s in res.suggestions:
             log.warning(s)
@@ -1192,9 +1223,113 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._error("Report export failed", str(exc))
 
-    def show_help(self) -> None:
-        """Help / shortcuts / about."""
-        HelpDialog(self, log_dir=get_paths().logs).exec()
+    def show_help(self, tab: str = "") -> None:
+        """Help / shortcuts / about / system report."""
+        HelpDialog(self, log_dir=get_paths().logs, tab=tab, openfoam=self._openfoam_summary()).exec()
+
+    def _openfoam_summary(self) -> str:
+        env = self.of_env
+        if env.available:
+            return f"OpenFOAM {env.version} ({env.mode.value})"
+        return env.detail or "not detected"
+
+    # =====================================================================
+    # Recent files
+    # =====================================================================
+    _RECENT_MAX = 10
+
+    def _recent_files(self) -> list[str]:
+        try:
+            v = self._settings().value("recent/files", [])
+        except Exception:  # noqa: BLE001
+            return []
+        if isinstance(v, str):
+            v = [v]
+        return [str(p) for p in (v or []) if p]
+
+    def _add_recent(self, path: str | Path) -> None:
+        p = str(Path(path).resolve())
+        items = [x for x in self._recent_files() if os.path.normcase(x) != os.path.normcase(p)]
+        items.insert(0, p)
+        self._settings().setValue("recent/files", items[:self._RECENT_MAX])
+
+    def _fill_recent_menu(self) -> None:
+        m = self.m_recent
+        m.clear()
+        files = self._recent_files()
+        existing = [f for f in files if Path(f).is_file()]
+        for i, f in enumerate(existing):
+            act = m.addAction(f"&{(i + 1) % 10}  {Path(f).name}")
+            act.setToolTip(f)
+            act.setStatusTip(f)
+            act.triggered.connect(lambda _c=False, p=f: self.load_file(p))
+        if not existing:
+            none = m.addAction("No recent files")
+            none.setEnabled(False)
+        m.addSeparator()
+        clear = m.addAction("Clear list")
+        clear.setEnabled(bool(files))
+        clear.triggered.connect(lambda: self._settings().setValue("recent/files", []))
+
+    # =====================================================================
+    # Updates
+    # =====================================================================
+    def _auto_update_enabled(self) -> bool:
+        v = self._settings().value("updates/auto", True)
+        return v if isinstance(v, bool) else str(v).lower() not in ("false", "0")
+
+    def _maybe_auto_check_updates(self) -> None:
+        """At most one automatic check a day, in the background, only if enabled."""
+        if not self._auto_update_enabled() or os.environ.get("AEROFLOW_NO_UPDATE_CHECK"):
+            return
+        try:
+            last = float(self._settings().value("updates/last_check", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if time.time() - last < 24 * 3600:
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual: bool = True) -> None:
+        if self._update_checker.busy:
+            return
+        self._update_manual = manual
+        if manual:
+            self._status("Checking for updates…")
+        self._update_checker.start()
+
+    def _on_update_result(self, info: Optional[ReleaseInfo], error: str) -> None:
+        manual = self._update_manual
+        if error:
+            log.info("Update check: %s", error)
+            if manual:
+                QMessageBox.information(self, "Check for updates", f"Could not check for updates.\n\n{error}")
+            return
+        self._settings().setValue("updates/last_check", time.time())
+        if info is None or not is_newer(info.version):
+            self._latest_release = None
+            self.sb_update.hide()
+            if manual:
+                QMessageBox.information(self, "Check for updates",
+                                        f"You are running the latest version ({APP_NAME} {APP_VERSION}).")
+            return
+        self._latest_release = info
+        self.sb_update.setText(f"⬆ Update {info.version} available")
+        self.sb_update.show()
+        log.info("A new version is available: %s (%s)", info.version, info.page_url)
+        if manual:
+            self._show_update_dialog()
+        else:
+            self.toasts.show(f"{APP_NAME} {info.version} is available — click the update button in the status bar.",
+                             "info", 8.0)
+
+    def _show_update_dialog(self) -> None:
+        info = self._latest_release
+        if info is None:
+            return
+        dlg = UpdateDialog(info, self)
+        dlg.install_started.connect(lambda: QTimer.singleShot(300, self.close))
+        dlg.exec()
 
     # =====================================================================
     # Status helpers

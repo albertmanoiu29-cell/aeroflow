@@ -121,7 +121,7 @@ def _svg_chart(x: FloatArray, series: list[tuple[str, FloatArray, str]], xlabel:
                    f'{fmt(gx, x1 - x0)}</text>')
     if y0 < 0.0 < y1:
         out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{sy(0):.1f}" y2="{sy(0):.1f}" stroke="#475569"/>')
-    for name, y, colour in series:
+    for _name, y, colour in series:
         pts = " ".join(f"{sx(a):.1f},{sy(b):.1f}" for a, b in zip(x, y))
         out.append(f'<polyline points="{pts}" fill="none" stroke="{colour}" stroke-width="2"/>')
     out.append(f'<text x="{(ml + width - mr) / 2:.0f}" y="{height - 6}" fill="#E2E8F0" text-anchor="middle">'

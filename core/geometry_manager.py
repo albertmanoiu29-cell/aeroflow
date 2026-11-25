@@ -39,7 +39,7 @@ from config.settings import (
     MAX_TRIANGLES_HARD, MM_DETECTION_LENGTH, GeometryPreset, ReferenceAreaMode,
 )
 from utils.validators import (
-    MeshReport, NACA4, ValidationResult, clamp_dimension, inspect_mesh, parse_naca4,
+    MeshReport, NACA4, clamp_dimension, inspect_mesh, parse_naca4,
     validate_mesh_path,
 )
 

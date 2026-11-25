@@ -57,7 +57,7 @@ from utils.validators import reynolds_number, validate_flow_conditions
 
 log = logging.getLogger("aeroflow.core.instant")
 
-_trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")   # NumPy 2.x name, 1.x fallback
+_trapz = getattr(np, "trapezoid", None) or np.trapz   # NumPy 2.x name, 1.x fallback
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -692,11 +692,11 @@ class InstantSolver:
         cp_final = np.clip((1.0 - sep) * cp + sep * cp_base, -8.0, 1.0)
 
         cd_f = _cf_flat_plate(re) * prep.form_factor * info.wetted_area_m2 / max(s_ref, 1e-12)
-        cl = cd_i = cm = cy = 0.0
+        cl = cd_i = cm = 0.0
         cd_stall = 0.0
         stalled, a_stall_deg = False, STALL_ALPHA_DEG
         if vortex is not None:
-            cl, cd_i, cy = vortex.cl, vortex.cd_induced, vortex.cy
+            cl, cd_i = vortex.cl, vortex.cd_induced
             cm = vortex.cm_lift + vortex.cm_camber
             cd_stall = vortex.s_stall * 1.1 * math.sin(vortex.alpha_eff_rad) ** 2
             stalled = vortex.s_stall > 0.05

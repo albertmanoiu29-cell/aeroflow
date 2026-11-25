@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint and tests (Windows, Python ${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    env:
+      QT_QPA_PLATFORM: offscreen          # no visible windows on the runner
+      AEROFLOW_NO_UPDATE_CHECK: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install -r requirements.txt "pytest>=8.3,<9" ruff
+      - name: Lint (ruff)
+        run: python -m ruff check .
+      - name: Tests (CPU; the GPU tests skip on runners without an NVIDIA GPU)
+        run: python -m pytest

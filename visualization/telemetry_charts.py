@@ -159,7 +159,7 @@ class ResidualChart(QWidget):
         for name, v in values.items():
             series = self._data.setdefault(name, [math.nan] * (n - 1))
             series.append(max(float(v), 1e-12))
-        for name, series in self._data.items():
+        for series in self._data.values():
             while len(series) < n:
                 series.append(math.nan)
         self._schedule()
@@ -492,7 +492,7 @@ class SpanLoadChart(QWidget):
         cl = np.asarray(extra["span_cl"], dtype=float)
         chord = np.asarray(extra["span_chord"], dtype=float)
         y = np.asarray(extra["span_y"], dtype=float)
-        trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+        trapz = getattr(np, "trapezoid", None) or np.trapz
         span = max(float(extra.get("span_b", np.ptp(y))), 1e-9)
         c_mean = max(float(trapz(chord, y)) / span, 1e-9)
         load = cl * chord / c_mean
