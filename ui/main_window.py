@@ -438,6 +438,8 @@ class MainWindow(QMainWindow):
         m_sim = mb.addMenu("&Simulation")
         a(m_sim, "Run", self.run_simulation, "Ctrl+R", "Solve the current geometry")
         a(m_sim, "Abort", self.abort, "Esc", "Stop the running solve or sweep")
+        a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
+          "Sweep sideslip, speed (Reynolds / Mach), altitude or angle of attack and plot CL, CD, CM, L/D")
         m_sim.addSeparator()
         a(m_sim, "Use Instant Aero Engine", lambda: self._set_engine(SolverEngine.INSTANT))
         a(m_sim, "Use OpenFOAM", lambda: self._set_engine(SolverEngine.OPENFOAM))
@@ -1184,6 +1186,17 @@ class MainWindow(QMainWindow):
             self.menu_bar.setEnabled(True)
             self.mode_switch.setEnabled(True)
             self._progress_done()
+
+    def open_param_study(self) -> None:
+        model = self.geometry_mgr.model
+        if model is None:
+            self._status("Load or generate a geometry first.")
+            return
+        from ui.param_study import ParamStudyDialog
+
+        dlg = ParamStudyDialog(self.solver, model, self.cfd_panel.conditions(), self.cfd_panel.quality_value(), self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
 
     def _on_slice_sweep(self, on: bool) -> None:
         if on and not self.cfd_view.has_result:
