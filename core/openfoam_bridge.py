@@ -1140,11 +1140,24 @@ class OpenFOAMRunner:
     # -- execution -------------------------------------------------------
     def run(self, layout: CaseLayout, settings: CaseSettings) -> RunReport:
         """Run the whole pipeline. Raises :class:`OpenFOAMAborted` or :class:`OpenFOAMError`."""
+        return self.run_stages(layout, settings)
+
+    def run_stages(self, layout: CaseLayout, settings: CaseSettings, mesh_only: bool = False,
+                   solve_only: bool = False) -> RunReport:
+        """Run the pipeline, or only its meshing stages (``mesh_only``), or only the solver on an existing
+        mesh without the VTK export (``solve_only``; used by polar sweeps)."""
         case_dir = layout.case_dir
         self._case_dir = case_dir
         report = RunReport(case_dir=case_dir, success=False)
         t0 = time.perf_counter()
         stages = self._stages(settings.n_procs)
+        mesh_names = {"blockMesh", "features", "snappyHexMesh", "checkMesh"}
+        if mesh_only:
+            stages = [s for s in stages if s.log_name in mesh_names]
+        elif solve_only:
+            stages = [s for s in stages if s.log_name not in mesh_names and s.log_name != "foamToVTK"]
+        total = sum(s.weight for s in stages) or 1.0
+        stages = [replace(s, weight=s.weight / total) for s in stages]
         done = 0.0
         for stage in stages:
             if self.aborted:
@@ -1510,6 +1523,42 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
                         extra={"case_dir": str(layout.case_dir), "cells": layout.cells,
                                "mesh_quality": report.mesh_quality,
                                "iterations": report.iterations, "vtk_file": str(path)})
+
+
+def run_openfoam_polar(model: GeometryModel, settings: CaseSettings, env: OpenFOAMEnvironment,
+                       runner: "OpenFOAMRunner", alphas: Sequence[float],
+                       on_point: Optional[Callable[[int, float, dict[str, float]], None]] = None,
+                       cancelled: Optional[Callable[[], bool]] = None,
+                       progress: Optional[Callable[[float, str], None]] = None) -> tuple[Path, list[tuple[float, dict]]]:
+    """OpenFOAM polar: mesh once, then one solver run per angle of attack on a copy of that mesh.
+
+    Only the inflow direction (0/U and the far-field patches) and the force directions change with α, so
+    the snappyHexMesh mesh is reused: each extra point costs one solver run (no meshing, no VTK export).
+    Returns the base case directory and ``[(alpha, coefficients), ...]``."""
+    base_cond = settings.conditions
+    first = replace(settings, conditions=replace(base_cond, alpha_deg=float(alphas[0])))
+    base = write_case(model, first)
+    n = len(alphas)
+    if progress is not None:          # one meshing run + n solver runs on one overall progress bar
+        runner._on_progress = lambda f, m: progress(f / (n + 1), f"Mesh: {m}")
+    runner.run_stages(base, first, mesh_only=True)
+    points: list[tuple[float, dict]] = []
+    for k, a in enumerate(alphas):
+        if runner.aborted or (cancelled is not None and cancelled()):
+            raise OpenFOAMAborted("Polar sweep aborted by the user.")
+        st = replace(settings, conditions=replace(base_cond, alpha_deg=float(a)))
+        lay = write_case(model, st, base.case_dir.parent / f"{base.case_dir.name}_a{a:+06.2f}".replace("+", "p")
+                         .replace("-", "m"))
+        shutil.copytree(base.case_dir / "constant" / "polyMesh", lay.case_dir / "constant" / "polyMesh",
+                        dirs_exist_ok=True)
+        if progress is not None:
+            runner._on_progress = lambda f, m, k=k, a=a: progress((k + 1 + f) / (n + 1), f"α {a:g}° ({k + 1}/{n}): {m}")
+        rep = runner.run_stages(lay, st, mesh_only=False, solve_only=True)
+        coeffs = read_force_coefficients(lay.case_dir) or dict(rep.coefficients)
+        points.append((float(a), coeffs))
+        if on_point is not None:
+            on_point(k, float(a), coeffs)
+    return base.case_dir, points
 
 
 def run_openfoam_case(model: GeometryModel, settings: CaseSettings, env: OpenFOAMEnvironment,

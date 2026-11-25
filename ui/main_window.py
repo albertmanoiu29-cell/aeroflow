@@ -53,8 +53,8 @@ from ui.run_history import RunHistoryWidget
 from ui.toast import ToastManager
 from ui.updates_ui import UpdateChecker, UpdateDialog
 from ui.workers import (
-    DetectOpenFOAMWorker, InstantSolveWorker, LoadGeometryWorker, OpenFOAMWorker, PolarSweepWorker, RepairWorker,
-    SweepRequest, TaskManager,
+    DetectOpenFOAMWorker, GridCheckWorker, InstantSolveWorker, LoadGeometryWorker, OpenFOAMPolarWorker, OpenFOAMWorker,
+    PolarSweepWorker, RepairWorker, SweepRequest, TaskManager,
 )
 from utils.logger import ConsoleLogWidget, get_logger
 from utils.sysinfo import system_report
@@ -71,7 +71,8 @@ MODES: tuple[AppMode, ...] = (AppMode.CFD, AppMode.POLAR, AppMode.LIVE)
 
 #: Worker types that "Abort" (Esc) may cancel. OpenFOAM *detection* is deliberately excluded, so an
 #: abort never leaves the engine pill stuck on "detecting…".
-_ABORTABLE = (InstantSolveWorker, PolarSweepWorker, OpenFOAMWorker, LoadGeometryWorker, RepairWorker)
+_ABORTABLE = (InstantSolveWorker, PolarSweepWorker, OpenFOAMWorker, OpenFOAMPolarWorker, GridCheckWorker,
+              LoadGeometryWorker, RepairWorker)
 
 _SETTINGS_VERSION = 4         # bump when the dock layout changes so stale layouts are ignored
 
@@ -980,8 +981,26 @@ class MainWindow(QMainWindow):
         if not angles or not check.ok:
             self._error("Invalid polar sweep", check.summary() or "The sweep contains no angles of attack.")
             return
-        req = SweepRequest(self.cfd_panel.conditions(), start, stop, step, self.cfd_panel.quality_value())
-        worker = PolarSweepWorker(self.solver, model, req)
+        if self.engine == SolverEngine.OPENFOAM:
+            if not self.of_env.available:
+                self._show_setup_dialog()
+                return
+            ans = QMessageBox.question(
+                self, "OpenFOAM polar sweep",
+                f"Run {len(angles)} OpenFOAM cases ({start:g}° to {stop:g}°)?\n\nThe mesh is built once and reused, "
+                "so each angle costs one solver run (typically 1-5 minutes each on a Coarse / Medium grid). "
+                "Progress and the coefficients of each angle appear in the status bar and the Log tab.")
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+                settings = CaseSettings(self.cfd_panel.conditions(), self.cfd_panel.quality_value(),
+                                    iterations=self.cfd_panel.openfoam_iterations(),
+                                    n_procs=self.cfd_panel.openfoam_procs(),
+                                    boundary_layers=self.cfd_panel.openfoam_layers())
+            worker = OpenFOAMPolarWorker(self.of_env, model, settings, angles)
+            worker.signals.message.connect(self._on_worker_message)
+        else:
+            req = SweepRequest(self.cfd_panel.conditions(), start, stop, step, self.cfd_panel.quality_value())
+            worker = PolarSweepWorker(self.solver, model, req)
         self._sweep_worker = worker
         self.cfd_panel.set_busy(True, sweeping=True)
         log.info("Polar sweep %.1f° → %.1f° (step %.2f°, %d points)…", start, stop, step, len(angles))
@@ -1246,8 +1265,6 @@ class MainWindow(QMainWindow):
         if model is None:
             self._status("Load or generate a geometry first.")
             return
-        from ui.workers import GridCheckWorker
-
         self._status("Grid convergence check: solving on three grids…")
         self.tasks.start(GridCheckWorker(self.solver, model, self.cfd_panel.conditions()),
                          on_result=self._on_grid_check, on_error=lambda m, tb: self._error("Grid check failed", m),
@@ -1418,6 +1435,17 @@ class MainWindow(QMainWindow):
             if opt.write_csv and self.polar is not None:
                 export_polar_csv(self.polar, opt.path.with_suffix(".csv"))
             log.success("Report saved: %s", out)
+            if opt.write_pdf:
+                from ui.pdf_export import html_to_pdf
+
+                def pdf_done(path: Optional[Path], error: str) -> None:
+                    if path is not None:
+                        log.success("PDF report saved: %s", path)
+                        self.notify(f"PDF report saved: {path.name}", "success")
+                    else:
+                        log.warning(error)
+
+                html_to_pdf(Path(out), Path(out).with_suffix(".pdf"), pdf_done)
             self.notify(f"Report saved: {Path(out).name}", "success")
         except Exception as exc:  # noqa: BLE001
             self._error("Report export failed", str(exc))

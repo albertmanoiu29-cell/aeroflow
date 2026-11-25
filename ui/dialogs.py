@@ -139,6 +139,7 @@ class ReportOptions:
     include_polar_charts: bool
     write_csv: bool
     notes: str
+    write_pdf: bool = False
 
 
 class ExportReportDialog(QDialog):
@@ -173,7 +174,9 @@ class ExportReportDialog(QDialog):
         self.c_csv = QCheckBox("Also write the polar data as CSV next to the report")
         self.c_csv.setChecked(has_polar)
         self.c_csv.setEnabled(has_polar)
-        for c in (self.c_shot, self.c_polar, self.c_csv):
+        self.c_pdf = QCheckBox("Also save a PDF (A4, for printing and e-mail)")
+        self.c_pdf.setChecked(True)
+        for c in (self.c_shot, self.c_polar, self.c_csv, self.c_pdf):
             cl.addWidget(c)
         cl.addWidget(make_section_label("Notes (optional)"))
         self.notes = QPlainTextEdit()
@@ -199,7 +202,7 @@ class ExportReportDialog(QDialog):
         if p.suffix.lower() != ".html":
             p = p.with_suffix(".html")
         return ReportOptions(p, self.c_shot.isChecked(), self.c_polar.isChecked(), self.c_csv.isChecked(),
-                             self.notes.toPlainText().strip())
+                             self.notes.toPlainText().strip(), self.c_pdf.isChecked())
 
 
 HELP_QUICKSTART = """\

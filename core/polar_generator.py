@@ -158,7 +158,13 @@ def export_html_report(path: str | Path, polar: Optional[PolarData] = None,
         "h1{color:#00E5FF;margin:0 0 4px}h2{color:#6366F1;margin-top:28px}"
         "table{border-collapse:collapse;min-width:360px}td,th{padding:6px 14px;border-bottom:1px solid #1E293B;"
         "text-align:left}th{color:#94A3B8;font-weight:600}.grid{display:flex;flex-wrap:wrap;gap:16px}"
-        ".muted{color:#94A3B8}svg{max-width:100%}</style></head><body>",
+        ".muted{color:#94A3B8}svg{max-width:100%}"
+        # Printing / PDF: dark text on white paper (the SVG presentation colours are overridden by CSS).
+        "@media print{body{background:#fff;color:#0F172A;padding:0}h1{color:#0369A1}h2{color:#4338CA;"
+        "break-after:avoid}td,th{border-bottom:1px solid #CBD5E1}th,.muted{color:#475569}"
+        "svg{break-inside:avoid}svg>rect:first-child{fill:#FFFFFF;stroke:#CBD5E1}svg text{fill:#334155}"
+        "svg line{stroke:#E2E8F0}img{break-inside:avoid;max-width:100%}table{break-inside:avoid}}"
+        "</style></head><body>",
         f"<h1>{esc(title)}</h1><div class='muted'>{esc(APP_NAME)} {esc(APP_VERSION)} · "
         f"{datetime.now():%Y-%m-%d %H:%M}</div>"]
     if polar is not None:

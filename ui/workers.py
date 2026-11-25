@@ -391,3 +391,50 @@ class GridCheckWorker(BaseWorker):
         results, sizes = grid_check(self.solver, self.model, self.conditions,
                                     progress=lambda k, q: self.report(k / 3.0, f"Solving on the {q} grid"))
         return describe(results, sizes)
+
+
+class OpenFOAMPolarWorker(BaseWorker):
+    """OpenFOAM polar sweep (one mesh, one solver run per angle). Result: :class:`core.results.PolarData`."""
+
+    title = "OpenFOAM polar sweep"
+
+    def __init__(self, env: OpenFOAMEnvironment, model: GeometryModel, settings: CaseSettings,
+                 alphas: list[float]) -> None:
+        super().__init__()
+        self.env, self.model, self.settings, self.alphas = env, model, settings, list(alphas)
+        self._runner: Optional[OpenFOAMRunner] = None
+        self._runner_lock = threading.Lock()
+
+    def cancel(self) -> None:
+        super().cancel()
+        with self._runner_lock:
+            runner = self._runner
+        if runner is not None:
+            runner.abort()
+
+    def work(self) -> Any:
+        import numpy as np
+
+        from core.openfoam_bridge import run_openfoam_polar
+        from core.results import PolarData
+
+        runner = OpenFOAMRunner(self.env, on_log=self.signals.message.emit)
+        with self._runner_lock:
+            self._runner = runner
+        _base, pts = run_openfoam_polar(
+            self.model, self.settings, self.env, runner, self.alphas, cancelled=lambda: self.is_cancelled,
+            progress=lambda f, m: self.report(min(f, 0.99), m),
+            on_point=lambda k, a, c: self.signals.message.emit(
+                f"OpenFOAM polar α {a:g}°: CL {c.get('Cl', float('nan')):+.4f}  CD {c.get('Cd', float('nan')):.5f}"))
+        ok = [(a, c) for a, c in pts if "Cl" in c and "Cd" in c]
+        if len(ok) < 2:
+            raise RuntimeError("Fewer than two angles produced force coefficients.")
+        info = self.model.info
+        cond = self.settings.conditions
+        atm = cond.atmosphere
+        return PolarData(alpha_deg=np.array([a for a, _ in ok]), cl=np.array([c["Cl"] for _, c in ok]),
+                         cd=np.array([c["Cd"] for _, c in ok]), cm=np.array([c.get("Cm", 0.0) for _, c in ok]),
+                         reynolds=atm.density * cond.velocity_ms * info.chord_m / atm.dynamic_viscosity,
+                         mach=cond.mach, velocity_ms=cond.velocity_ms, ref_area_m2=info.reference_area_m2,
+                         ref_length_m=info.chord_m, span_m=info.span_m, aspect_ratio=info.aspect_ratio,
+                         moment_ref=tuple(info.moment_ref_point), geometry_name=self.model.name, engine="OpenFOAM")
