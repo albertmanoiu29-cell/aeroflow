@@ -3,6 +3,11 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.5.1] - 2026-11-25
+
+### Fixed
+- **OpenFOAM polar sweeps** crashed as soon as you confirmed the sweep. They now run again, including compressible and rotating-propeller sweeps.
+
 ## [1.5.0] - 2026-11-25
 
 ### Added: 3-D visualization
