@@ -3,7 +3,7 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
-## [Unreleased]
+## [1.4.1] - 2026-11-25
 
 ### Added
 - **Update check:** *Help ▸ Check for updates…*. An automatic check runs at most once a day and can be turned

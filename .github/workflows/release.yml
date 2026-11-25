@@ -35,11 +35,24 @@ jobs:
           ./packaging/build_release.ps1
           Copy-Item "dist/AeroFlow Studio.exe" "dist/AeroFlow.Studio.exe"
 
+      - name: Release notes from CHANGELOG.md
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v")
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($v))\]").LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no section for $v" }
+          $rest = $lines[$start..($lines.Count - 1)]
+          $end = ($rest | Select-String -Pattern "^## \[" | Select-Object -First 1).LineNumber
+          $body = if ($end) { $rest[0..($end - 2)] } else { $rest }
+          $intro = "Download **AeroFlowStudio-Setup-$v.exe** below and run it (Windows 10/11, 64-bit; no admin rights needed)."
+          ($intro, "", $body) | Set-Content -Encoding utf8 release_notes.md
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           name: AeroFlow Studio ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release_notes.md
           files: |
             dist/AeroFlowStudio-Setup-*.exe
             dist/AeroFlow.Studio.exe
