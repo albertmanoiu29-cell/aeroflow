@@ -1027,7 +1027,7 @@ class MainWindow(QMainWindow):
                 "Progress and the coefficients of each angle appear in the status bar and the Log tab.")
             if ans != QMessageBox.StandardButton.Yes:
                 return
-                settings = CaseSettings(self.cfd_panel.conditions(), self.cfd_panel.quality_value(),
+            settings = CaseSettings(self.cfd_panel.conditions(), self.cfd_panel.quality_value(),
                                     iterations=self.cfd_panel.openfoam_iterations(),
                                     n_procs=self.cfd_panel.openfoam_procs(),
                                     boundary_layers=self.cfd_panel.openfoam_layers(),

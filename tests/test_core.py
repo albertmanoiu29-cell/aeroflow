@@ -393,3 +393,24 @@ def test_propeller_mrf_case_and_performance(tmp_path) -> None:
     assert p["thrust_n"] == pytest.approx(182.0) and p["torque_nm"] == pytest.approx(28.0)
     assert p["CT"] == pytest.approx(182.0 / (1.225 * n * n), rel=1e-9)
     assert p["J"] == pytest.approx(15.0 / n) and 0.0 < p["eta"] < 1.0
+
+
+def test_no_unreachable_code_after_return() -> None:
+    """Statements after return / raise / break / continue in the same block never run (a mis-indented block
+    once left the OpenFOAM polar settings unassigned and crashed the sweep)."""
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    bad = []
+    for path in [*root.glob("core/*.py"), *root.glob("ui/*.py"), *root.glob("visualization/*.py"),
+                 *root.glob("config/*.py"), root / "main.py"]:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                block = getattr(node, field, None)
+                if not isinstance(block, list):
+                    continue
+                for i, stmt in enumerate(block[:-1]):
+                    if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                        bad.append(f"{path.name}:{block[i + 1].lineno}")
+    assert not bad, f"unreachable code at {bad}"
