@@ -569,6 +569,31 @@ class CFDPanel(QWidget):
         ob.addWidget(labeled_row("Flow model", self.of_flow,
                                  "Compressible solves density and temperature too (perfect-gas air): needed above "
                                  "about Mach 0.3 for accurate pressures; slices can then show the local Mach number."))
+        self.of_run = QComboBox()
+        self.of_run.addItem("Steady (RANS)", "steady")
+        self.of_run.addItem("Transient (unsteady, PIMPLE)", "transient")
+        ob.addWidget(labeled_row("Run type", self.of_run,
+                                 "Transient resolves unsteady wakes and vortex shedding in time and saves frames to "
+                                 "play back (Simulation ▸ Play transient result). Incompressible only."))
+        self.of_ctimes = QDoubleSpinBox()
+        self.of_ctimes.setRange(2.0, 200.0)
+        self.of_ctimes.setValue(12.0)
+        self.of_ctimes.setSuffix(" t*")
+        self.of_frames = QSpinBox()
+        self.of_frames.setRange(4, 200)
+        self.of_frames.setValue(24)
+        self.of_frames.setSuffix(" frames")
+        trow = QHBoxLayout()
+        trow.addWidget(self.of_ctimes)
+        trow.addWidget(self.of_frames)
+        self.of_trans_box = QWidget()
+        self.of_trans_box.setLayout(trow)
+        self.of_trans_box.setToolTip("Duration in convective times t* = t·V/L (how many body lengths the air "
+                                     "travels) and the number of saved frames")
+        ob.addWidget(self.of_trans_box)
+        self.of_trans_box.setVisible(False)
+        self.of_run.currentIndexChanged.connect(lambda _i: self.of_trans_box.setVisible(
+            self.of_run.currentData() == "transient"))
         self.of_layers = QSpinBox()
         self.of_layers.setRange(-1, 15)
         self.of_layers.setValue(-1)
@@ -849,6 +874,10 @@ class CFDPanel(QWidget):
         """Whether OpenFOAM should solve compressible air for the current conditions."""
         mode = self.of_flow.currentData()
         return mode == "compressible" or (mode == "auto" and self.conditions().mach >= 0.3)
+
+    def openfoam_transient(self) -> tuple[bool, float, int]:
+        """(transient?, duration in convective times, number of frames)."""
+        return (self.of_run.currentData() == "transient", float(self.of_ctimes.value()), int(self.of_frames.value()))
 
     def openfoam_layers(self) -> Optional[int]:
         """Requested prism layers (None: the grid preset's number)."""

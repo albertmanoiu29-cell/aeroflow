@@ -322,6 +322,9 @@ class CaseSettings:
     write_interval: int = OPENFOAM.write_interval
     boundary_layers: Optional[int] = None      # prism layers on the body (None: the quality preset's value)
     compressible: bool = False                 # perfect-gas air (fluid / rhoSimpleFoam) instead of incompressible
+    transient: bool = False                    # time-accurate PIMPLE run (unsteady wakes, shedding)
+    convective_times: float = 12.0             # transient duration in t* = t V / L (flow passes over the body)
+    frames: int = 24                           # transient: saved, evenly spaced snapshots
 
 
 @dataclass(frozen=True)
@@ -411,8 +414,8 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
             "system/snappyHexMeshDict": _snappy_dict(layout, info, preset, settings.quality),
             "system/meshQualityDict": _mesh_quality_dict(),
             "system/controlDict": _control_dict(layout, info, cond, settings),
-            "system/fvSchemes": _fv_schemes(),
-            "system/fvSolution": _fv_solution(),
+            "system/fvSchemes": _fv_schemes(settings.transient and not settings.compressible),
+            "system/fvSolution": _fv_solution(settings.transient and not settings.compressible),
             "system/decomposeParDict": _decompose_dict(max(1, settings.n_procs)),
             "constant/turbulenceProperties": _turbulence(esi=True),
             "constant/momentumTransport": _turbulence(esi=False),
@@ -672,9 +675,11 @@ def _control_dict(c: CaseLayout, info: GeometryInfo, cond: FlowConditions, s: Ca
     lift_dir = (-math.sin(a), 0.0, math.cos(a))
     iters = int(max(10, s.iterations))
     write = int(max(1, min(s.write_interval, iters)))
-    application = "rhoSimpleFoam" if s.compressible else "simpleFoam"
+    application = "rhoSimpleFoam" if s.compressible else ("pimpleFoam" if s.transient else "simpleFoam")
     solver = "fluid" if s.compressible else "incompressibleFluid"
     rho_line = "rho             rho;" if s.compressible else "rho             rhoInf;"
+    if s.transient and not s.compressible:
+        return _transient_control(c, info, cond, s, application, solver, rho_line, drag_dir, lift_dir)
     return _header("dictionary", "controlDict") + f"""application     {application};
 solver          {solver};
 
@@ -732,11 +737,67 @@ functions
 """
 
 
-def _fv_schemes() -> str:
+def transient_end_time(info: GeometryInfo, cond: FlowConditions, s: CaseSettings) -> float:
+    """Physical end time of a transient run: ``convective_times`` passes of the flow over the body."""
+    length = max(info.chord_m, 1e-6)
+    return float(s.convective_times) * length / max(cond.velocity_ms, 1e-6)
+
+
+def _transient_control(c: CaseLayout, info: GeometryInfo, cond: FlowConditions, s: CaseSettings, application: str,
+                       solver: str, rho_line: str, drag_dir: tuple, lift_dir: tuple) -> str:
+    end = transient_end_time(info, cond, s)
+    every = end / max(int(s.frames), 1)
+    dt0 = 0.2 * c.base_cell / max(cond.velocity_ms, 1e-6)      # Courant ~0.2 on the background mesh to start
+    return _header("dictionary", "controlDict") + f"""application     {application};
+solver          {solver};
+
+startFrom       latestTime;
+startTime       0;
+stopAt          endTime;
+endTime         {end:.9g};
+deltaT          {dt0:.6g};
+adjustTimeStep  yes;
+maxCo           2;
+maxDeltaT       {every:.6g};
+writeControl    adjustableRunTime;
+writeInterval   {every:.9g};
+purgeWrite      0;
+writeFormat     binary;
+writePrecision  8;
+writeCompression off;
+timeFormat      general;
+timePrecision   8;
+runTimeModifiable true;
+
+functions
+{{
+    forceCoeffs
+    {{
+        type            forceCoeffs;
+        libs            ("libforces.so");
+        writeControl    timeStep;
+        writeInterval   1;
+        log             yes;
+        patches         ("body.*");
+        {rho_line}
+        rhoInf          {c.rho:.9g};
+        CofR            {_vec(info.moment_ref_point)};
+        dragDir         {_vec(drag_dir)};
+        liftDir         {_vec(lift_dir)};
+        pitchAxis       (0 1 0);
+        magUInf         {cond.velocity_ms:.9g};
+        lRef            {info.chord_m:.9g};
+        Aref            {info.reference_area_m2:.9g};
+    }}
+}}
+"""
+
+
+def _fv_schemes(transient: bool = False) -> str:
     return _header("dictionary", "fvSchemes") + """ddtSchemes
 {
-    default         steadyState;
-}
+    default         %s;
+}""" % ("Euler" if transient else "steadyState") + """
 
 gradSchemes
 {
@@ -778,7 +839,7 @@ wallDist
 """
 
 
-def _fv_solution() -> str:
+def _fv_solution(transient: bool = False) -> str:
     algorithm = """{
     nNonOrthogonalCorrectors 1;
     consistent      no;
@@ -825,26 +886,37 @@ SIMPLE
 PIMPLE
 {{
     nOuterCorrectors 1;
-    nCorrectors      1;
+    nCorrectors      {2 if transient else 1};
     nNonOrthogonalCorrectors 1;
     consistent      no;
 }}
 
-relaxationFactors
-{{
+{_TRANSIENT_RELAX if transient else _STEADY_RELAX}
+"""
+
+
+_STEADY_RELAX = """relaxationFactors
+{
     fields
-    {{
+    {
         p               0.3;
-    }}
+    }
     equations
-    {{
+    {
         U               0.7;
         k               0.7;
         omega           0.7;
         ".*"            0.7;
-    }}
-}}
-"""
+    }
+}"""
+# Time-accurate PIMPLE: no under-relaxation (it would slow the physical time evolution).
+_TRANSIENT_RELAX = """relaxationFactors
+{
+    equations
+    {
+        ".*"            1;
+    }
+}"""
 
 
 def _decompose_dict(n: int) -> str:
@@ -1298,10 +1370,12 @@ class OpenFOAMRunner:
             return argv
         raise OpenFOAMError("OpenFOAM is not available.")
 
-    def _stages(self, n_procs: int, compressible: bool = False) -> list[_Stage]:
+    def _stages(self, n_procs: int, compressible: bool = False, transient: bool = False) -> list[_Stage]:
         """Pipeline for the detected flavour."""
         if compressible:
             solver = "foamRun -solver fluid" if "foamRun" in self.env.executables else "rhoSimpleFoam"
+        elif transient:
+            solver = "foamRun -solver incompressibleFluid" if "foamRun" in self.env.executables else "pimpleFoam"
         else:
             solver = "foamRun -solver incompressibleFluid" if self.env.uses_foam_run else "simpleFoam"
         stages = [
@@ -1314,10 +1388,11 @@ class OpenFOAMRunner:
         if n_procs > 1 and has_mpi:
             stages.append(_Stage("Decomposing case", "decomposePar -force", 0.01, "decomposePar"))
             stages.append(_Stage("Solving RANS k-ω SST", f"mpirun -np {n_procs} {solver} -parallel", 0.62, "solver"))
-            stages.append(_Stage("Reconstructing", "reconstructPar -latestTime", 0.02, "reconstructPar"))
+            stages.append(_Stage("Reconstructing", "reconstructPar -noZero" if transient else "reconstructPar -latestTime", 0.02, "reconstructPar"))
         else:
             stages.append(_Stage("Solving RANS k-ω SST", solver, 0.64, "solver"))
-        stages.append(_Stage("Converting results (foamToVTK)", "foamToVTK -latestTime", 0.06, "foamToVTK"))
+        stages.append(_Stage("Converting results (foamToVTK)", "foamToVTK -noZero" if transient else
+                             "foamToVTK -latestTime", 0.06, "foamToVTK"))
         return stages
 
     # -- execution -------------------------------------------------------
@@ -1333,7 +1408,12 @@ class OpenFOAMRunner:
         self._case_dir = case_dir
         report = RunReport(case_dir=case_dir, success=False)
         t0 = time.perf_counter()
-        stages = self._stages(settings.n_procs, settings.compressible)
+        transient = settings.transient and not settings.compressible
+        stages = self._stages(settings.n_procs, settings.compressible, transient)
+        self._end_time = None
+        if transient:          # progress = simulated time / end time (the time step adapts)
+            m = re.search(r"^endTime\s+([0-9.eE+-]+);", (case_dir / "system" / "controlDict").read_text(), re.M)
+            self._end_time = float(m.group(1)) if m else None
         mesh_names = {"blockMesh", "features", "snappyHexMesh", "checkMesh"}
         if mesh_only:
             stages = [s for s in stages if s.log_name in mesh_names]
@@ -1404,16 +1484,25 @@ class OpenFOAMRunner:
                             if current:
                                 self._emit_residuals(iteration, current, report)
                                 current = {}
-                            try:
-                                iteration = int(float(m.group(1)))
-                            except ValueError:
+                            end_time = getattr(self, "_end_time", None)
+                            if end_time:                 # transient: count time steps, progress by time
                                 iteration += 1
+                                try:
+                                    frac = min(float(m.group(1)) / end_time, 1.0)
+                                except ValueError:
+                                    frac = 0.0
+                            else:
+                                try:
+                                    iteration = int(float(m.group(1)))
+                                except ValueError:
+                                    iteration += 1
+                                frac = min(iteration / max(iterations, 1), 1.0)
                             report.iterations = iteration
-                            frac = min(iteration / max(iterations, 1), 1.0)
                             now = time.monotonic()
                             if now - last_emit > 0.2:
                                 self._on_progress(base_progress + stage.weight * frac,
-                                                  f"Iteration {iteration} / {iterations}")
+                                                  f"Time {100 * frac:.0f} % ({iteration} steps)" if end_time
+                                                  else f"Iteration {iteration} / {iterations}")
                                 last_emit = now
                             continue
                         r = _RE_RESIDUAL.search(line)
@@ -1580,8 +1669,68 @@ def _surface_from_block(block: Any) -> Optional[SurfaceField]:
         return None
 
 
+def transient_frames(case_dir: Path) -> list[tuple[float, Path]]:
+    """Internal-field VTK files of a transient run, ``[(time, path), ...]`` sorted by time.
+
+    foamToVTK names its files by time-step *index*, so the physical times come from the case's time
+    folders (same order); without them the index is used as the label."""
+    case_dir = Path(case_dir)
+    vtk_dir = case_dir / "VTK"
+    files = []
+    for f in (vtk_dir.glob("*.vtk") if vtk_dir.is_dir() else []):
+        try:
+            files.append((int(f.stem.rsplit("_", 1)[-1]), f))
+        except ValueError:
+            continue
+    files.sort()
+    times = []
+    for d in case_dir.iterdir():
+        if d.is_dir():
+            try:
+                t = float(d.name)
+            except ValueError:
+                continue
+            if t > 0.0:
+                times.append(t)
+    times.sort()
+    if len(times) == len(files):
+        return [(t, f) for t, (_i, f) in zip(times, files)]
+    return [(float(i), f) for i, f in files]
+
+
+def force_history(case_dir: Path) -> dict[str, np.ndarray]:
+    """Whole forceCoeffs time series: ``{"t", "Cl", "Cd", "Cm"}`` (empty dict if absent)."""
+    root = Path(case_dir) / "postProcessing"
+    files = sorted(list(root.rglob("forceCoeffs*.dat")) + list(root.rglob("coefficient*.dat")),
+                   key=lambda p: p.stat().st_mtime) if root.is_dir() else []
+    for path in reversed(files):
+        header: list[str] = []
+        rows: list[list[float]] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("#"):
+                cols = line.lstrip("#").split()
+                if cols and cols[0].lower() == "time":
+                    header = cols
+            elif line.strip() and header:
+                try:
+                    rows.append([float(x) for x in line.split()[:len(header)]])
+                except ValueError:
+                    continue
+        if header and rows:
+            a = np.asarray(rows)
+            idx = {name: k for k, name in enumerate(header)}
+            out = {"t": a[:, 0]}
+            for key, names in (("Cl", ("Cl",)), ("Cd", ("Cd",)), ("Cm", ("CmPitch", "Cm"))):
+                for n in names:
+                    if n in idx and idx[n] < a.shape[1]:
+                        out[key] = a[:, idx[n]]
+                        break
+            return out
+    return {}
+
+
 def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: CaseSettings,
-                         report: RunReport) -> SolverResult:
+                         report: RunReport, vtk_path: Optional[Path] = None) -> SolverResult:
     """Read foamToVTK output and assemble a :class:`SolverResult`.
 
     Pressure in incompressible OpenFOAM is kinematic (p/rho), so ``Cp = p / (0.5 V^2)``.
@@ -1591,9 +1740,10 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
     """
     import pyvista as pv   # local import keeps the module importable without VTK for detection
 
-    path = find_vtk_output(layout.case_dir)
+    path = vtk_path or find_vtk_output(layout.case_dir)
     if path is None:
         raise OpenFOAMError("foamToVTK produced no output files.")
+    frame_time = path.stem.rsplit("_", 1)[-1]          # body patch files of the same write time
     try:
         data = pv.read(str(path))
     except Exception as exc:
@@ -1632,7 +1782,8 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
         for patch_dir in (path.parent / path.stem, path.parent / "body"):
             files = sorted(patch_dir.rglob("body*.vt*"), key=lambda p: p.stat().st_mtime) if patch_dir.is_dir() else []
             if files:
-                newest_time = files[-1].stem.rsplit("_", 1)[-1]
+                times = {f.stem.rsplit("_", 1)[-1] for f in files}
+                newest_time = frame_time if frame_time in times else files[-1].stem.rsplit("_", 1)[-1]
                 for f in files:
                     if f.stem.rsplit("_", 1)[-1] != newest_time:
                         continue                      # an older write time of the same patch
@@ -1714,6 +1865,7 @@ def load_openfoam_result(model: GeometryModel, layout: CaseLayout, settings: Cas
                         residuals=report.residuals,
                         extra={"case_dir": str(layout.case_dir), "cells": layout.cells,
                                "mesh_quality": report.mesh_quality,
+                               "transient": bool(settings.transient and not settings.compressible),
                                "iterations": report.iterations, "vtk_file": str(path)})
 
 

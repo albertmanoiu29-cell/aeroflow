@@ -281,7 +281,7 @@ def test_main_window_imports() -> None:
     """Guards against syntax errors in the UI modules (the other tests do not import them)."""
     import importlib
 
-    for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare",
+    for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel"):
         importlib.import_module(mod)
 
@@ -342,3 +342,27 @@ def test_openfoam_compressible_case_files(tmp_path) -> None:
     lay2 = ob.write_case(m, ob.CaseSettings(conditions=FlowConditions()), tmp_path / "inc")
     assert "incompressibleFluid" in (lay2.case_dir / "system/controlDict").read_text()
     assert not (lay2.case_dir / "0/T").exists()
+
+
+def test_transient_strouhal_and_case_files(tmp_path) -> None:
+    from config.settings import FlowConditions, GeometryPreset, GridQuality
+    from core import openfoam_bridge as ob
+    from core.geometry_manager import build_preset
+    from ui.transient_player import strouhal
+
+    t = np.linspace(0.0, 10.0, 2000)
+    cl = 0.3 * np.sin(2 * np.pi * 1.7 * t) + 0.02 * np.sin(2 * np.pi * 9.0 * t)
+    assert strouhal(t, cl, length=2.0, speed=10.0) == pytest.approx(1.7 * 2.0 / 10.0, rel=0.03)
+    assert strouhal(t, np.zeros_like(t), 2.0, 10.0) is None          # steady: no frequency
+
+    m = build_preset(GeometryPreset.SPHERE)
+    m = getattr(m, "model", m)
+    st = ob.CaseSettings(conditions=FlowConditions(velocity_ms=20.0), quality=GridQuality.COARSE, transient=True,
+                         convective_times=10.0, frames=20)
+    d = ob.write_case(m, st, tmp_path / "tr").case_dir
+    ctrl = (d / "system/controlDict").read_text()
+    assert "adjustTimeStep  yes;" in ctrl and "writeControl    adjustableRunTime;" in ctrl
+    end = ob.transient_end_time(m.info, st.conditions, st)
+    assert f"endTime         {end:.9g};" in ctrl
+    assert "Euler" in (d / "system/fvSchemes").read_text()
+    assert '".*"            1;' in (d / "system/fvSolution").read_text()

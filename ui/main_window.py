@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -469,6 +470,8 @@ class MainWindow(QMainWindow):
           "Remember the current result as 'A' to compare later results against")
         a(m_sim, "Compare with pinned result…", self.compare_results, "Ctrl+Shift+K",
           "Side-by-side 3-D views (linked cameras), coefficient differences and a ΔCp surface")
+        a(m_sim, "Play transient result…", self.play_transient, "",
+          "Step through the frames of a transient OpenFOAM run, with CL / CD against time")
         a(m_sim, "Grid convergence check…", self.grid_check, "",
           "Solve on the Coarse, Medium and Fine grids: Richardson extrapolation and the grid convergence index")
         m_sim.addSeparator()
@@ -927,6 +930,12 @@ class MainWindow(QMainWindow):
                                 n_procs=self.cfd_panel.openfoam_procs(),
                                 boundary_layers=self.cfd_panel.openfoam_layers(),
                                 compressible=self.cfd_panel.openfoam_compressible())
+        transient, ctimes, frames = self.cfd_panel.openfoam_transient()
+        if transient:
+            if settings.compressible:
+                self._status("Transient runs are incompressible only - running a steady compressible solve.")
+            else:
+                settings = replace(settings, transient=True, convective_times=ctimes, frames=frames)
         worker = OpenFOAMWorker(self.of_env, model, settings)
         worker.signals.residuals.connect(self._on_residuals)
         worker.signals.coefficients.connect(self._on_live_coefficients)
@@ -971,6 +980,8 @@ class MainWindow(QMainWindow):
         self.result = result
         k = result.kpis
         self.cfd_view.set_result(result)
+        if result.extra and result.extra.get("transient"):
+            QTimer.singleShot(300, self.play_transient)       # step through the saved frames
         self.cp_chart.set_data(result.chord_cp)
         self.span_chart.set_data(result.extra)
         self.runs.add_result(result, model.name)
@@ -1360,6 +1371,19 @@ class MainWindow(QMainWindow):
         self.cfd_panel.apply_units()
         if self.result is not None:
             self.cfd_view.hud.update_kpis(self.result.kpis, self.result.engine)
+
+    def play_transient(self) -> None:
+        r = self.result
+        if r is None or not r.extra or not r.extra.get("transient") or "of_layout" not in r.extra:
+            self._status("Run a transient OpenFOAM simulation first (OpenFOAM ▸ Run type: Transient).")
+            return
+        from ui.transient_player import TransientPlayer
+
+        if self.mode != AppMode.CFD:
+            self._set_mode(AppMode.CFD)
+        dlg = TransientPlayer(r, self.cfd_view.set_result, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
 
     _pinned_result: Optional[tuple[GeometryModel, SolverResult]] = None
 

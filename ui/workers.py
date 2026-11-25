@@ -252,7 +252,14 @@ class OpenFOAMWorker(BaseWorker):
             raise OpenFOAMAborted("Simulation aborted by the user.")
         report = runner.run(layout, self.settings)
         self.report(0.99, "Loading OpenFOAM results")
-        result = load_openfoam_result(self.model, layout, self.settings, report)
+        last = None
+        if self.settings.transient and not self.settings.compressible:
+            from core.openfoam_bridge import transient_frames
+
+            frames = transient_frames(layout.case_dir)
+            last = frames[-1][1] if frames else None
+        result = load_openfoam_result(self.model, layout, self.settings, report, vtk_path=last)
+        result.extra.update({"of_model": self.model, "of_layout": layout, "of_settings": self.settings})
         _prepare_visuals(result, self.report)
         return result
 
