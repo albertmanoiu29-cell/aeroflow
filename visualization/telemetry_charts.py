@@ -380,8 +380,51 @@ class PolarCharts(QWidget):
         self.t_best.setText(f"L/D max {ld[i_ld]:.1f} @ {a[i_ld]:.1f}°")
         self.t_best.setPos(float(a[i_ld]), float(ld[i_ld]))
         self.m_best_polar.setData([cd[i_ld]], [cl[i_ld]])
+        self._draw_theory(polar)
         for p in self.plots():
             p.enableAutoRange()
+
+    #: Show lifting-line theory next to the computed polar (validation at a glance).
+    show_theory = True
+
+    def set_show_theory(self, on: bool) -> None:
+        self.show_theory = bool(on)
+        if self.polar is not None:
+            self._draw_theory(self.polar)
+
+    def _draw_theory(self, polar: PolarData) -> None:
+        """Reference curves from classical theory for this wing's aspect ratio:
+
+        * lift: Helmbold's lifting-line slope ``a = 2π AR / (2 + sqrt(AR² + 4))`` through the computed
+          zero-lift angle (valid for attached flow, any aspect ratio);
+        * drag: the ideal polar ``CD = CD0 + CL² / (π e AR)`` with the computed minimum drag and e = 0.9.
+        """
+        for item in getattr(self, "_theory_items", []):
+            for plot in (self.lift, self.drag):
+                try:
+                    plot.removeItem(item)
+                except Exception:  # noqa: BLE001
+                    pass
+        self._theory_items: list = []
+        ar = float(polar.aspect_ratio)
+        a0 = polar.alpha_zero_lift_deg
+        if not self.show_theory or not (0.2 < ar < 60.0) or not np.isfinite(a0) or len(polar.alpha_deg) < 3:
+            return
+        slope = 2.0 * np.pi * ar / (2.0 + np.sqrt(ar * ar + 4.0))          # per radian
+        a = np.linspace(float(polar.alpha_deg.min()), float(polar.alpha_stall_deg), 40)
+        cl_t = slope * np.radians(a - a0)
+        pen = pg.mkPen("#E2E8F0", width=1.4, style=pg.QtCore.Qt.PenStyle.DotLine)
+        if self.lift.getPlotItem().legend is None:
+            self.lift.addLegend(offset=(8, 8), labelTextColor=PALETTE.text_muted,
+                                brush=pg.mkBrush(PALETTE.surface_alt + "B0"))
+        item = self.lift.plot(a, cl_t, pen=pen, name=f"Lifting-line theory (AR {ar:.1f})")
+        item.setZValue(-6)
+        self._theory_items.append(item)
+        cd0 = float(np.min(polar.cd))
+        cl_r = np.linspace(float(np.min(polar.cl)), float(np.max(polar.cl)), 40)
+        item = self.drag.plot(cd0 + cl_r ** 2 / (np.pi * 0.9 * ar), cl_r, pen=pen)
+        item.setZValue(-6)
+        self._theory_items.append(item)
 
     def set_current(self, alpha_deg: Optional[float], cl: Optional[float] = None, cd: Optional[float] = None) -> None:
         """Highlight the current operating point (e.g. the latest single solve)."""

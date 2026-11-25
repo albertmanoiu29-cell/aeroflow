@@ -22,7 +22,8 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QByteArray, QSettings, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDockWidget, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel, QMainWindow,
+    QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
+    QMainWindow,
     QMenuBar, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
     QToolButton, QVBoxLayout, QWidget,
 )
@@ -202,12 +203,18 @@ class MainWindow(QMainWindow):
         self.btn_unpin.setProperty("role", "ghost")
         self.btn_pin.clicked.connect(self._pin_polar)
         self.btn_unpin.clicked.connect(self._clear_pins)
+        self.chk_theory = QCheckBox("Theory")
+        self.chk_theory.setChecked(True)
+        self.chk_theory.setToolTip("Dotted reference curves from classical theory for this wing's aspect ratio: "
+                                   "Helmbold lifting-line lift slope and the ideal drag polar CD0 + CL²/(π·0.9·AR)")
+        head.addWidget(self.chk_theory)
         head.addWidget(self.btn_pin)
         head.addWidget(self.btn_unpin)
         pl.addLayout(head)
         self.polar_headline.setWordWrap(True)
         pl.addWidget(self.polar_headline)              # own line: the summary never collides with buttons
         self.polar_big = PolarCharts(horizontal=True)
+        self.chk_theory.toggled.connect(self.polar_big.set_show_theory)
         pl.addWidget(self.polar_big, 1)
         self.stack.addWidget(polar_page)
         # Live Flow Lab page
