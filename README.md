@@ -25,6 +25,22 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## What's new in 1.5
+
+The full list is in the [CHANGELOG](CHANGELOG.md).
+
+- **Probe the flow with the mouse:** point readouts, line plots, and click-to-seed streamlines. **Oil-flow** streaks show the flow at the surface.
+- **More slices and comparisons:** three-plane slices, an animated slice sweep, λ2 vortex cores, spanwise Cp sections, and a **side-by-side comparison** of two results with a ΔCp surface.
+- **Engineering analysis:**
+  - parametric studies (sideslip, speed/Reynolds/Mach, altitude);
+  - stability (neutral point, static margin);
+  - lifting-line theory overlays;
+  - a grid convergence check (Richardson / GCI);
+  - Kármán-Tsien compressibility, ground effect, flaps and ailerons.
+- **OpenFOAM:** polar sweeps on one shared mesh, skin friction and y⁺ on the body, a checkMesh summary, a boundary-layer control and a live CL/CD chart.
+- **Labs:** load airfoil `.dat` files, time-averaged and RMS fields, a supersonic inlet, GPU-only Extreme grids and MP4 recording.
+- **Workflow:** `.aeroflow` project files, PDF reports, MP4/transparent/VTK exports with *Open in ParaView*, camera bookmarks and Imperial units.
+
 ## GPU acceleration (Live Flow Lab and Supersonic Lab)
 
 - **Compute device: Auto / GPU / CPU.** Pick it in the *Simulation* card of either Lab or under **Simulation ▸ Compute device**. The choice is remembered, and the flow keeps running when you switch. *Auto* uses an NVIDIA GPU when one works and falls back to the CPU otherwise (also if a GPU kernel ever fails).
