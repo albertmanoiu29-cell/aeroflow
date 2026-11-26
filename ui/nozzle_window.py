@@ -122,7 +122,7 @@ class NozzleWindow(QMainWindow):
         self.view = NozzleView()
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(scroll_wrap(self._controls()))
-        splitter.addWidget(self.view)
+        splitter.addWidget(self._centre())
         splitter.addWidget(self._analysis())
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([390, 820, 470])
@@ -143,6 +143,40 @@ class NozzleWindow(QMainWindow):
         self._apply_timer.timeout.connect(self._apply)
         self._last_refresh = 0.0
         self.load_preset(DEFAULT_PRESET)
+
+    # -- centre: 2-D section or 3-D view --------------------------------------------------------
+    def _centre(self) -> QWidget:
+        from PySide6.QtWidgets import QStackedWidget
+
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.view_mode = SegmentedControl(["2-D section", "3-D view"],
+                                          ["The solution in the r-x plane, mirrored about the axis",
+                                           "The solution revolved about the axis: a glowing 3-D plume or a cut-away"])
+        self.view_mode.changed.connect(self._set_view_mode)
+        lay.addWidget(self.view_mode, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.view)
+        lay.addWidget(self.stack, 1)
+        self.view3d = None
+        return box
+
+    def _set_view_mode(self, i: int) -> None:
+        if i == 1 and self.view3d is None:
+            try:
+                from visualization.nozzle_3d import Nozzle3DView
+
+                self.view3d = Nozzle3DView(self.view)
+            except Exception as exc:  # noqa: BLE001 - no OpenGL / VTK: stay in 2-D
+                self.status_label.setText(f"The 3-D view is not available: {exc}")
+                self.view_mode.set_index(0)
+                return
+            self.stack.addWidget(self.view3d)
+        self.stack.setCurrentIndex(i)
+        if i == 0:
+            self.view._render()
 
     # -- controls -------------------------------------------------------------------------------
     def _controls(self) -> QWidget:
@@ -1010,7 +1044,8 @@ class NozzleWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Save snapshot", str(default), "PNG image (*.png)")
         if path:
             try:
-                self.view.save_png(Path(path))
+                target = self.view3d if self.stack.currentIndex() == 1 and self.view3d is not None else self.view
+                target.save_png(Path(path))
                 self.status_label.setText(f"Snapshot saved: {path}")
             except OSError as exc:
                 self.status_label.setText(f"Snapshot failed: {exc}")
@@ -1059,6 +1094,8 @@ class NozzleWindow(QMainWindow):
         event.accept()
 
     def shutdown(self) -> None:
+        if self.view3d is not None:
+            self.view3d.shutdown()
         self.view.shutdown()
 
 

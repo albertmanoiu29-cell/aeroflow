@@ -3,6 +3,15 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.7.0] - 2026-11-26
+
+### Added: 3-D view in the Rocket Nozzle Lab
+- **A 2-D section / 3-D view switch** above the canvas. The 3-D view revolves the live solution about the nozzle axis (a planar nozzle is extruded across its width instead) and follows the selected field while the engine runs.
+- **Volume mode:** GPU volume rendering of the exhaust plume, with the surrounding air transparent. The shock diamonds and Mach disks appear as a glowing 3-D body, and the nozzle is drawn as a 270° cut-away shell so the white-hot chamber and the throat stay visible. The voxels are concentrated on the plume and re-fitted as it grows.
+- **Cut-away mode:** a 90° notch out of the engine and plume. The field is painted on both cut faces (still air is see-through for the glow), and the plume boundary (50 % exhaust) is a translucent revolved surface.
+- **Camera presets** (side, three-quarter, from behind, nozzle close-up) with mouse orbit and zoom. *Snapshot* saves the 3-D view when it is shown.
+- The 2-D view skips drawing while it is hidden, so the solver keeps the time.
+
 ## [1.6.1] - 2026-11-26
 
 ### Improved: Rocket Nozzle Lab speed (about 9x faster start-ups)

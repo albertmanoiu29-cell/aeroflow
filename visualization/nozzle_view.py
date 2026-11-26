@@ -426,7 +426,8 @@ class NozzleView(QWidget):
         if done:
             self._step_ms = 0.7 * self._step_ms + 0.3 * solver.last_step_ms
             self._after_batch()
-        self._render()
+        if self.isVisible():                          # hidden behind the 3-D view: skip the 2-D drawing
+            self._render()
         if self._recorder is not None:
             self._recorder.capture()
         if self._last_tick > 0.0:

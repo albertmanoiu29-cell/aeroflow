@@ -176,3 +176,19 @@ def test_export_results(tmp_path) -> None:
     out = export_results(tmp_path / "r.csv", {"setup": setup, "meas": {}, "history": hist})
     text = out.read_text(encoding="utf-8")
     assert "time_ms,thrust_N" in text and "Dt=0.05 m" in text
+
+
+def test_revolved_geometry_for_the_3d_view() -> None:
+    from visualization.nozzle_3d import revolve, revolve_segments
+
+    x = np.array([0.0, 1.0, 2.0])
+    r = np.array([1.0, 0.5, 1.5])
+    shell = revolve(x, r, 0.0, 2.0 * math.pi, 33)
+    rad = np.hypot(shell.points[:, 1], shell.points[:, 2])
+    assert np.allclose(np.sort(np.unique(np.round(rad, 9))), [0.5, 1.0, 1.5])
+    # two segments revolved over 270 degrees: one quad per angular step per segment, radii preserved
+    surf = revolve_segments(np.array([0.0, 1.0, 1.0, 2.0]), np.array([1.0, 1.0, 1.0, 2.0]), math.pi, 2.5 * math.pi, 10)
+    assert surf.n_cells == 2 * 9
+    pts = surf.points
+    assert np.allclose(np.hypot(pts[:, 1], pts[:, 2])[pts[:, 0] == 0.0], 1.0)
+    assert revolve_segments(np.zeros(0), np.zeros(0), 0.0, 1.0, 4) is None

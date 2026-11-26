@@ -43,6 +43,7 @@ Open it with **Nozzle Lab** in the top bar or **View ▸ Rocket Nozzle Lab** (Ct
   - schlieren and exhaust-gas fraction.
 
   Overlays: the sonic line, the detected Mach disks and shock cells, the theoretical shock-cell spacing and separation point, and streamlines. Hover for local values; zoom and pan with the mouse.
+- **3-D view** (the *2-D section / 3-D view* switch): the solution revolved about the axis, live. *Volume* renders the plume as a glowing 3-D body inside a cut-away nozzle; *Cut-away* paints the field on the faces of a 90° notch, with a translucent plume-boundary surface. Camera presets and mouse orbit are included.
 - **Detailed results**, simulation against 1-D rocket-nozzle theory:
   - **Performance:** thrust (the force on the chamber and nozzle, so it is correct during start-up too), the exit-plane and base-pressure contributions, Isp, CF, c*, mass flow at the throat and the exit, the exit Mach number, pressure, temperature and velocity, the expansion regime, Summerfield separation, shock-cell length, the Mach-disk position and the supersonic core length.
   - **Live charts:** thrust, chamber pressure and mass flow from ignition.
@@ -328,6 +329,7 @@ aeroflow_studio/
 │   ├── cfd_viewport.py        wind-tunnel scene: streamlines, smoke, slices, isosurfaces, HUD, camera bar
 │   ├── flowlab_view.py        Live Flow Lab canvas (field colouring, smoke, particles, wall painting)
 │   ├── nozzle_view.py         Rocket Nozzle Lab canvas: mirrored side view, exhaust glow, overlays, probe
+│   ├── nozzle_3d.py           Rocket Nozzle Lab 3-D view: revolved volume rendering and cut-away
 │   └── telemetry_charts.py    residuals, chordwise Cp, span loading, polars, live forces
 ├── ui/
 │   ├── main_window.py         layout, menus, persistence and orchestration
