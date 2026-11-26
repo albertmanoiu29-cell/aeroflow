@@ -192,3 +192,19 @@ def test_revolved_geometry_for_the_3d_view() -> None:
     pts = surf.points
     assert np.allclose(np.hypot(pts[:, 1], pts[:, 2])[pts[:, 0] == 0.0], 1.0)
     assert revolve_segments(np.zeros(0), np.zeros(0), 0.0, 1.0, 4) is None
+
+
+def test_revolve_fill_is_linear_in_radius() -> None:
+    from visualization.nozzle_3d import _fill_numpy, blackbody_rgb, fill_revolved
+
+    vd = np.array([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]], dtype=np.float32)       # rows = radius
+    rpos = np.array([[0.0, 0.5], [1.25, 5.0]], dtype=np.float32)                # fractional rows (z, y)
+    a = np.zeros((2, 2, 2), np.float32)
+    b = np.zeros_like(a)
+    fill_revolved(vd, rpos, a)
+    _fill_numpy(vd, rpos, b)
+    assert np.allclose(a, b)
+    assert np.allclose(a[0, 0], [0.0, 1.0]) and np.allclose(a[0, 1], [1.0, 2.0])
+    assert np.allclose(a[1, 0], [2.5, 3.5]) and np.allclose(a[1, 1], 0.0)          # beyond the last row: empty
+    hot, cold = blackbody_rgb(np.array([2500.0, 800.0]))
+    assert hot[1] > cold[1] and hot[2] > cold[2]                                    # hotter is whiter

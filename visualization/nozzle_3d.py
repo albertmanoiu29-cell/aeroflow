@@ -77,6 +77,74 @@ def revolve_segments(xs: np.ndarray, rs: np.ndarray, theta0: float, theta1: floa
     return pv.PolyData(pts, faces=quads)
 
 
+def _fill_numpy(vd: np.ndarray, rpos: np.ndarray, out: np.ndarray) -> None:
+    """out[z, y, :] = vd at the fractional row rpos[z, y] (linear in r; 0 beyond the last row)."""
+    n = vd.shape[0]
+    j0 = np.floor(rpos).astype(np.int64)
+    w = (rpos - j0).astype(np.float32)
+    inside = j0 < n - 1
+    j0c = np.clip(j0, 0, n - 2)
+    w = np.where(j0 < 0, 0.0, w).astype(np.float32)
+    res = vd[j0c] * (1.0 - w)[..., None] + vd[j0c + 1] * w[..., None]
+    res[~inside] = 0.0
+    out[...] = res
+
+
+try:
+    from core import accel as _accel
+
+    if _accel.HAVE_NUMBA:
+        from numba import njit, prange
+
+        @njit(parallel=True, cache=True, nogil=True)
+        def _fill_nb(vd, rpos, out):  # pragma: no cover - compiled
+            n, nx = vd.shape
+            nz, ny = rpos.shape
+            for z in prange(nz):
+                for y in range(ny):
+                    r = rpos[z, y]
+                    j0 = int(np.floor(r))
+                    if j0 >= n - 1:
+                        for i in range(nx):
+                            out[z, y, i] = 0.0
+                        continue
+                    w = r - j0
+                    if j0 < 0:
+                        j0 = 0
+                        w = 0.0
+                    for i in range(nx):
+                        out[z, y, i] = (1.0 - w) * vd[j0, i] + w * vd[j0 + 1, i]
+    else:
+        _fill_nb = None
+except Exception:  # noqa: BLE001 - numba unavailable: the NumPy version is used
+    _fill_nb = None
+
+
+def fill_revolved(vd: np.ndarray, rpos: np.ndarray, out: np.ndarray) -> None:
+    """Revolve the half-plane field ``vd`` (rows = radius) into the voxel block ``out`` (z, y, x)."""
+    if _fill_nb is not None:
+        try:
+            _fill_nb(np.ascontiguousarray(vd, dtype=np.float32), rpos, out)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    _fill_numpy(vd.astype(np.float32), rpos, out)
+
+
+_BB_T = np.array([700.0, 900.0, 1100.0, 1300.0, 1600.0, 2000.0, 2600.0, 3500.0])
+_BB_RGB = np.array([[0.25, 0.02, 0.0], [0.55, 0.06, 0.0], [0.85, 0.18, 0.02], [1.0, 0.33, 0.05],
+                    [1.0, 0.50, 0.16], [1.0, 0.68, 0.38], [1.0, 0.83, 0.64], [1.0, 0.93, 0.86]])
+
+
+def blackbody_rgb(temp: np.ndarray) -> np.ndarray:
+    """Approximate colour of a glowing body at temperature ``temp`` (K), 0..1 RGB."""
+    t = np.asarray(temp, dtype=float)
+    return np.stack([np.interp(t, _BB_T, _BB_RGB[:, k]) for k in range(3)], axis=-1)
+
+
+STEEL = np.array([0.62, 0.65, 0.70])
+
+
 class Nozzle3DView(QWidget):
     """Live 3-D view of the Rocket Nozzle Lab (follows the 2-D view's field and solver)."""
 
@@ -104,12 +172,19 @@ class Nozzle3DView(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self.view(k))
             h.addWidget(b)
+        from ui.cfd_panel import ToggleSwitch
+
+        self.hot_wall = ToggleSwitch("Hot nozzle glow", True,
+                                     "Colour the nozzle wall by its estimated temperature (about half the local gas "
+                                     "temperature), as on radiation-cooled nozzle extensions that glow orange")
+        self.hot_wall.toggled.connect(lambda _c: self._update_walls())
+        h.addWidget(self.hot_wall)
         h.addStretch(1)
         self.info = QLabel("")
         self.info.setProperty("role", "muted")
         h.addWidget(self.info)
         root.addWidget(bar)
-        self.plotter = QtInteractor(self, multi_samples=4, auto_update=False)
+        self.plotter = QtInteractor(self, multi_samples=8, auto_update=False)
         root.addWidget(self.plotter.interactor if hasattr(self.plotter, "interactor") else self.plotter, 1)
         self.plotter.set_background(CFD_BACKGROUND_BOTTOM, top=CFD_BACKGROUND_TOP)
         self.plotter.enable_anti_aliasing("fxaa")
@@ -120,7 +195,9 @@ class Nozzle3DView(QWidget):
         self._last_field: Optional[NField] = None
         self._volume_ok = True
         self.timer = QTimer(self)
-        self.timer.setInterval(250)
+        self.timer.setInterval(100)                     # ~10 updates per second
+        self._tick_n = 0
+        self._wall_mesh = None
         self.timer.timeout.connect(self.refresh)
         self._camera_set = False
         self._closed = False
@@ -174,8 +251,14 @@ class Nozzle3DView(QWidget):
         p = self.plotter
         p.clear()
         p.remove_all_lights()
-        p.enable_lightkit()
+        self._lights()
+        glow = s.field is NField.GLOW
+        if glow:                                   # a night-time test stand: the flame is the light source
+            p.set_background("#020308", top="#0B1222")
+        else:
+            p.set_background(CFD_BACKGROUND_BOTTOM, top=CFD_BACKGROUND_TOP)
         self._vol = None
+        self._wall_mesh = None
         lay = s.layout_
         planar = s.setup.planar
         # the engine: a 270° cut-away shell (a planar nozzle is extruded across its width instead)
@@ -183,9 +266,12 @@ class Nozzle3DView(QWidget):
         if planar:
             self._add_planar_walls(x, lay.wall_r)
         else:
-            shell = revolve(x, lay.wall_r, math.pi, 2.5 * math.pi, 64)
-            p.add_mesh(shell, color="#A9B4C2", smooth_shading=True, specular=0.6, specular_power=30,
-                       ambient=0.15, name="walls", reset_camera=False)
+            shell = revolve(x, lay.wall_r, math.pi, 2.5 * math.pi, 144)
+            shell = shell.compute_normals(split_vertices=True, feature_angle=50.0, auto_orient_normals=False)
+            shell.point_data["rgb"] = np.tile((STEEL * 255).astype(np.uint8), (shell.n_points, 1))
+            self._wall_mesh = shell
+            p.add_mesh(shell, scalars="rgb", rgb=True, smooth_shading=True, specular=0.5, specular_power=40,
+                       ambient=0.35, diffuse=0.75, name="walls", reset_camera=False)
         if self.mode.currentIndex() == 0:
             self._build_volume()
         else:
@@ -195,6 +281,44 @@ class Nozzle3DView(QWidget):
             self.view("iso")
             self._camera_set = True
         p.render()
+
+    def _lights(self) -> None:
+        """The light kit plus a warm key light from the upper left (metal reads as metal)."""
+        import pyvista as pv
+
+        p = self.plotter
+        p.enable_lightkit()
+        p.add_light(pv.Light(position=(-0.6, -1.0, 1.4), focal_point=(0.0, 0.0, 0.0), color="#FFF1DE",
+                             intensity=0.45, light_type="camera light"))
+
+    def _update_walls(self) -> None:
+        """Steel, or (hot-wall glow) a blackbody colour from the estimated wall temperature along the nozzle."""
+        mesh, s = self._wall_mesh, self.source
+        if mesh is None or s.solver is None or s.scales is None:
+            return
+        pts = mesh.points
+        rgb = np.tile(STEEL, (len(pts), 1))
+        if self.hot_wall.isChecked():
+            lay, solver = s.layout_, s.solver
+            r, _, _, p = solver.primitives()
+            g = solver.gamma
+            xs = (np.arange(solver.nx) + 0.5) * lay.dx
+            rin = lay.r_inner(xs)
+            j = np.clip((rin / lay.dx).astype(np.int64) - 1, 0, solver.ny - 1)
+            ii = np.arange(solver.nx)
+            t_gas = g * p[j, ii] / r[j, ii] * s.scales.temperature
+            t_gas = np.where(xs <= lay.x_exit, t_gas, 0.0)
+            t_gas = np.convolve(t_gas, np.ones(5) / 5.0, mode="same")
+            t_wall = 0.5 * np.interp(pts[:, 0], xs, t_gas)          # a radiation-cooled wall runs well below the gas
+            x_t = lay.x_throat
+            t_wall = np.where(pts[:, 0] >= x_t, t_wall, t_wall * 0.6)  # the chamber is regeneratively cooled
+            e = np.clip((t_wall - 650.0) / 800.0, 0.0, 1.0) ** 1.2
+            rgb = rgb * (1.0 - e[:, None]) + blackbody_rgb(t_wall) * e[:, None] * 1.6
+        colours = self.plotter.actors["walls"].GetMapper().GetInput().GetPointData().GetArray("rgb")
+        from vtkmodules.util.numpy_support import vtk_to_numpy
+
+        vtk_to_numpy(colours)[:] = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
+        colours.Modified()
 
     def _add_planar_walls(self, x: np.ndarray, r: np.ndarray) -> None:
         import pyvista as pv
@@ -226,21 +350,29 @@ class Nozzle3DView(QWidget):
         n2 = 2 * nyd
         planar = s.setup.planar
         coords = (np.arange(n2) + 0.5) * h - nyd * h
-        yy, zz = np.meshgrid(coords, coords, indexing="ij")             # (y, z)
+        zz, yy = np.meshgrid(coords, coords, indexing="ij")             # (z, y) order, as the voxel block
         rr = np.abs(yy) if planar else np.hypot(yy, zz)
-        ridx = np.floor(rr / h).astype(np.int64)
-        outside = ridx >= nyd
-        self._vol_index = (np.where(outside, 0, ridx).T, outside.T, f, nxd, nyd)   # (z, y) order
+        rpos = np.ascontiguousarray((rr / h - 0.5).astype(np.float32))  # fractional row: linear in r, no rings
+        self._vol_index = (rpos, f, nxd, nyd)
         vol = pv.ImageData(dimensions=(nxd, n2, n2), spacing=(h, h, h), origin=(0.5 * h, -nyd * h + 0.5 * h,
                                                                                   -nyd * h + 0.5 * h))
         vol.point_data["v"] = np.zeros(nxd * n2 * n2, dtype=np.float32)
         self._vol = vol
+        self._vol_buf = np.asarray(vol.point_data["v"]).reshape(n2, n2, nxd)    # a view of VTK's own array
         _, _, _, lut_name, _, _ = s.field_values(s.field)
-        opacity = [0.0, 0.04, 0.12, 0.25, 0.42, 0.6, 0.78, 0.92]
+        glow = s.field is NField.GLOW
+        # The glow is a little more see-through, so the bright core and shock diamonds shine through the cooler
+        # outer layer as in photographs; other fields render as a more solid body.
+        opacity = ([0.0, 0.05, 0.14, 0.28, 0.45, 0.62, 0.8, 0.95] if glow
+                   else [0.0, 0.04, 0.12, 0.25, 0.42, 0.6, 0.78, 0.92])
         try:
             self.plotter.add_volume(vol, scalars="v", clim=(0.0, 1.0), cmap=_cmap(s._lut_for(lut_name)),
                                     opacity=opacity, shade=False, show_scalar_bar=False, mapper="smart",
-                                    name="plume", reset_camera=False, opacity_unit_distance=1.5 * h)
+                                    name="plume", reset_camera=False, opacity_unit_distance=(2.0 if glow else 1.5) * h)
+            try:
+                self.plotter.actors["plume"].GetProperty().SetInterpolationTypeToLinear()
+            except Exception:  # noqa: BLE001
+                pass
             self._volume_ok = True
             try:                                        # finer ray steps than the default: no banding
                 mapper = self.plotter.actors["plume"].GetMapper()
@@ -252,26 +384,29 @@ class Nozzle3DView(QWidget):
             self._volume_ok = False
             self.info.setText(f"Volume rendering is not available here ({exc}); use the cut-away mode.")
 
-    def _needed_rows(self) -> int:
+    def _exhaust(self) -> np.ndarray:
+        s = self.source
+        r, _, _, p = (a.astype(np.float32) for a in s.solver.primitives())
+        return s._exhaust_fraction(r, p)
+
+    def _needed_rows(self, y: Optional[np.ndarray] = None) -> int:
         """Rows (from the axis) that contain exhaust gas, with a margin; at least ~1.6 nozzle radii."""
         s = self.source
         solver, lay = s.solver, s.layout_
-        r, _, _, p = (a.astype(np.float32) for a in solver.primitives())
-        y = s._exhaust_fraction(r, p)
+        y = self._exhaust() if y is None else y
         rows = np.nonzero((y > 0.15).any(axis=1))[0]
         base = int(1.6 * float(np.max(lay.wall_r)) / lay.dx)
         need = int(rows.max() * 1.15) + 6 if rows.size else base
         return int(min(max(need, base, 8), solver.ny))
 
-    def _plume_values(self) -> np.ndarray:
+    def _plume_values(self, y: Optional[np.ndarray] = None) -> np.ndarray:
         """The selected field on the half plane, scaled to 0..1 inside the exhaust and 0 in the surrounding air
         (so the volume shows the plume itself)."""
         s = self.source
         val, lo, hi, _, _, _ = s.field_values(s.field)
         v = np.clip((np.nan_to_num(val, nan=lo) - lo) / max(hi - lo, 1e-12), 0.0, 1.0).astype(np.float32)
         if s.field is not NField.GLOW:
-            r, _, _, p = (a.astype(np.float32) for a in s.solver.primitives())
-            y = s._exhaust_fraction(r, p)
+            y = self._exhaust() if y is None else y
             v = np.where(y > 0.3, np.maximum(v, 0.03), 0.0).astype(np.float32)
         v[s.solver.solid_int] = 0.0
         return v
@@ -298,18 +433,21 @@ class Nozzle3DView(QWidget):
             return
         self._last_steps = s.solver.steps
         self._last_field = s.field
+        self._tick_n += 1
+        self._update_walls()
         if self.mode.currentIndex() == 0:
             if self._vol is not None and self._volume_ok:
-                v = self._plume_values()
-                if self._needed_rows() > self._rows:          # the plume has grown past the voxel block
+                y = self._exhaust()
+                v = self._plume_values(y)
+                if self._needed_rows(y) > self._rows:          # the plume has grown past the voxel block
                     self._rebuild()
                     return
-                ridx, outside, f, nxd, nyd = self._vol_index
+                rpos, f, nxd, nyd = self._vol_index
                 vd = _block_mean(v[:self._rows], f)[:nyd, :nxd]
-                arr = vd[ridx]                                   # (z, y, x)
-                arr[outside] = 0.0
-                self._vol.point_data["v"][:] = arr.ravel()
-                self._vol.GetPointData().Modified()
+                if s.field is NField.GLOW:
+                    vd = vd ** 0.75                              # lift the mid-tones, as a camera exposure would
+                fill_revolved(vd, rpos, self._vol_buf)           # (z, y, x), linear in radius, straight into VTK
+                self._vol.GetPointData().GetArray("v").Modified()
             self.info.setText(f"{s.field.value} · exhaust only · {s.engine_state().lower()}")
         else:
             self._update_cutaway()
@@ -334,18 +472,25 @@ class Nozzle3DView(QWidget):
         alpha[solver.solid_int] = 1.0
         rgba = np.dstack([rgb, (alpha * 255).astype(np.uint8)])[:self._rows]
         tex = pv.Texture(np.ascontiguousarray(rgba[::-1]))      # image row 0 is the top (outer) edge
+        try:
+            tex.interpolate = True
+            tex.mipmap = True
+        except Exception:  # noqa: BLE001 - older VTK: unfiltered texture
+            pass
         a, b = self._faces
         self.plotter.add_mesh(a, texture=tex, name="face_a", ambient=0.6, diffuse=0.5, reset_camera=False)
         self.plotter.add_mesh(b, texture=tex, name="face_b", ambient=0.6, diffuse=0.5, reset_camera=False)
-        if self._needed_rows() > self._rows:                  # the plume outgrew the faces
+        if self._needed_rows(y) > self._rows:                 # the plume outgrew the faces
             self._rebuild()
             return
+        if self._tick_n % 3 and self.plotter.actors.get("boundary") is not None:
+            return                                          # the plume boundary: every third update is enough
         y[solver.solid_int] = 0.0
         xs, ys = iso_segments(y, 0.5)
         surf = revolve_segments((xs + 0.5) * lay.dx, (ys + 0.5) * lay.dx, math.pi, 2.5 * math.pi, 28)
         if surf is not None:
-            self.plotter.add_mesh(surf, color=PALETTE.cyan, opacity=0.22, smooth_shading=False, name="boundary",
-                                  specular=0.3, reset_camera=False)
+            self.plotter.add_mesh(surf, color=PALETTE.cyan, opacity=0.2, smooth_shading=True, name="boundary",
+                                  specular=0.4, reset_camera=False)
         else:
             self.plotter.remove_actor("boundary")
 

@@ -3,6 +3,17 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.7.1] - 2026-11-26
+
+### Improved: smoother, more realistic 3-D nozzle view
+- **No more rings:** the solution is revolved with linear interpolation in radius instead of nearest-row lookup, removing the concentric "wood-grain" rings. A compiled, parallel kernel fills the voxels (21 million in about 9 ms) straight into VTK's memory.
+- **Smoother updates:** the view updates about 10 times a second instead of 4. Voxels are up to 2.5x finer, ray steps are finer, interpolation is linear, the nozzle shell is tessellated twice as finely with crease-aware normals, and the cut faces use filtered, mip-mapped textures.
+- **More realistic:**
+  - a night-time background for the exhaust glow, so the flame is the light source;
+  - a more translucent flame with lifted mid-tones, so the bright core and shock diamonds shine through the cooler outer layer as in photographs;
+  - a warm key light on brushed-steel walls;
+  - **hot nozzle glow:** the wall takes a blackbody colour from its estimated temperature (half the local gas temperature; the chamber is treated as regeneratively cooled), as on radiation-cooled nozzle extensions. It can be switched off in the 3-D toolbar.
+
 ## [1.7.0] - 2026-11-26
 
 ### Added: 3-D view in the Rocket Nozzle Lab
