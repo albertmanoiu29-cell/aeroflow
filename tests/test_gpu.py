@@ -143,3 +143,33 @@ def test_cpu_preference_never_uses_gpu() -> None:
     s = Supersonic2D(40, 24, 2.0)
     s.step(3)
     assert s.device == "CPU"
+
+
+@gpu
+@cpu_compiled
+def test_nozzle_gpu_matches_cpu() -> None:
+    # cut-cell walls, the axisymmetric update, the characteristic injector, ignition ramp and shut-down
+    from core import nozzle as nz
+
+    def run():
+        geom = nz.NozzleGeometry(throat_diameter=0.05, exit_diameter=0.10, chamber_diameter=0.10,
+                                 chamber_length=0.03, wall_thickness=0.004)
+        lay = nz.layout_nozzle(geom, 200, 50, plume_length=5.0, plume_radius=3.0)
+        s = nz.NozzleFlow(200, 50, gamma=1.3)
+        s.set_geometry(lay)
+        s.set_conditions(1 / 1.3, 1.0, 0.0, 20 / 1.3, 3.0)
+        s.reset()
+        s.ignite(30.0)
+        for _ in range(4):
+            s.step(40)
+        s.shutdown(10.0)
+        s.step(60)
+        return s
+
+    compute.set_preference(Device.CPU)
+    a = run()
+    compute.set_preference(Device.GPU)
+    b = run()
+    assert (a.device, b.device) == ("CPU", "GPU")
+    assert abs(a.time - b.time) < 1e-9
+    assert np.max(np.abs(a.U - b.U)) / np.max(np.abs(a.U)) < 1e-10

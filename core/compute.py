@@ -316,10 +316,11 @@ def warmup_async() -> None:
         _notify()                          # status bars / selectors can show the result right away
         if info.available and _preference is not Device.CPU:
             try:
-                from core import lbm2d_gpu, supersonic_gpu
+                from core import lbm2d_gpu, nozzle_gpu, supersonic_gpu
 
                 supersonic_gpu._module()
                 lbm2d_gpu._module()
+                nozzle_gpu.NozzleGPU._load_module()
             except Exception as exc:  # noqa: BLE001 - compiled again (and reported) on first use
                 log.debug("GPU kernel pre-compilation skipped: %s", exc)
 

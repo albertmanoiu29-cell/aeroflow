@@ -306,9 +306,10 @@ def warmup() -> float:
         source_velocity(x, p, np.ones(3), np.ones(3))
         horseshoe_velocity(x, p, 2.0 * p, np.ones(3), np.array([1.0, 0.0, 0.0]), 1e-4)
         try:   # the Live Flow Lab and Supersonic Lab kernels (imported lazily: they import this module)
-            from core import lbm2d, supersonic
+            from core import lbm2d, nozzle, supersonic
             lbm2d.warmup()
             supersonic.warmup()
+            nozzle.warmup()
         except Exception as exc:  # noqa: BLE001 - a warm-up failure must never break start-up
             log.debug("Lab kernel warm-up skipped: %s", exc)
         _warmed = True

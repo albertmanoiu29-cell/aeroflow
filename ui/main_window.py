@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self._lab_user_paused = False      # remembers a manual pause of the Flow Lab across mode switches
         self._pinned: list[tuple[str, PolarData]] = []     # reference polars shown dashed
         self._supersonic: Optional[Any] = None              # the Supersonic Lab window (created on demand)
+        self._nozzle: Optional[Any] = None                  # the Rocket Nozzle Lab window (created on demand)
         self.toasts = ToastManager(self, bottom_margin=STATUS_BAR_HEIGHT + 14)
         self._restore_compute_device()
         self._update_checker = UpdateChecker(self)
@@ -164,6 +165,13 @@ class MainWindow(QMainWindow):
         self.btn_super.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_super.clicked.connect(lambda: self.open_supersonic())
         lay.addWidget(self.btn_super)
+        self.btn_nozzle = QPushButton("Nozzle Lab")
+        self.btn_nozzle.setIcon(make_icon("play", 16))
+        self.btn_nozzle.setToolTip("Open the Rocket Nozzle Lab (Ctrl+5): rocket engine nozzles, exhaust plumes, "
+                                   "shock diamonds and thrust, live from ignition")
+        self.btn_nozzle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_nozzle.clicked.connect(lambda: self.open_nozzle())
+        lay.addWidget(self.btn_nozzle)
         self.engine_pill = QPushButton("Instant Aero Engine")
         self.engine_pill.setObjectName("EnginePill")
         self.engine_pill.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -427,6 +435,8 @@ class MainWindow(QMainWindow):
         a(m_view, "Live Flow Lab", lambda: self._set_mode(AppMode.LIVE), "Ctrl+3")
         a(m_view, "Supersonic Lab (separate window)…", self.open_supersonic, "Ctrl+4",
           "Detailed Mach > 1 simulation: shock waves, expansion fans, bow shocks and theory comparison")
+        a(m_view, "Rocket Nozzle Lab (separate window)…", self.open_nozzle, "Ctrl+5",
+          "Rocket engine nozzle and exhaust plume: ignition, shock diamonds, thrust and Isp vs 1-D theory")
         m_view.addSeparator()
         for key, label in (("iso", "Isometric view"), ("front", "Front view"), ("top", "Top view"),
                            ("side", "Side view"), ("reset", "Reset camera")):
@@ -1072,6 +1082,17 @@ class MainWindow(QMainWindow):
         win.activateWindow()
         if not win.view.running:
             win.toggle_run()
+
+    def open_nozzle(self) -> None:
+        """Show the Rocket Nozzle Lab window (created on first use, then kept with its state)."""
+        if self._nozzle is None:
+            from ui.nozzle_window import NozzleWindow
+
+            self._nozzle = NozzleWindow(self)
+        win = self._nozzle
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     def _export_runs(self) -> None:
         if not self.runs.records:
@@ -1833,6 +1854,9 @@ class MainWindow(QMainWindow):
             if self._supersonic is not None:
                 self._supersonic.shutdown()
                 self._supersonic.close()
+            if self._nozzle is not None:
+                self._nozzle.shutdown()
+                self._nozzle.close()
             self.residual_chart.stop()
             self.tasks.shutdown(timeout_ms=5000)
         finally:

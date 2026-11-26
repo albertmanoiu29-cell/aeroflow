@@ -25,6 +25,43 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## What's new in 1.6: Rocket Nozzle Lab
+
+Open it with **Nozzle Lab** in the top bar or **View ▸ Rocket Nozzle Lab** (Ctrl+5). It simulates a rocket engine's nozzle and exhaust plume live, from ignition:
+
+- **Everything is an input.** You can set:
+  - the propellant: 9 presets, or your own γ, molar mass and chamber temperature;
+  - the chamber pressure, or the mass flow rate instead;
+  - the nozzle: throat, exit and chamber diameters, chamber length, convergent angle, a bell (Rao), conical or sonic divergent section with its angles, throat radii, wall thickness and a vehicle body;
+  - the environment: ISA altitude or ambient pressure and temperature, and the flight Mach number.
+
+  Eight engine presets range from a Merlin-class sea-level booster and an RS-25-class hydrolox stage to a vacuum upper stage, a solid motor, a cold-gas thruster and two laboratory jets.
+- **Ignition, throttle, shut-down.** *Ignite* ramps the chamber pressure up, and you can watch the starting shock, the starting vortex ring and the plume forming. Changing the chamber pressure or the altitude while the engine fires throttles it or "climbs" live. *Shut down* ramps the chamber pressure down.
+- **Shock diamonds and Mach disks** form from the physics. Views:
+  - a synthetic **exhaust glow**, coloured by propellant; hot gas glows brightest behind shocks, as real plumes do;
+  - Mach number, pressure relative to ambient, temperature, velocity and density;
+  - schlieren and exhaust-gas fraction.
+
+  Overlays: the sonic line, the detected Mach disks and shock cells, the theoretical shock-cell spacing and separation point, and streamlines. Hover for local values; zoom and pan with the mouse.
+- **Detailed results**, simulation against 1-D rocket-nozzle theory:
+  - **Performance:** thrust (the force on the chamber and nozzle, so it is correct during start-up too), the exit-plane and base-pressure contributions, Isp, CF, c*, mass flow at the throat and the exit, the exit Mach number, pressure, temperature and velocity, the expansion regime, Summerfield separation, shock-cell length, the Mach-disk position and the supersonic core length.
+  - **Live charts:** thrust, chamber pressure and mass flow from ignition.
+  - **Profiles:** along the centre line, across the exit plane and along the nozzle wall.
+  - **Altitude:** thrust and Isp from sea level to 60 km, with the design altitude marked.
+  - **Nozzle:** the contour to scale.
+
+  Snapshots, MP4 video and CSV export are included.
+- **Solver:** compressible Euler equations, axisymmetric (round nozzle) or planar (slot nozzle). The HLLC/HLL fluxes and MUSCL reconstruction are those of the Supersonic Lab. The nozzle walls are **cut cells**, sub-cell accurate and exactly conservative: a gas at rest stays exactly at rest. The injector is a non-reflecting characteristic inlet, and the far field draws entrained air from still air. It runs on the GPU (CUDA, double precision, identical to the CPU to 1e-15) or the CPU.
+- **Validation:**
+  - **Theory:** the thrust coefficient matches the closed-form equation to 1e-9.
+  - **Engine presets:** thrust is 95–98.6 % of theory and mass flow 96–100 %. The lower figures are on grids with only 6–8 cells across the throat; the Lab warns about that.
+  - **Sonic jet:** the Mach disk sits at 2.89 exit diameters, against 3.0 from Ashkenas & Sherman.
+  - **Kerolox plume:** the Mach-disk spacing is 3.7 De, against 3.4 De from the Prandtl–Pack shock-cell theory.
+- **Limitations:**
+  - One frozen perfect gas: the surrounding air uses the exhaust's γ and molar mass.
+  - The flow is inviscid: no boundary layers, no viscous separation and no afterburning. The wall-pressure chart shows where a real nozzle would separate.
+  - Real engines take 0.1–1 s to start; the ignition ramp is shortened so the start-up stays watchable.
+
 ## What's new in 1.5
 
 The full list is in the [CHANGELOG](CHANGELOG.md).
@@ -281,6 +318,8 @@ aeroflow_studio/
 │   ├── accel.py               numba-compiled field kernels (source + horseshoe vortex) with NumPy fallback
 │   ├── lbm2d.py               Live Flow Lab: real-time D2Q9 Lattice-Boltzmann solver, tracers, forces, LIC
 │   ├── supersonic.py          Supersonic Lab: 2-D compressible Euler (HLLC, MUSCL, RK2, immersed boundary)
+│   ├── nozzle.py              Rocket Nozzle Lab: 1-D nozzle theory, contours, cut-cell axisymmetric Euler solver
+│   ├── nozzle_gpu.py          CUDA kernels of the nozzle solver (boundaries, cut-cell update)
 │   ├── gasdynamics.py         exact shock / expansion / isentropic relations (validated against NACA 1135)
 │   ├── shapes2d.py            2-D obstacles: NACA / bluff outlines, 3-D mesh sections, rasteriser
 │   ├── openfoam_bridge.py     Engine B: detection, case generator, runner, VTK loader
@@ -288,12 +327,14 @@ aeroflow_studio/
 ├── visualization/             PyVista/VTK and pyqtgraph (GUI thread only)
 │   ├── cfd_viewport.py        wind-tunnel scene: streamlines, smoke, slices, isosurfaces, HUD, camera bar
 │   ├── flowlab_view.py        Live Flow Lab canvas (field colouring, smoke, particles, wall painting)
+│   ├── nozzle_view.py         Rocket Nozzle Lab canvas: mirrored side view, exhaust glow, overlays, probe
 │   └── telemetry_charts.py    residuals, chordwise Cp, span loading, polars, live forces
 ├── ui/
 │   ├── main_window.py         layout, menus, persistence and orchestration
 │   ├── cfd_panel.py           CFD / polar controls + shared widgets (accordion, sliders, toggles)
 │   ├── flowlab_panel.py       Live Flow Lab controls
 │   ├── supersonic_window.py   Supersonic Lab window: controls, theory table, probes, θ-β-M chart
+│   ├── nozzle_window.py       Rocket Nozzle Lab window: inputs, presets, performance table, charts, export
 │   ├── run_history.py         Runs tab (every solve, CSV export, re-apply)
 │   ├── toast.py               non-modal notifications
 │   ├── dialogs.py             OpenFOAM setup guide, report export, help/about

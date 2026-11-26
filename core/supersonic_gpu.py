@@ -288,15 +288,16 @@ _module_cache: dict[str, object] = {}
 _module_lock = threading.Lock()
 
 
-def _module():
-    """The compiled CUDA module (built once; CuPy also caches the binary on disk between sessions)."""
+def _module(key: str = "m", extra_src: str = ""):
+    """The compiled CUDA module (built once; CuPy also caches the binary on disk between sessions).
+    ``extra_src`` appends more kernels (the Nozzle Lab's boundary conditions) under its own ``key``."""
     cp = compute.cupy()
     with _module_lock:                     # the start-up warm-up thread may be compiling it right now
-        mod = _module_cache.get("m")
+        mod = _module_cache.get(key)
         if mod is None:
-            mod = cp.RawModule(code=_SRC, options=("--std=c++14",))
+            mod = cp.RawModule(code=_SRC + extra_src, options=("--std=c++14",))
             mod.get_function("prim")    # RawModule compiles lazily: force it here
-            _module_cache["m"] = mod
+            _module_cache[key] = mod
     return mod
 
 
@@ -315,15 +316,21 @@ def _grid(n: int) -> tuple[int]:
 class SupersonicGPU:
     """Device state and kernel launches for one grid size."""
 
+    #: Kernels looked up in the compiled module (subclasses add their own).
+    KERNELS: tuple[str, ...] = ("prim", "ghosts", "fill_ib", "max_speed", "finish_dt", "flux_x", "flux_y",
+                                "rk_update", "mach_out")
+
+    @staticmethod
+    def _load_module():
+        return _module()
+
     def __init__(self, nx: int, ny: int) -> None:
         cp = compute.cupy()
         self.cp = cp
         self.nx, self.ny = int(nx), int(ny)
         nyp, nxp = self.ny + 4, self.nx + 4
-        mod = _module()
-        self.k = {name: mod.get_function(name) for name in
-                  ("prim", "ghosts", "fill_ib", "max_speed", "finish_dt", "flux_x", "flux_y", "rk_update",
-                   "mach_out")}
+        mod = self._load_module()
+        self.k = {name: mod.get_function(name) for name in self.KERNELS}
         self.stream = cp.cuda.Stream(non_blocking=True)
         with self.stream:
             self.U = cp.zeros((4, self.ny, self.nx), dtype=cp.float64)

@@ -3,6 +3,34 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.6.0] - 2026-11-26
+
+### Added: Rocket Nozzle Lab (Ctrl+5)
+- **Rocket engine nozzle and exhaust plume, live from ignition.** It solves the compressible Euler equations, axisymmetric or planar, on the GPU or the CPU. Ignition and shut-down ramps, live throttling, and live changes of altitude and flight Mach number.
+- **Everything is editable:**
+  - propellant (9 presets or custom γ, molar mass and chamber temperature);
+  - chamber pressure or mass flow;
+  - throat, exit and chamber diameters, chamber length, convergent angle;
+  - a Rao bell, conical or sonic contour with its angles, throat radii, wall thickness and a vehicle body;
+  - ISA altitude or ambient pressure and temperature;
+  - grid and plume region.
+
+  Eight engine presets are included.
+- **Views:** exhaust glow (flame colour by propellant), Mach number, pressure relative to ambient, temperature, velocity, density, schlieren and exhaust fraction.
+- **Overlays:** the sonic line, detected Mach disks and shock cells, the theoretical shock-cell spacing, the separation point and streamlines. Hover for local values.
+- **Results against 1-D theory:**
+  - thrust as the force on the chamber and nozzle, with the exit-plane and base-pressure contributions;
+  - Isp, CF, c*, mass flow and the exit state;
+  - the expansion regime, the Summerfield separation point, the 1-D normal-shock position;
+  - shock-cell length (Prandtl–Pack), the Mach-disk position (Ashkenas–Sherman) and the supersonic core length.
+- **Charts:** thrust, chamber pressure and mass flow from ignition; centre-line, exit-plane and wall-pressure profiles; thrust and Isp against altitude; the nozzle contour.
+- **Exports:** CSV (table, histories, profiles), PNG snapshots and MP4 video.
+- **Numerics:**
+  - cut-cell (embedded-boundary) walls: exactly conservative, with the exact piston wall pressure;
+  - an axisymmetric finite-volume update that keeps a gas at rest exactly at rest;
+  - a non-reflecting characteristic injector inlet and an entrainment far field;
+  - CUDA kernels whose boundary parameters live in device memory, so throttling never rebuilds the CUDA graphs.
+
 ## [1.5.1] - 2026-11-25
 
 ### Fixed

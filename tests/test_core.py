@@ -282,7 +282,8 @@ def test_main_window_imports() -> None:
     import importlib
 
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
-                "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel"):
+                "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel", "ui.nozzle_window",
+                "visualization.nozzle_view"):
         importlib.import_module(mod)
 
 
