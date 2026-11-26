@@ -12,18 +12,26 @@ the GPU computes the next one; :meth:`SupersonicGPU.wait` collects the result.
 
 from __future__ import annotations
 
+import re
 import threading
+from typing import Optional
 
 import numpy as np
 
 from core import compute
 
 _SRC = r"""
-typedef double real;
+#ifndef REAL_T
+#define REAL_T double
+#endif
+typedef REAL_T real;      // field arithmetic: double (Supersonic Lab) or float (Nozzle Lab, fast mode)
+typedef double treal;     // time and time step: always double (no drift over long runs)
 #define G 2
 #define RHO_FLOOR 1e-6
 #define P_FLOOR 1e-7
+#ifndef CFL
 #define CFL 0.5
+#endif
 
 __device__ __forceinline__ real minmod(real a, real b) {
     if (a * b <= 0.0) return 0.0;
@@ -211,9 +219,9 @@ extern "C" __global__ void mach_out(const real* __restrict__ W, const unsigned c
 }
 
 // dt = CFL / max speed; accumulate the simulated time; clear the reduction for the next step.
-extern "C" __global__ void finish_dt(unsigned long long* smax, real* dt, real* tsum) {
-    real s = __longlong_as_double((long long)(*smax));
-    real d = CFL / fmax(s, 1e-9);
+extern "C" __global__ void finish_dt(unsigned long long* smax, treal* dt, treal* tsum) {
+    treal s = __longlong_as_double((long long)(*smax));
+    treal d = (treal)CFL / (s > (treal)1e-9 ? s : (treal)1e-9);
     *dt = d;
     *tsum += d;
     *smax = 0ULL;
@@ -258,7 +266,7 @@ extern "C" __global__ void flux_y(const real* __restrict__ W, const unsigned cha
 // Fused SSP-RK stage: out = a*Ubase + (1-a)*(Ucur + dt*R). `out` may alias Ubase. Body cells copy Ubase.
 extern "C" __global__ void rk_update(const real* Ubase, const real* __restrict__ Ucur,
                                      const real* __restrict__ F, const real* __restrict__ Gf,
-                                     const unsigned char* __restrict__ solid, const real* __restrict__ dtp,
+                                     const unsigned char* __restrict__ solid, const treal* __restrict__ dtp,
                                      real a, int ny, int nx, real* out) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= ny * nx) return;
@@ -269,7 +277,7 @@ extern "C" __global__ void rk_update(const real* Ubase, const real* __restrict__
         for (int k = 0; k < 4; ++k) out[k * n + t] = Ubase[k * n + t];
         return;
     }
-    real dt = *dtp;
+    real dt = (real)*dtp;
     real b = 1.0 - a;
     size_t fp = (size_t)ny * (nx + 1), gp = (size_t)(ny + 1) * nx;
     for (int k = 0; k < 4; ++k) {
@@ -288,14 +296,30 @@ _module_cache: dict[str, object] = {}
 _module_lock = threading.Lock()
 
 
-def _module(key: str = "m", extra_src: str = ""):
+_FLOAT_LITERAL = re.compile(r"(?<![\w.])(\d+\.\d*(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)(?![\w.])")
+
+
+def single_precision_source(src: str) -> str:
+    """The kernels in single precision: ``real`` becomes float and every floating literal is cast to it
+    (a bare ``0.5`` is a double and would silently promote the arithmetic to the slow fp64 units)."""
+    return "#define REAL_T float\n" + _FLOAT_LITERAL.sub(r"((real)\1)", src)
+
+
+def _module(key: str = "m", extra_src: str = "", single: bool = False, cfl: Optional[float] = None):
     """The compiled CUDA module (built once; CuPy also caches the binary on disk between sessions).
-    ``extra_src`` appends more kernels (the Nozzle Lab's boundary conditions) under its own ``key``."""
+    ``extra_src`` appends more kernels (the Nozzle Lab's boundary conditions) under its own ``key``;
+    ``single`` builds it in float, ``cfl`` overrides the time-step factor."""
     cp = compute.cupy()
+    key = f"{key}|{'f32' if single else 'f64'}|{cfl}"
     with _module_lock:                     # the start-up warm-up thread may be compiling it right now
         mod = _module_cache.get(key)
         if mod is None:
-            mod = cp.RawModule(code=_SRC + extra_src, options=("--std=c++14",))
+            code = _SRC + extra_src
+            if single:
+                code = single_precision_source(code)
+            if cfl is not None:
+                code = f"#define CFL {float(cfl)!r}\n" + code
+            mod = cp.RawModule(code=code, options=("--std=c++14",))
             mod.get_function("prim")    # RawModule compiles lazily: force it here
             _module_cache[key] = mod
     return mod
@@ -320,9 +344,15 @@ class SupersonicGPU:
     KERNELS: tuple[str, ...] = ("prim", "ghosts", "fill_ib", "max_speed", "finish_dt", "flux_x", "flux_y",
                                 "rk_update", "mach_out")
 
-    @staticmethod
-    def _load_module():
+    #: Field precision on the device (the Nozzle Lab's fast mode uses float32).
+    dtype = np.float64
+
+    def _load_module(self):
         return _module()
+
+    def _r(self, x: float):
+        """A kernel scalar of the field type (kernel arguments must match the C type exactly)."""
+        return np.dtype(self.dtype).type(x)
 
     def __init__(self, nx: int, ny: int) -> None:
         cp = compute.cupy()
@@ -333,11 +363,11 @@ class SupersonicGPU:
         self.k = {name: mod.get_function(name) for name in self.KERNELS}
         self.stream = cp.cuda.Stream(non_blocking=True)
         with self.stream:
-            self.U = cp.zeros((4, self.ny, self.nx), dtype=cp.float64)
+            self.U = cp.zeros((4, self.ny, self.nx), dtype=self.dtype)
             self.U1 = cp.zeros_like(self.U)
-            self.W = cp.zeros((4, nyp, nxp), dtype=cp.float64)
-            self.F = cp.zeros((4, self.ny, self.nx + 1), dtype=cp.float64)
-            self.Gf = cp.zeros((4, self.ny + 1, self.nx), dtype=cp.float64)
+            self.W = cp.zeros((4, nyp, nxp), dtype=self.dtype)
+            self.F = cp.zeros((4, self.ny, self.nx + 1), dtype=self.dtype)
+            self.Gf = cp.zeros((4, self.ny + 1, self.nx), dtype=self.dtype)
             self.solid = cp.zeros((nyp, nxp), dtype=cp.uint8)
             self.wall = cp.zeros((nyp, nxp), dtype=cp.uint8)
             self.smax = cp.zeros(1, dtype=cp.uint64)
@@ -350,7 +380,7 @@ class SupersonicGPU:
         self.use_graphs = True
         self._graphs: dict[int, object] = {}
         self._graph_key: tuple = ()
-        self.h_W = _pinned((4, nyp, nxp))
+        self.h_W = _pinned((4, nyp, nxp), self.dtype)
         self.h_M = _pinned((self.ny, self.nx), np.float32)
         self.h_t = _pinned((1,))
         self.ev_start = cp.cuda.Event()
@@ -362,12 +392,13 @@ class SupersonicGPU:
         """Copy the full solver state (after a reset, a new body or a switch from the CPU)."""
         cp = self.cp
         with self.stream:
-            self.U.set(np.ascontiguousarray(U, dtype=np.float64), stream=self.stream)
+            self.U.set(np.ascontiguousarray(U, dtype=self.dtype), stream=self.stream)
             self.solid.set(np.ascontiguousarray(solid_pad, dtype=np.uint8), stream=self.stream)
             self.wall.set(np.ascontiguousarray(wall_pad, dtype=np.uint8), stream=self.stream)
             self.ib_count = int(ib["count"])
             if self.ib_count:
-                self.ib = tuple(cp.asarray(np.ascontiguousarray(ib[k])) for k in ("gj", "gi", "sj", "si", "sw", "n"))
+                self.ib = tuple(cp.asarray(np.ascontiguousarray(ib[k], dtype=self.dtype if k in ("sw", "n") else None))
+                                for k in ("gj", "gi", "sj", "si", "sw", "n"))
             else:
                 self.ib = None
             self.ib_version += 1
@@ -377,10 +408,10 @@ class SupersonicGPU:
     def _primitives(self, U, g: float, fs: tuple[float, float, float, float]) -> None:
         ny, nx = self.ny, self.nx
         n = ny * nx
-        self.k["prim"](_grid(n), (_BLOCK,), (U, self.W, np.float64(g), np.int32(ny), np.int32(nx)))
+        self.k["prim"](_grid(n), (_BLOCK,), (U, self.W, self._r(g), np.int32(ny), np.int32(nx)))
         npad = (ny + 4) * (nx + 4)
-        self.k["ghosts"](_grid(npad), (_BLOCK,), (self.W, np.int32(ny), np.int32(nx), np.float64(fs[0]),
-                                                  np.float64(fs[1]), np.float64(fs[2]), np.float64(fs[3])))
+        self.k["ghosts"](_grid(npad), (_BLOCK,), (self.W, np.int32(ny), np.int32(nx), self._r(fs[0]),
+                                                  self._r(fs[1]), self._r(fs[2]), self._r(fs[3])))
         if self.ib_count:
             gj, gi, sj, si, sw, nrm = self.ib
             self.k["fill_ib"](_grid(self.ib_count), (_BLOCK,), (self.W, np.int32(ny + 4), np.int32(nx + 4),
@@ -388,7 +419,7 @@ class SupersonicGPU:
 
     def _fluxes(self, g: float) -> None:
         ny, nx = self.ny, self.nx
-        gg, iny, inx = np.float64(g), np.int32(ny), np.int32(nx)
+        gg, iny, inx = self._r(g), np.int32(ny), np.int32(nx)
         self.k["flux_x"](_grid(ny * (nx + 1)), (_BLOCK,), (self.W, self.wall, gg, iny, inx, self.F))
         self.k["flux_y"](_grid((ny + 1) * nx), (_BLOCK,), (self.W, self.wall, gg, iny, inx, self.Gf))
 
@@ -396,19 +427,19 @@ class SupersonicGPU:
         """Launch the 13 kernels of one SSP-RK2 step (no host synchronisation anywhere)."""
         ny, nx = self.ny, self.nx
         cells = ny * nx
-        gg, iny, inx = np.float64(g), np.int32(ny), np.int32(nx)
+        gg, iny, inx = self._r(g), np.int32(ny), np.int32(nx)
         self._primitives(self.U, g, fs)
         self.k["max_speed"](_grid(cells), (_BLOCK,), (self.W, self.solid, gg, iny, inx, self.smax))
         self.k["finish_dt"]((1,), (1,), (self.smax, self.dt, self.tsum))
         # stage 1: U1 = U + dt L(U)
         self._fluxes(g)
         self.k["rk_update"](_grid(cells), (_BLOCK,), (self.U, self.U, self.F, self.Gf, self.solid, self.dt,
-                                                      np.float64(0.0), iny, inx, self.U1))
+                                                      self._r(0.0), iny, inx, self.U1))
         # stage 2: U = 0.5 U + 0.5 (U1 + dt L(U1))
         self._primitives(self.U1, g, fs)
         self._fluxes(g)
         self.k["rk_update"](_grid(cells), (_BLOCK,), (self.U, self.U1, self.F, self.Gf, self.solid, self.dt,
-                                                      np.float64(0.5), iny, inx, self.U))
+                                                      self._r(0.5), iny, inx, self.U))
 
     def _graph(self, k: int, g: float, fs: tuple[float, float, float, float]):
         """A CUDA graph of ``k`` whole steps: replaying it costs one launch instead of 13 k. Graphs bake in
@@ -452,7 +483,7 @@ class SupersonicGPU:
             self._primitives(self.U, g, fs)          # W consistent with the final U
             self.ev_end.record(self.stream)
             cells = self.ny * self.nx
-            self.k["mach_out"](_grid(cells), (_BLOCK,), (self.W, self.solid, np.float64(g), np.int32(self.ny),
+            self.k["mach_out"](_grid(cells), (_BLOCK,), (self.W, self.solid, self._r(g), np.int32(self.ny),
                                                          np.int32(self.nx), self.M))
             # U stays on the GPU (fetched by download_U only when the host needs it).
             self.W.get(stream=self.stream, out=self.h_W, blocking=False)
@@ -461,9 +492,14 @@ class SupersonicGPU:
         self.pending = int(n)
 
     def download_U(self, out: np.ndarray) -> None:
-        """Copy the conserved state into ``out`` (blocking)."""
-        self.U.get(stream=self.stream, out=out)
-        self.stream.synchronize()
+        """Copy the conserved state into ``out`` (blocking; converted to ``out``'s type)."""
+        if out.dtype == self.U.dtype:
+            self.U.get(stream=self.stream, out=out)
+            self.stream.synchronize()
+        else:
+            host = self.U.get(stream=self.stream)
+            self.stream.synchronize()
+            out[...] = host
 
     def wait(self) -> tuple[int, float, float]:
         """Block until the queued batch is done. Returns ``(steps, simulated time, GPU ms per step)``."""

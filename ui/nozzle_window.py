@@ -354,6 +354,15 @@ class NozzleWindow(QMainWindow):
         self.plume_r.valueChanged.connect(lambda _v: self._schedule())
         self.device = DeviceSelector()
         card.add(self.device)
+        self.precision = QComboBox()
+        self.precision.addItem("Single (fast)", True)
+        self.precision.addItem("Double (exact)", False)
+        self.precision.currentIndexChanged.connect(
+            lambda _i: self.view.set_gpu_precision(bool(self.precision.currentData())))
+        card.add(labeled_row("GPU precision", self.precision,
+                             "Single precision runs ~6× faster on consumer GPUs (they have few double-precision "
+                             "units); results agree with double precision to about 0.1 %. Double precision matches "
+                             "the CPU solver exactly."))
         grid = QGridLayout()
         snap = button("Snapshot…", "ghost", "camera", "Save the current view as PNG")
         snap.clicked.connect(self._snapshot)

@@ -14,9 +14,18 @@ import numpy as np
 
 from core.supersonic_gpu import _BLOCK, SupersonicGPU, _grid, _module, _pinned
 
+#: Time-step factor of the nozzle solver (of the 2-D sum (|u| + c) + (|v| + c); the stability bound is 1).
+NOZZLE_CFL = 0.7
+
+
+def load_module(single: bool = True):
+    """Compile (or fetch) the nozzle kernels in single or double precision."""
+    return _module("nozzle", _NOZZLE_SRC, single=single, cfl=NOZZLE_CFL)
+
 _NOZZLE_SRC = r"""
-__device__ __forceinline__ real ramp_f(const real* __restrict__ P, real t) {
-    real ti = P[5], tau = P[6], toff = P[7], tauoff = P[8], foff = P[9];
+__device__ __forceinline__ real ramp_f(const treal* __restrict__ P, treal tt) {
+    real t = (real)tt;
+    real ti = (real)P[5], tau = (real)P[6], toff = (real)P[7], tauoff = (real)P[8], foff = (real)P[9];
     if (t < ti) return 0.0;
     real s = fmin((t - ti) / fmax(tau, 1e-12), 1.0);
     real f = s * s * (3.0 - 2.0 * s);
@@ -36,15 +45,15 @@ __device__ __forceinline__ void far_state(real r, real u, real v, real p, real u
     real ta = g * pa / ra;
     real q2 = u * u + v * v;
     real q2c = fmin(q2, 0.9 * 2.0 * ta / (g + 1.0));
-    real scale = sqrt(q2c / fmax(q2, 1e-300));
+    real scale = sqrt(q2c / fmax(q2, 1e-30));
     real tt = ta - 0.5 * (g - 1.0) * q2c;
     real pin = pa * pow(tt / ta, g / (g - 1.0));
     o0 = g * pin / tt; o1 = u * scale; o2 = v * scale; o3 = pin;
 }
 
 // Ghost layers of the nozzle domain (see NozzleFlow._fill_ghosts, which this mirrors exactly).
-extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, const real* __restrict__ P,
-                                         const real* __restrict__ tsum, real g) {
+extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, const treal* __restrict__ P,
+                                         const treal* __restrict__ tsum, real g) {
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= nyp * nxp) return;
@@ -52,7 +61,7 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
     bool gx = i < G || i >= nx + G;
     bool gy = j < G || j >= ny + G;
     if (!gx && !gy) return;
-    real pa = P[0], ra = P[1], uf = P[2];
+    real pa = (real)P[0], ra = (real)P[1], uf = (real)P[2];
     real o0, o1, o2, o3;
     if (gx && gy) {                       // corners: read by no stencil
         o0 = ra; o1 = uf; o2 = 0.0; o3 = pa;
@@ -61,9 +70,9 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
         far_state(r, u, v, p, -u, pa, ra, uf, false, g, o0, o1, o2, o3);
         if (j - G < (int)P[10]) {
             real f = ramp_f(P, *tsum);
-            real p0 = pa + f * (P[3] - pa), T0 = P[4];
+            real p0 = pa + f * ((real)P[3] - pa), T0 = (real)P[4];
             // non-reflecting characteristic injector (see NozzleFlow._fill_ghosts)
-            real mc = P[11];
+            real mc = (real)P[11];
             real tt = T0 / (1.0 + 0.5 * (g - 1.0) * mc * mc);
             real ut = mc * sqrt(tt);
             real pt = p0 * pow(tt / T0, g / (g - 1.0));
@@ -116,7 +125,7 @@ extern "C" __global__ void rk_update_cut(const real* Ubase, const real* __restri
                                          const real* __restrict__ ax, const real* __restrict__ ay,
                                          const real* __restrict__ wx, const real* __restrict__ wr,
                                          const real* __restrict__ nwx, const real* __restrict__ nwr,
-                                         const real* __restrict__ ks, const real* __restrict__ dtp, real a,
+                                         const real* __restrict__ ks, const treal* __restrict__ dtp, real a,
                                          int axi, real g, int ny, int nx, real* out) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= ny * nx) return;
@@ -140,7 +149,7 @@ extern "C" __global__ void rk_update_cut(const real* Ubase, const real* __restri
     if (wxc != 0.0 || wrc != 0.0)
         pw = wall_pressure(WI(0, jj + 2, ii + 2), WI(1, jj + 2, ii + 2), WI(2, jj + 2, ii + 2), WI(3, jj + 2, ii + 2),
                            nwx[t], nwr[t], g);
-    real dt = *dtp;
+    real dt = (real)*dtp;
     real b = 1.0 - a;
     size_t fp = (size_t)ny * (nx + 1), gp = (size_t)(ny + 1) * nx;
     for (int k = 0; k < 4; ++k) {
@@ -160,11 +169,12 @@ class NozzleGPU(SupersonicGPU):
 
     KERNELS = SupersonicGPU.KERNELS + ("ghosts_nozzle", "rk_update_cut")
 
-    @staticmethod
-    def _load_module():
-        return _module("nozzle", _NOZZLE_SRC)
+    def _load_module(self):
+        return load_module(self.single)
 
-    def __init__(self, nx: int, ny: int, axisymmetric: bool = True) -> None:
+    def __init__(self, nx: int, ny: int, axisymmetric: bool = True, single: bool = True) -> None:
+        self.single = bool(single)
+        self.dtype = np.float32 if self.single else np.float64
         super().__init__(nx, ny)
         self.axi = np.int32(1 if axisymmetric else 0)
         with self.stream:
@@ -176,7 +186,7 @@ class NozzleGPU(SupersonicGPU):
         """Copy the cut-cell geometry (apertures, wall areas and normals, radial source weights)."""
         cp = self.cp
         with self.stream:
-            self.cut = tuple(cp.asarray(np.ascontiguousarray(a, dtype=np.float64)) for a in (ax, ay, wx, wr, nwx, nwr, ks))
+            self.cut = tuple(cp.asarray(np.ascontiguousarray(a, dtype=self.dtype)) for a in (ax, ay, wx, wr, nwx, nwr, ks))
         self.stream.synchronize()
         self.ib_version += 1                 # captured graphs hold the old pointers
 
@@ -187,10 +197,10 @@ class NozzleGPU(SupersonicGPU):
 
     def _primitives(self, U, g: float, fs) -> None:
         ny, nx = self.ny, self.nx
-        self.k["prim"](_grid(ny * nx), (_BLOCK,), (U, self.W, np.float64(g), np.int32(ny), np.int32(nx)))
+        self.k["prim"](_grid(ny * nx), (_BLOCK,), (U, self.W, self._r(g), np.int32(ny), np.int32(nx)))
         npad = (ny + 4) * (nx + 4)
         self.k["ghosts_nozzle"](_grid(npad), (_BLOCK,), (self.W, np.int32(ny), np.int32(nx), self.P, self.tsum,
-                                                         np.float64(g)))
+                                                         self._r(g)))
         if self.ib_count:
             gj, gi, sj, si, sw, nrm = self.ib
             self.k["fill_ib"](_grid(self.ib_count), (_BLOCK,), (self.W, np.int32(ny + 4), np.int32(nx + 4),
@@ -199,13 +209,13 @@ class NozzleGPU(SupersonicGPU):
     def _rk(self, Ucur, a: float, out, g: float) -> None:
         ny, nx = self.ny, self.nx
         self.k["rk_update_cut"](_grid(ny * nx), (_BLOCK,), (self.U, Ucur, self.F, self.Gf, self.W, self.solid, *self.cut,
-                                                            self.dt, np.float64(a), self.axi, np.float64(g),
+                                                            self.dt, self._r(a), self.axi, self._r(g),
                                                             np.int32(ny), np.int32(nx), out))
 
     def _one_step(self, g: float, fs) -> None:
         ny, nx = self.ny, self.nx
         cells = ny * nx
-        gg, iny, inx = np.float64(g), np.int32(ny), np.int32(nx)
+        gg, iny, inx = self._r(g), np.int32(ny), np.int32(nx)
         self._primitives(self.U, g, fs)
         self.k["max_speed"](_grid(cells), (_BLOCK,), (self.W, self.solid, gg, iny, inx, self.smax))
         self.k["finish_dt"]((1,), (1,), (self.smax, self.dt, self.tsum))

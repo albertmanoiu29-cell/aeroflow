@@ -151,11 +151,12 @@ def test_nozzle_gpu_matches_cpu() -> None:
     # cut-cell walls, the axisymmetric update, the characteristic injector, ignition ramp and shut-down
     from core import nozzle as nz
 
-    def run():
+    def run(single: bool = False):
         geom = nz.NozzleGeometry(throat_diameter=0.05, exit_diameter=0.10, chamber_diameter=0.10,
                                  chamber_length=0.03, wall_thickness=0.004)
         lay = nz.layout_nozzle(geom, 200, 50, plume_length=5.0, plume_radius=3.0)
         s = nz.NozzleFlow(200, 50, gamma=1.3)
+        s.gpu_single = single
         s.set_geometry(lay)
         s.set_conditions(1 / 1.3, 1.0, 0.0, 20 / 1.3, 3.0)
         s.reset()
@@ -173,3 +174,8 @@ def test_nozzle_gpu_matches_cpu() -> None:
     assert (a.device, b.device) == ("CPU", "GPU")
     assert abs(a.time - b.time) < 1e-9
     assert np.max(np.abs(a.U - b.U)) / np.max(np.abs(a.U)) < 1e-10
+    # the fast single-precision kernels: same flow to about single-precision accuracy
+    c = run(single=True)
+    assert c.device == "GPU" and abs(c.time - a.time) < 1e-3 * a.time
+    assert np.isfinite(c.U).all()
+    assert np.max(np.abs(a.U - c.U)) / np.max(np.abs(a.U)) < 2e-3

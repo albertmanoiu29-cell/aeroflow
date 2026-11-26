@@ -697,6 +697,7 @@ class NozzleFlow(ss.Supersonic2D):
         self._t_bc = 0.0
         self.segments = None
         self.cut_count = 0
+        self.gpu_single = True              # GPU fields in float32 (fast); False: float64, identical to the CPU
         self.bc[BC_MC] = 0.15
         super().__init__(nx, ny, mach=0.0, gamma=g)
         self._set_cut_cells(np.ones((ny, nx)), np.ones((ny, nx + 1)), np.ones((ny + 1, nx)))
@@ -958,12 +959,26 @@ class NozzleFlow(ss.Supersonic2D):
         R[:, self.solid_int] = 0.0
         return R
 
+    def set_gpu_precision(self, single: bool) -> None:
+        """Float32 (fast) or float64 (exact) GPU fields; the state carries over."""
+        if bool(single) == self.gpu_single:
+            return
+        self._drain()
+        self._leave_gpu()                    # fetch the state, free the old device arrays
+        self.gpu_single = bool(single)
+
+    def _dt(self, use_nb: bool) -> float:
+        from core.nozzle_gpu import NOZZLE_CFL
+
+        return super()._dt(use_nb) * (NOZZLE_CFL / ss.CFL)
+
     def _begin_gpu(self, n: int) -> bool:
         try:
-            if self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny):
+            if (self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny)
+                    or self._gpu.single != self.gpu_single):
                 from core.nozzle_gpu import NozzleGPU
 
-                self._gpu = NozzleGPU(self.nx, self.ny, self.axi)
+                self._gpu = NozzleGPU(self.nx, self.ny, self.axi, single=self.gpu_single)
                 self._gpu_dirty = True
             if self._gpu_dirty:
                 self._gpu.upload(self.U, self._solid_pad, self._wall_pad, self._ib_arrays())
@@ -1013,13 +1028,19 @@ def _peaks(s: F64, min_prom: float, min_dist: int) -> list[int]:
     """Indices of local maxima of ``s`` with at least ``min_prom`` prominence on both sides."""
     out: list[int] = []
     n = len(s)
-    for i in range(1, n - 1):
-        if not (s[i] >= s[i - 1] and s[i] > s[i + 1]):
-            continue
-        left = s[max(0, i - 4 * min_dist):i].min() if i > 0 else s[i]
-        right = s[i + 1:min(n, i + 1 + 4 * min_dist)].min()
-        if s[i] - max(left, right) < min_prom:
-            continue
+    if n < 3:
+        return out
+    w = max(4 * int(min_dist), 1)
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    pad = np.concatenate([np.full(w, np.inf), s, np.full(w, np.inf)])
+    win = sliding_window_view(pad, w).min(axis=1)          # win[k] = min(pad[k:k+w])
+    left = win[:n]                                         # min of s[i-w:i]
+    right = win[w + 1:w + 1 + n]                           # min of s[i+1:i+1+w]
+    cand = np.nonzero((s[1:-1] >= s[:-2]) & (s[1:-1] > s[2:]))[0] + 1
+    prom = s[cand] - np.maximum(left[cand], right[cand])
+    for i in cand[prom >= min_prom]:
+        i = int(i)
         if out and i - out[-1] < min_dist:
             if s[i] > s[out[-1]]:
                 out[-1] = i
@@ -1209,10 +1230,10 @@ def measure(solver: NozzleFlow, lay: NozzleLayout, sc: Scales, geom: NozzleGeome
              & (solver._kappa[js, iis] > 0.3))                    # sliver cells carry little information
     xi, pi_ = xw[inner], pw[inner] * sc.pressure
     if xi.size:
-        k = np.round(xi / sc.dx).astype(np.int64)                  # one sample per column: the median
+        k = np.round(xi / sc.dx).astype(np.int64)                  # one sample per column: the mean
         cols, inv = np.unique(k, return_inverse=True)
-        med = np.array([np.median(pi_[inv == c]) for c in range(cols.size)])
-        out["wall_x"], out["wall_p"] = cols * sc.dx, med
+        mean = np.bincount(inv, weights=pi_) / np.bincount(inv)
+        out["wall_x"], out["wall_p"] = cols * sc.dx, mean
     else:
         out["wall_x"], out["wall_p"] = xi, pi_
     return out

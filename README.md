@@ -51,7 +51,7 @@ Open it with **Nozzle Lab** in the top bar or **View ▸ Rocket Nozzle Lab** (Ct
   - **Nozzle:** the contour to scale.
 
   Snapshots, MP4 video and CSV export are included.
-- **Solver:** compressible Euler equations, axisymmetric (round nozzle) or planar (slot nozzle). The HLLC/HLL fluxes and MUSCL reconstruction are those of the Supersonic Lab. The nozzle walls are **cut cells**, sub-cell accurate and exactly conservative: a gas at rest stays exactly at rest. The injector is a non-reflecting characteristic inlet, and the far field draws entrained air from still air. It runs on the GPU (CUDA, double precision, identical to the CPU to 1e-15) or the CPU.
+- **Solver:** compressible Euler equations, axisymmetric (round nozzle) or planar (slot nozzle). The HLLC/HLL fluxes and MUSCL reconstruction are those of the Supersonic Lab. The nozzle walls are **cut cells**, sub-cell accurate and exactly conservative: a gas at rest stays exactly at rest. The injector is a non-reflecting characteristic inlet, and the far field draws entrained air from still air. It runs on the GPU or the CPU. On the GPU it uses single precision by default, about 6x faster on consumer cards and within about 0.1 % of double precision; *Double (exact)* matches the CPU to 1e-15.
 - **Validation:**
   - **Theory:** the thrust coefficient matches the closed-form equation to 1e-9.
   - **Engine presets:** thrust is 95–98.6 % of theory and mass flow 96–100 %. The lower figures are on grids with only 6–8 cells across the throat; the Lab warns about that.

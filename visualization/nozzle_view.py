@@ -234,6 +234,7 @@ class NozzleView(QWidget):
         self.ramp_ms = 1.0
         self.shutdown_ms = 1.0
         self.auto_ignite = True
+        self.gpu_single = True
         self.solver: Optional[nz.NozzleFlow] = None
         self.layout_: Optional[nz.NozzleLayout] = None
         self.scales: Optional[nz.Scales] = None
@@ -301,6 +302,7 @@ class NozzleView(QWidget):
             if self.solver is not None:
                 self.solver.finish_step()
             self.solver = nz.NozzleFlow(nx, ny, s.gas.gamma, axisymmetric=not s.planar)
+            self.solver.gpu_single = self.gpu_single
         self.layout_ = lay
         self.solver.set_geometry(lay)
         rg = s.gas.gas_constant
@@ -379,6 +381,12 @@ class NozzleView(QWidget):
             self.ignite()
         self._render()
         self._emit_stats()
+
+    def set_gpu_precision(self, single: bool) -> None:
+        """Single (fast) or double (exact) precision for the GPU solver; the flow carries over."""
+        self.gpu_single = bool(single)
+        if self.solver is not None:
+            self.solver.set_gpu_precision(self.gpu_single)
 
     def set_speed(self, factor: float) -> None:
         self.speed = float(np.clip(factor, 0.25, 8.0))
@@ -486,9 +494,15 @@ class NozzleView(QWidget):
                                          lay.x_exit, float(lay.r_inner(lay.x_exit)))
 
     def steady(self) -> bool:
-        """Firing at full throttle and the thrust has settled (< 0.5 % change over the last ~0.4 ms)."""
+        """Firing at full throttle, the thrust settled (< 0.5 % change over the last ~0.4 ms), and the nozzle
+        flow established: the mass flow through the throat leaves through the exit, and the force on the walls
+        equals the exit-plane momentum flux (both differ while a starting shock is still in the nozzle)."""
         h = self.history
         if self.engine_state() != "FIRING" or len(h["t"]) < 20:
+            return False
+        a = self.avg
+        md, mt, f, fe = (a.get(k, 0.0) for k in ("mdot_exit", "mdot_throat", "thrust", "thrust_exit_plane"))
+        if abs(md - mt) > 0.02 * max(abs(mt), 1e-12) or abs(f - fe) > 0.03 * max(abs(f), 1e-12):
             return False
         t = np.asarray(h["t"])
         f = np.asarray(h["thrust"])

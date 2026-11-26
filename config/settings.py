@@ -34,7 +34,7 @@ from typing import Final
 # ---------------------------------------------------------------------------
 APP_NAME: Final[str] = "AeroFlow Studio"
 APP_ID: Final[str] = "aeroflow_studio"
-APP_VERSION: Final[str] = "1.6.0"
+APP_VERSION: Final[str] = "1.6.1"
 ORG_NAME: Final[str] = "AeroFlow"
 #: Public project page (releases, issue tracker) and the GitHub "owner/repo" used by the update check.
 PROJECT_URL: Final[str] = "https://github.com/albertmanoiu29-cell/aeroflow"

@@ -320,7 +320,7 @@ def warmup_async() -> None:
 
                 supersonic_gpu._module()
                 lbm2d_gpu._module()
-                nozzle_gpu.NozzleGPU._load_module()
+                nozzle_gpu.load_module(True)
             except Exception as exc:  # noqa: BLE001 - compiled again (and reported) on first use
                 log.debug("GPU kernel pre-compilation skipped: %s", exc)
 

@@ -3,6 +3,14 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.6.1] - 2026-11-26
+
+### Improved: Rocket Nozzle Lab speed (about 9x faster start-ups)
+- **Single-precision GPU kernels**, the new default. They are 6.4x faster per step on consumer GPUs, which have few double-precision units: 0.25 ms instead of 1.6 ms per step on the default grid. Results agree with double precision to about 0.1 %. *GPU precision: Double (exact)* in the Simulation card keeps the old kernels, which match the CPU exactly. Time and time step stay in double precision, so long runs do not drift.
+- **Larger stable time step** (CFL 0.7 instead of 0.5). All eight presets stay stable, and their thrust, mass flow and exit Mach number are unchanged.
+- **Faster measurement:** vectorised shock-cell detection (6.5x) and wall-pressure binning.
+- **Stricter steady-state indicator:** it also requires the throat and exit mass flows, and the wall thrust and exit-plane thrust, to agree. A start-up plateau with the starting shock still in the nozzle no longer counts as steady.
+
 ## [1.6.0] - 2026-11-26
 
 ### Added: Rocket Nozzle Lab (Ctrl+5)
