@@ -208,3 +208,37 @@ def test_revolve_fill_is_linear_in_radius() -> None:
     assert np.allclose(a[1, 0], [2.5, 3.5]) and np.allclose(a[1, 1], 0.0)          # beyond the last row: empty
     hot, cold = blackbody_rgb(np.array([2500.0, 800.0]))
     assert hot[1] > cold[1] and hot[2] > cold[2]                                    # hotter is whiter
+
+
+def test_dual_bell_switches_mode_with_altitude() -> None:
+    gas = nz.Gas(1.21, 13.4, 3420.0)
+    g = nz.NozzleGeometry(throat_diameter=0.2, exit_diameter=1.6, chamber_diameter=0.4, contour=nz.Contour.DUAL_BELL)
+    x, r = g.inner_contour()
+    assert np.all(np.diff(x) > -1e-12) and r[-1] == pytest.approx(g.re)
+    e1, x1 = g.inflection()
+    assert 2.0 <= e1 < g.area_ratio() and 0.0 < x1 < x[-1]
+    low = nz.nozzle_theory(g, gas, 100e5, 101325.0)
+    high = nz.nozzle_theory(g, gas, 100e5, 1000.0)
+    assert "low-altitude" in low.regime and "high-altitude" in high.regime
+    full_at_sea = nz._nozzle_theory(g, gas, 100e5, 101325.0)
+    assert low.isp > full_at_sea.isp                   # the point of a dual bell: no overexpansion loss at sea level
+
+
+def test_contour_import_csv_and_dxf(tmp_path) -> None:
+    ref = nz.NozzleGeometry()
+    xs, rs = ref.inner_contour()
+    (tmp_path / "c.csv").write_text("x_mm,r_mm\n" + "\n".join(f"{a * 1000:.4f},{b * 1000:.4f}" for a, b in zip(xs, rs)))
+    dxf = ["0", "SECTION", "2", "ENTITIES", "0", "LWPOLYLINE"]
+    for a, b in zip(xs, rs):
+        dxf += ["10", f"{a * 1000:.4f}", "20", f"{b * 1000:.4f}"]
+    (tmp_path / "c.dxf").write_text("\n".join(dxf + ["0", "ENDSEC", "0", "EOF"]))
+    for name in ("c.csv", "c.dxf"):
+        x, r = nz.read_contour_file(tmp_path / name)
+        g = nz.NozzleGeometry(contour=nz.Contour.CUSTOM, custom_x=tuple(x), custom_r=tuple(r))
+        assert g.rt == pytest.approx(ref.rt, rel=1e-3) and g.re == pytest.approx(ref.re, rel=1e-3)
+        gas = nz.Gas(1.22, 22.5, 3650.0)
+        assert nz.nozzle_theory(g, gas, 70e5, 1e5).thrust == pytest.approx(nz.nozzle_theory(ref, gas, 70e5, 1e5).thrust,
+                                                                           rel=2e-3)
+    (tmp_path / "bad.csv").write_text("1,2\n3,4\n")
+    with pytest.raises(ValueError):
+        nz.read_contour_file(tmp_path / "bad.csv")

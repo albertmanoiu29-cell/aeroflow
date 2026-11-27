@@ -176,6 +176,13 @@ class Contour(str, Enum):
     BELL = "Bell (Rao thrust-optimised)"
     CONICAL = "Conical"
     SONIC = "Convergent only (sonic)"
+    DUAL_BELL = "Dual-bell (altitude-adaptive)"
+    CUSTOM = "Imported contour (CSV / DXF)"
+
+
+def schmucker_ratio(mach: float) -> float:
+    """Wall / ambient pressure at which a nozzle flow separates (Schmucker 1973): (1.88 M - 1)^-0.64."""
+    return float((1.88 * max(mach, 0.6) - 1.0) ** -0.64)
 
 
 _RAO_EPS = np.log(np.array([4.0, 10.0, 20.0, 50.0, 100.0]))
@@ -212,18 +219,62 @@ class NozzleGeometry:
     throat_downstream_radius: float = 0.382     # × throat radius
     wall_thickness: float = 0.008
     vehicle_diameter: float = 0.0               # rocket body around the engine (0 = bare engine)
+    inflection_ratio: float = 0.0               # dual-bell: area ratio of the inflection (0 = 35 % of ε)
+    extension_angle: float = 0.0                # dual-bell: wall angle just after the inflection (0 = automatic)
+    custom_x: tuple = ()                        # imported contour (m), injector face at x = 0
+    custom_r: tuple = ()
+
+    @property
+    def is_custom(self) -> bool:
+        return self.contour is Contour.CUSTOM and len(self.custom_x) >= 5
 
     @property
     def rt(self) -> float:
+        if self.is_custom:
+            return float(min(self.custom_r))
         return 0.5 * self.throat_diameter
 
     @property
     def re(self) -> float:
+        if self.is_custom:
+            return float(self.custom_r[-1])
         return self.rt if self.contour is Contour.SONIC else max(0.5 * self.exit_diameter, self.rt)
 
     @property
     def rc(self) -> float:
+        if self.is_custom:
+            return float(self.custom_r[0])
         return max(0.5 * self.chamber_diameter, 1.05 * self.rt)
+
+    def inflection(self) -> tuple[float, float]:
+        """Dual-bell inflection: (area ratio, x in m)."""
+        eps = self.area_ratio()
+        e1 = self.inflection_ratio if self.inflection_ratio > 1.0 else max(0.35 * eps, 2.0)
+        e1 = min(e1, 0.9 * eps)
+        base = self.dual_bell_base()
+        return e1, float(base.inner_contour()[0][-1])
+
+    def dual_bell_base(self) -> "NozzleGeometry":
+        """The base bell of a dual-bell nozzle (up to the inflection)."""
+        from dataclasses import replace as _replace
+
+        eps = (self.re / self.rt) ** 2
+        e1 = self.inflection_ratio if self.inflection_ratio > 1.0 else max(0.35 * eps, 2.0)
+        e1 = min(e1, 0.9 * eps)
+        return _replace(self, contour=Contour.BELL, exit_diameter=self.throat_diameter * math.sqrt(e1), theta_e=0.0,
+                        theta_n=self.theta_n)
+
+    def exit_angle(self) -> float:
+        """Wall angle at the exit lip (deg)."""
+        if self.contour is Contour.SONIC:
+            return 0.0
+        if self.contour is Contour.CONICAL:
+            return self.divergent_angle
+        if self.contour is Contour.BELL:
+            return self.bell_angles()[1]
+        x, r = self.inner_contour()
+        k = max(len(x) - 4, 0)
+        return float(math.degrees(math.atan2(r[-1] - r[k], max(x[-1] - x[k], 1e-12))))
 
     def area_ratio(self, planar: bool = False) -> float:
         """Exit / throat area (ε)."""
@@ -238,6 +289,10 @@ class NozzleGeometry:
 
     def inner_contour(self) -> tuple[F64, F64]:
         """Inner wall (x, r) from the injector face (x = 0) to the exit plane, x increasing."""
+        if self.is_custom:
+            return np.asarray(self.custom_x, dtype=float), np.asarray(self.custom_r, dtype=float)
+        if self.contour is Contour.DUAL_BELL:
+            return self._dual_bell_contour()
         rt, rc, re = self.rt, self.rc, self.re
         r1 = max(self.throat_upstream_radius, 0.05) * rt
         r2 = max(self.throat_downstream_radius, 0.05) * rt
@@ -292,6 +347,30 @@ class NozzleGeometry:
             xs.append((1 - s) ** 2 * nx_ + 2 * (1 - s) * s * qx + s * s * ex)
             rs.append((1 - s) ** 2 * nr_ + 2 * (1 - s) * s * qr + s * s * er)
         return np.asarray(xs), np.asarray(rs)
+
+    def _dual_bell_contour(self) -> tuple[F64, F64]:
+        """Base bell to the inflection, then an extension that starts with a sharp outward turn (the inflection
+        where the flow separates at low altitude) and curves to a near-axial exit."""
+        base = self.dual_bell_base()
+        xb, rb = base.inner_contour()
+        te1 = base.bell_angles()[1]
+        tx = math.radians(self.extension_angle if self.extension_angle > 0 else te1 + 7.0)
+        te2 = math.radians(max(math.degrees(tx) - 5.0, 3.0))
+        x1, r1, re = float(xb[-1]), float(rb[-1]), self.re
+        if re <= r1 * 1.001:
+            return xb, rb
+        length = (re - r1) / math.tan(0.5 * (tx + te2))
+        ex = x1 + length
+        m1, m2 = math.tan(tx), math.tan(te2)
+        c1, c2 = r1 - m1 * x1, re - m2 * ex
+        qx = (c2 - c1) / (m1 - m2) if abs(m1 - m2) > 1e-9 else 0.5 * (x1 + ex)
+        qr = m1 * qx + c1
+        if not (x1 < qx < ex):
+            qx, qr = 0.5 * (x1 + ex), 0.5 * (r1 + re)
+        s_ = np.linspace(0.0, 1.0, 120)[1:]
+        xe = (1 - s_) ** 2 * x1 + 2 * (1 - s_) * s_ * qx + s_ * s_ * ex
+        r_e = (1 - s_) ** 2 * r1 + 2 * (1 - s_) * s_ * qr + s_ * s_ * re
+        return np.concatenate([xb, xe]), np.concatenate([rb, r_e])
 
     def throat_x(self) -> float:
         x, r = self.inner_contour()
@@ -351,7 +430,34 @@ class NozzlePerformance:
 
 
 def nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: bool = False) -> NozzlePerformance:
-    """Performance of ``geom`` fed at chamber pressure ``pc`` into ambient pressure ``pa`` (both Pa)."""
+    """Performance of ``geom`` fed at chamber pressure ``pc`` into ambient pressure ``pa`` (both Pa).
+
+    A dual-bell nozzle runs in one of two modes: at low altitude the flow separates cleanly at the inflection
+    (Schmucker criterion on the base bell's exit pressure) and the engine performs like the base bell; higher
+    up it flows full and performs like the whole nozzle."""
+    if geom.contour is Contour.DUAL_BELL:
+        from dataclasses import replace as _replace
+
+        base_geom = geom.dual_bell_base()
+        base = _nozzle_theory(base_geom, gas, pc, pa, planar)
+        full = _nozzle_theory(geom, gas, pc, pa, planar)
+        # low altitude: the full nozzle's extension would fall below the separation limit, so the flow
+        # separates cleanly at the inflection (and stays attached in the base bell)
+        separated = full.choked and full.exit_pressure < schmucker_ratio(full.exit_mach) * pa
+        if separated:
+            return _replace(base, regime=f"Dual-bell, low-altitude mode ({base.regime.lower()})",
+                            regime_note="The flow separates at the inflection, so the engine works like its shorter base "
+                                        "bell and avoids the losses of an overexpanded full nozzle. (The inviscid "
+                                        "simulation cannot separate: it shows the attached flow.)",
+                            expansion_ratio=full.expansion_ratio, exit_area=full.exit_area,
+                            thrust_vacuum=full.thrust_vacuum, isp_vacuum=full.isp_vacuum)
+        return _replace(full, regime=f"Dual-bell, high-altitude mode ({full.regime.lower()})",
+                        regime_note="The flow fills the whole nozzle, extension included: the full expansion ratio "
+                                    "works. " + full.regime_note)
+    return _nozzle_theory(geom, gas, pc, pa, planar)
+
+
+def _nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: bool = False) -> NozzlePerformance:
     g, rgas, tc = gas.gamma, gas.gas_constant, gas.chamber_temperature
     pa = max(pa, 1e-6)
     pc = max(pc, 1e-6)
@@ -420,7 +526,7 @@ def nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: 
     if geom.contour is Contour.SONIC:
         lam = 1.0
     else:
-        alpha = math.radians(geom.divergent_angle if geom.contour is Contour.CONICAL else geom.bell_angles()[1])
+        alpha = max(math.radians(abs(geom.exit_angle())), 1e-6)
         lam = math.sin(alpha) / alpha if planar else 0.5 * (1.0 + math.cos(alpha))
     thrust_ideal = mdot * ve + (pe - pa) * ae
     thrust = mdot * ve * lam + (pe - pa) * ae
@@ -452,6 +558,62 @@ def nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: 
         divergence_factor=lam, expansion_ratio=eps, optimum_expansion_ratio=eps_opt, jet_mach=mj, jet_diameter=dj,
         shock_cell_spacing=cell, mach_disk_distance=disk, separation=sep, separation_x=sep_x, shock_x=shock_x,
         throat_area=at, exit_area=ae)
+
+
+def read_contour_file(path) -> tuple[F64, F64]:
+    """Inner nozzle contour (x, r in metres) from a CSV/TXT file (two columns: x and r, or x and diameter
+    with a 'd'/'diam' header) or from a DXF drawing (LINE, LWPOLYLINE, POLYLINE and SPLINE points; the axis
+    is y = 0). Millimetres are assumed when the numbers are larger than 20. The contour is ordered along x,
+    shifted so the injector face is at x = 0, and must contain the throat (the narrowest point)."""
+    from pathlib import Path as _Path
+
+    path = _Path(path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    pts: list[tuple[float, float]] = []
+    diameter = False
+    if path.suffix.lower() == ".dxf":
+        lines = [ln.strip() for ln in text.splitlines()]
+        x_val = None
+        for k in range(0, len(lines) - 1, 2):
+            code, val = lines[k], lines[k + 1]
+            if code in ("10", "11"):
+                try:
+                    x_val = float(val)
+                except ValueError:
+                    x_val = None
+            elif code in ("20", "21") and x_val is not None:
+                try:
+                    pts.append((x_val, abs(float(val))))
+                except ValueError:
+                    pass
+                x_val = None
+    else:
+        import re as _re
+
+        for line in text.splitlines():
+            low = line.lower()
+            if any(h in low for h in ("diam", ",d", " d ", "\td")) and not _re.search(r"\d", line):
+                diameter = True
+                continue
+            nums = _re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
+            if len(nums) >= 2:
+                pts.append((float(nums[0]), abs(float(nums[1]))))
+    if len(pts) < 5:
+        raise ValueError("The file needs at least 5 contour points (x, r).")
+    a = np.asarray(sorted(set(pts)), dtype=float)
+    if diameter:
+        a[:, 1] *= 0.5
+    if float(np.max(np.abs(a))) > 20.0:                      # millimetres
+        a /= 1000.0
+    x, r = a[:, 0] - a[0, 0], a[:, 1]
+    keep = np.concatenate([[True], np.diff(x) > 1e-9])        # one radius per x
+    x, r = x[keep], r[keep]
+    if np.any(r <= 0.0):
+        raise ValueError("Every contour point needs a positive radius (the axis is at r = 0).")
+    k = int(np.argmin(r))
+    if k == 0:
+        raise ValueError("The contour must start in the chamber and narrow to a throat.")
+    return x, r
 
 
 def chamber_pressure_for_mass_flow(mdot: float, geom: NozzleGeometry, gas: Gas, planar: bool = False) -> float:

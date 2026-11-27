@@ -458,16 +458,28 @@ class NozzleWindow(QMainWindow):
         self.row_bell = labeled_row("Bell length", self.bell)
         self.row_tn = labeled_row("Bell start angle θn", self.tn)
         self.row_te = labeled_row("Bell exit angle θe", self.te)
+        self.infl = _dspin(0.0, 400.0, 0.0, 1, "", 1.0, "Dual-bell: area ratio of the inflection where the base bell "
+                           "ends (0 = 35 % of the full ε). At low altitude the flow separates there.")
+        self.ext_angle = _dspin(0.0, 40.0, 0.0, 1, "°", 0.5, "Dual-bell: wall angle just after the inflection "
+                                "(0 = automatic, 7° more than the base bell's exit)")
+        self.row_infl = labeled_row("Inflection at ε", self.infl)
+        self.row_ext = labeled_row("Extension angle", self.ext_angle)
+        self.btn_import = button("Import contour…", "ghost", "folder", "Load the inner wall from a CSV (x, r or x, d "
+                                 "columns) or a DXF drawing (axis on y = 0)")
+        self.btn_import.clicked.connect(self._import_contour)
+        self.custom_note = _muted("")
+        self._custom: Optional[tuple[np.ndarray, np.ndarray]] = None
         for text, w in (("Throat diameter", self.dt), ("Exit diameter", self.de), ("Expansion ratio ε", self.eps),
                         ("Chamber diameter", self.dc), ("Chamber length", self.lc), ("Convergent half-angle", self.conv)):
             card.add(labeled_row(text, w))
-        for row in (self.row_div, self.row_bell, self.row_tn, self.row_te):
+        for row in (self.row_div, self.row_bell, self.row_tn, self.row_te, self.row_infl, self.row_ext, self.btn_import,
+                    self.custom_note):
             card.add(row)
         for text, w in (("Throat radius upstream", self.ru), ("Throat radius downstream", self.rd),
                         ("Wall thickness", self.wall), ("Vehicle body diameter", self.body)):
             card.add(labeled_row(text, w))
         for w in (self.dt, self.dc, self.lc, self.conv, self.div, self.bell, self.tn, self.te, self.ru, self.rd,
-                  self.wall, self.body):
+                  self.wall, self.body, self.infl, self.ext_angle):
             w.valueChanged.connect(lambda _v: self._schedule())
         self.de.valueChanged.connect(lambda _v: self._exit_edited("de"))
         self.eps.valueChanged.connect(lambda _v: self._exit_edited("eps"))
@@ -881,7 +893,10 @@ class NozzleWindow(QMainWindow):
             convergent_angle=self.conv.value(), contour=contour, divergent_angle=self.div.value(),
             bell_fraction=self.bell.value() / 100.0, theta_n=self.tn.value(), theta_e=self.te.value(),
             throat_upstream_radius=self.ru.value(), throat_downstream_radius=self.rd.value(),
-            wall_thickness=self.wall.value() * 1e-3, vehicle_diameter=self.body.value() * 1e-3)
+            wall_thickness=self.wall.value() * 1e-3, vehicle_diameter=self.body.value() * 1e-3,
+            inflection_ratio=self.infl.value(), extension_angle=self.ext_angle.value(),
+            custom_x=tuple(self._custom[0]) if contour is nz.Contour.CUSTOM and self._custom is not None else (),
+            custom_r=tuple(self._custom[1]) if contour is nz.Contour.CUSTOM and self._custom is not None else ())
 
     def _planar(self) -> bool:
         return self.shape.index() == 1
@@ -907,9 +922,45 @@ class NozzleWindow(QMainWindow):
         c = c if isinstance(c, nz.Contour) else nz.Contour(c)
         self.row_div.setVisible(c is C)
         for row in (self.row_bell, self.row_tn, self.row_te):
-            row.setVisible(c is B)
-        self.de.setEnabled(c is not S)
-        self.eps.setEnabled(c is not S)
+            row.setVisible(c in (B, nz.Contour.DUAL_BELL))
+        for row in (self.row_infl, self.row_ext):
+            row.setVisible(c is nz.Contour.DUAL_BELL)
+        custom = c is nz.Contour.CUSTOM
+        self.btn_import.setVisible(custom)
+        self.custom_note.setVisible(custom)
+        if custom and self._custom is None and not self._loading:
+            QTimer.singleShot(0, self._import_contour)      # nothing to show yet: ask for a file
+        for wdg in (self.dt, self.de, self.eps, self.dc, self.lc, self.conv, self.ru, self.rd):
+            wdg.setEnabled(not custom)                       # an imported contour fixes these
+        self.de.setEnabled(c not in (S, nz.Contour.CUSTOM))
+        self.eps.setEnabled(c not in (S, nz.Contour.CUSTOM))
+
+    def _import_contour(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import nozzle contour", str(get_paths().root),
+                                              "Contour (*.csv *.txt *.dat *.dxf);;All files (*)")
+        if not path:
+            if self._custom is None:                         # back to a built-in contour
+                self.contour.setCurrentIndex(list(nz.Contour).index(B))
+                self._sync_contour_ui()
+            return
+        try:
+            x, r = nz.read_contour_file(path)
+        except (OSError, ValueError) as exc:
+            self.status_label.setText(f"Contour not loaded: {exc}")
+            return
+        self._custom = (x, r)
+        self._loading = True
+        try:                                                # show the imported dimensions
+            k = int(np.argmin(r))
+            self.dt.setValue(2.0 * r[k] * 1e3)
+            self.de.setValue(2.0 * r[-1] * 1e3)
+            self.eps.setValue((r[-1] / r[k]) ** 2)
+            self.dc.setValue(2.0 * r[0] * 1e3)
+        finally:
+            self._loading = False
+        self.custom_note.setText(f"{Path(path).name}: {len(x)} points, length {x[-1] * 1e3:.1f} mm, throat Ø "
+                                 f"{2 * r.min() * 1e3:.1f} mm, ε {(r[-1] / r.min()) ** 2:.2f}.")
+        self._schedule()
 
     def _feed_mode_changed(self) -> None:
         mass = self.feed_mode.index() == 1

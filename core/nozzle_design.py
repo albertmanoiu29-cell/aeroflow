@@ -182,7 +182,7 @@ def bartz_heat_transfer(geom: nz.NozzleGeometry, gas: nz.Gas, pc: float, cooling
 def schmucker_separation_ratio(mach: float, g: float = 1.2) -> float:
     """Wall-to-ambient pressure ratio at which an overexpanded nozzle separates (Schmucker 1973):
     p_sep / p_a = (1.88 M - 1)^-0.64, M the Mach number just ahead of the separation."""
-    return float((1.88 * max(mach, 0.6) - 1.0) ** -0.64)
+    return nz.schmucker_ratio(mach)
 
 
 def separation_point(geom: nz.NozzleGeometry, gas: nz.Gas, pc: float, pa: float, criterion: str = "schmucker",
