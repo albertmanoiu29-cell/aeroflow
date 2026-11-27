@@ -477,6 +477,8 @@ class MainWindow(QMainWindow):
         m_sim = mb.addMenu("&Simulation")
         a(m_sim, "Run", self.run_simulation, "Ctrl+R", "Solve the current geometry")
         a(m_sim, "Abort", self.abort, "Esc", "Stop the running solve or sweep")
+        a(m_sim, "Flight dynamics (trim, modes, response)…", self.open_flight_dynamics, "",
+          "Trim the aircraft from its polar, find the short-period and phugoid modes, simulate gusts and inputs")
         a(m_sim, "Propeller analysis (BEM)…", self.open_propeller_tool, "",
           "Fast propeller thrust, torque, power and efficiency curves by blade-element momentum theory")
         a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
@@ -1507,6 +1509,18 @@ class MainWindow(QMainWindow):
                                "(Roache / Celik et al. 2008). The Instant engine's resolution is the number of surface "
                                "elements.")
         box.exec()
+
+    def open_flight_dynamics(self) -> None:
+        polar = getattr(self, "polar", None)
+        if polar is None or getattr(self, "_polar_model", None) is not self.geometry_mgr.model:
+            self._error("Flight dynamics", "Run a polar sweep of the current aircraft first (Polar analysis, Ctrl+2): "
+                        "the flight model uses its lift, drag and pitching-moment curves.")
+            return
+        from ui.flight_dialog import FlightDialog
+
+        dlg = FlightDialog(polar, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
 
     def open_propeller_tool(self) -> None:
         from ui.propeller_dialog import PropellerDialog

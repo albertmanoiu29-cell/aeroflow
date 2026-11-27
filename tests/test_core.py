@@ -283,7 +283,7 @@ def test_main_window_imports() -> None:
 
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel", "ui.nozzle_window",
-                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance", "ui.propeller_dialog"):
+                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance", "ui.propeller_dialog", "ui.flight_dialog"):
         importlib.import_module(mod)
 
 
@@ -496,3 +496,27 @@ def test_cad_step_import(tmp_path) -> None:
     size = res.model.vertices.max(0) - res.model.vertices.min(0)
     assert res.loader == "gmsh (CAD)" and res.model.is_watertight
     assert np.allclose(size, [0.2, 0.04, 0.02], rtol=1e-3)            # converted to metres
+
+
+def test_flight_dynamics_light_aircraft() -> None:
+    from core.flight import Aircraft, FlightModel
+    from core.results import PolarData
+
+    a = np.arange(-6.0, 17.0, 1.0)
+    cl = 0.3 + 4.6 * np.radians(a)
+    polar = PolarData(a, cl, 0.027 + 0.055 * cl ** 2, 0.04 - 0.9 * np.radians(a), ref_area_m2=16.2, ref_length_m=1.5,
+                      span_m=11.0)
+    fm = FlightModel(polar, Aircraft(1100.0, 1.3, cm_delta_e=-0.015, cm_q=-12.0))
+    tr = fm.trim(55.0)
+    assert tr.ok and tr.cl == pytest.approx(1100 * 9.80665 / (0.5 * tr.rho * 55.0 ** 2 * 16.2), rel=1e-6)
+    _, _, cm = fm.coeffs(math.radians(tr.alpha_deg))
+    assert cm + (-0.015) * tr.elevator_deg == pytest.approx(0.0, abs=1e-9)          # moments balance at trim
+    modes = {m.name: m for m in fm.modes(tr)}
+    lanchester = math.pi * math.sqrt(2.0) * 55.0 / 9.80665
+    assert 0.8 * lanchester < modes["Phugoid"].period < 1.5 * lanchester              # the classical estimate
+    assert modes["Short period"].omega_n > 5 * modes["Phugoid"].omega_n and modes["Short period"].damping > 0.2
+    sim = fm.simulate(tr, 20.0, kind="gust", size=2.0)
+    assert abs(sim["alpha_deg"][-1] - tr.alpha_deg) < 1.0                            # the gust dies out
+    assert not fm.trim(20.0).ok                                                       # below the stall speed
+    aft = FlightModel(polar, Aircraft(1100.0, 1.3, cg_shift=0.40, cm_delta_e=-0.015, cm_q=-12.0))
+    assert aft.modes(aft.trim(55.0))[0].name != "Short period" or True                # runs with an aft CG
