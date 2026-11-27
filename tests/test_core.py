@@ -518,5 +518,6 @@ def test_flight_dynamics_light_aircraft() -> None:
     sim = fm.simulate(tr, 20.0, kind="gust", size=2.0)
     assert abs(sim["alpha_deg"][-1] - tr.alpha_deg) < 1.0                            # the gust dies out
     assert not fm.trim(20.0).ok                                                       # below the stall speed
-    aft = FlightModel(polar, Aircraft(1100.0, 1.3, cg_shift=0.40, cm_delta_e=-0.015, cm_q=-12.0))
-    assert aft.modes(aft.trim(55.0))[0].name != "Short period" or True                # runs with an aft CG
+    aft = FlightModel(polar, Aircraft(1100.0, 1.3, cg_shift=0.10, cm_delta_e=-0.015, cm_q=-12.0))
+    aft_sp = {m.name: m for m in aft.modes(aft.trim(55.0))}["Short period"]
+    assert aft_sp.omega_n < modes["Short period"].omega_n                            # less static stability
