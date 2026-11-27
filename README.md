@@ -25,7 +25,7 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
-## What's new since 1.7 (next release)
+## What's new in 1.8
 
 - **Rocket Nozzle Lab design tools:**
   - O/F mixture ratio;
