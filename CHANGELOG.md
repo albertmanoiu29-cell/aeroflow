@@ -9,7 +9,7 @@ download releases from the [Releases page](https://github.com/albertmanoiu29-cel
 - **Propellant mixture ratio (O/F):** each propellant's chamber temperature, γ and molar mass follow the O/F you set; a sweep marks the best-Isp ratio (kerolox about 2.3).
 - **Heat transfer and cooling:** Bartz wall heat flux along the nozzle with regenerative, radiation-cooled, mixed (regenerative chamber plus radiation-cooled extension) or adiabatic walls. The 3-D hot-wall glow uses this wall temperature.
 - **Flow separation:** the Schmucker criterion is drawn on the wall pressure profile, and the predicted separation point is reported.
-- **Expansion-ratio optimiser:** finds the expansion ratio with the best thrust at one altitude, or averaged over an ascent.
+- **Expansion-ratio optimiser:** finds the expansion ratio with the best Isp at one altitude, or averaged over an altitude range, optionally rejecting ratios that would separate at the lowest altitude.
 - **Noise estimate** (NASA SP-8072): overall sound level against distance and direction, and the spectrum peak.
 - **Ascent profile:** flies the engine from sea level to a chosen altitude while the simulation runs, and plots simulated thrust against theory.
 - **Engine comparison** of saved designs side by side, and a **PDF report** with the charts and results.
