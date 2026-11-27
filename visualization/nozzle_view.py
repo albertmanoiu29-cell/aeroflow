@@ -57,15 +57,16 @@ AUTO_RESOLUTION = "Auto (≥ 12 cells across the throat)"
 AUTO_THROAT_CELLS = 12.0
 
 
-def auto_resolution(geom: nz.NozzleGeometry, plume_length: float, plume_radius: float) -> str:
+def auto_resolution(geom: nz.NozzleGeometry, plume_length: float, plume_radius: float, planar: bool = False) -> str:
     """The smallest preset grid that resolves the throat with at least :data:`AUTO_THROAT_CELLS` cells
     (Ultra at most on the CPU, Extreme on the GPU); the largest allowed one if none does."""
     names = list(NOZZLE_RESOLUTIONS)
     if not compute.gpu_info().available:
         names = [n for n in names if "GPU" not in n]
+    gap = geom.aerospike(planar).gap if geom.is_aerospike else geom.rt
     for name in names:
         nx, ny = NOZZLE_RESOLUTIONS[name]
-        if geom.rt / nz.cell_size(geom, nx, ny, plume_length, plume_radius) >= AUTO_THROAT_CELLS:
+        if gap / nz.cell_size(geom, nx, ny, plume_length, plume_radius, planar) >= AUTO_THROAT_CELLS:
             return name
     return names[-1]
 
@@ -207,7 +208,7 @@ class NozzleView(QWidget):
             self.plot.getAxis(ax).setPen(pg.mkPen(PALETTE.border_strong))
         self.img = pg.ImageItem(axisOrder="row-major")
         self.plot.addItem(self.img)
-        self.walls = [QGraphicsPolygonItem() for _ in range(2)]
+        self.walls = [QGraphicsPolygonItem() for _ in range(4)]          # engine (two halves), aerospike plug
         for w in self.walls:
             w.setBrush(QBrush(QColor(140, 150, 166)))
             w.setPen(QPen(QColor(40, 46, 58), 0))
@@ -311,7 +312,8 @@ class NozzleView(QWidget):
         old = self.setup
         self.setup = setup
         if self.resolution == AUTO_RESOLUTION and self.solver is not None and \
-                auto_resolution(setup.geom, setup.plume_length, setup.plume_radius) != getattr(self, "grid_name", ""):
+                auto_resolution(setup.geom, setup.plume_length, setup.plume_radius, setup.planar) != \
+                getattr(self, "grid_name", ""):
             force = True
         rebuild = force or self.solver is None or any((
             old.geom != setup.geom, old.planar != setup.planar, old.gas.gamma != setup.gas.gamma,
@@ -337,11 +339,11 @@ class NozzleView(QWidget):
         s = self.setup
         grid = self.resolution
         if grid == AUTO_RESOLUTION:
-            grid = auto_resolution(s.geom, s.plume_length, s.plume_radius)
+            grid = auto_resolution(s.geom, s.plume_length, s.plume_radius, s.planar)
         self.grid_name = grid
         nx, ny = NOZZLE_RESOLUTIONS[grid]
         was_firing = self.solver is not None and self.solver.ignited
-        lay = nz.layout_nozzle(s.geom, nx, ny, s.plume_length, s.plume_radius)
+        lay = nz.layout_nozzle(s.geom, nx, ny, s.plume_length, s.plume_radius, s.planar)
         need_new = (self.solver is None or (self.solver.nx, self.solver.ny) != (nx, ny)
                     or self.solver.axi == s.planar or abs(self.solver.gamma - s.gas.gamma) > 1e-12)
         if need_new:
@@ -528,7 +530,8 @@ class NozzleView(QWidget):
         # ratios from the averaged quantities (averaging the ratios themselves amplifies start-up spikes)
         g = self.setup.geom
         at = 2.0 * g.rt if self.setup.planar else math.pi * g.rt ** 2
-        md, pc, f = self.avg["mdot_exit"], self.avg["chamber_pressure"], self.avg["thrust"]
+        md = self.avg["mdot_throat"] if lay.is_aerospike else self.avg["mdot_exit"]
+        pc, f = self.avg["chamber_pressure"], self.avg["thrust"]
         self.avg["isp"] = f / (md * nz.G0) if md > 1e-9 else 0.0
         self.avg["cf"] = f / (pc * at) if pc * at > 1e-9 else 0.0
         self.avg["cstar"] = pc * at / md if md > 1e-9 else 0.0
@@ -550,7 +553,8 @@ class NozzleView(QWidget):
             return False
         a = self.avg
         md, mt, f, fe = (a.get(k, 0.0) for k in ("mdot_exit", "mdot_throat", "thrust", "thrust_exit_plane"))
-        if abs(md - mt) > 0.02 * max(abs(mt), 1e-12) or abs(f - fe) > 0.03 * max(abs(f), 1e-12):
+        spike = self.layout_ is not None and self.layout_.is_aerospike     # its base plane cuts the recirculation
+        if not spike and (abs(md - mt) > 0.02 * max(abs(mt), 1e-12) or abs(f - fe) > 0.03 * max(abs(f), 1e-12)):
             return False
         t = np.asarray(h["t"])
         f = np.asarray(h["thrust"])
@@ -559,6 +563,10 @@ class NozzleView(QWidget):
             sel = np.zeros_like(sel)
             sel[-8:] = True
         lo, hi = float(f[sel].min()), float(f[sel].max())
+        if spike:                                      # instead of the exit-plane balance: a settled throat flow
+            q = np.asarray(h["mdot_throat"])[sel]
+            if float(q.max() - q.min()) > 0.003 * max(abs(float(q.mean())), 1e-12):
+                return False
         return (hi - lo) < 0.005 * max(abs(float(f[sel].mean())), 1e-9)
 
     def summary(self) -> dict:
@@ -743,6 +751,12 @@ class NozzleView(QWidget):
         x = np.maximum(lay.wall_x, 0.0)
         for k, sign in enumerate((1.0, -1.0)):
             self.walls[k].setPolygon(QPolygonF([QPointF(float(a), sign * float(b)) for a, b in zip(x, lay.wall_r)]))
+            if lay.plug_x is not None:
+                px = np.maximum(lay.plug_x, 0.0)
+                self.walls[2 + k].setPolygon(QPolygonF([QPointF(float(a), sign * float(b))
+                                                        for a, b in zip(px, lay.plug_r)]))
+            else:
+                self.walls[2 + k].setPolygon(QPolygonF())
         re = float(lay.r_inner(lay.x_exit))
         self.exit_line.setData([lay.x_exit, lay.x_exit], [-re, re])
 
@@ -820,9 +834,10 @@ class NozzleView(QWidget):
         u = np.where(solver.solid_int, 0.0, u)
         v = np.where(solver.solid_int, 0.0, v)
         ny, nx = u.shape
-        rc = float(lay.contour_r[0]) / lay.dx
+        lo = lay.inlet_lo / lay.dx
+        rc = (lay.inlet_hi if lay.inlet_hi > 0.0 else float(lay.contour_r[0])) / lay.dx
         re = float(lay.r_inner(lay.x_exit)) / lay.dx
-        seeds = [(1.0, rc * f) for f in (0.15, 0.35, 0.55, 0.75, 0.9)]
+        seeds = [(1.0, lo + (rc - lo) * f) for f in (0.15, 0.35, 0.55, 0.75, 0.9)]
         seeds += [(2.0, min(ny - 3.0, re * f + rc + 4.0)) for f in (0.5, 1.2, 2.0, 3.0)]
         seeds += [(min(nx - 3.0, lay.x_exit / lay.dx + k * re * 2.0), ny - 4.0) for k in (1, 3, 5)]
         pts = np.array(seeds, dtype=float)

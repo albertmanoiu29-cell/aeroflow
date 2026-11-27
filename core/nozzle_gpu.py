@@ -68,7 +68,7 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
     } else if (i < G) {                   // injector face / far field upstream
         real r = WI(0, j, G), u = WI(1, j, G), v = WI(2, j, G), p = WI(3, j, G);
         far_state(r, u, v, p, -u, pa, ra, uf, false, g, o0, o1, o2, o3);
-        if (j - G < (int)P[10]) {
+        if (j - G < (int)P[10] && j - G >= (int)P[12]) {   // injector rows (annular for an aerospike)
             real f = ramp_f(P, *tsum);
             real p0 = pa + f * ((real)P[3] - pa), T0 = (real)P[4];
             // non-reflecting characteristic injector (see NozzleFlow._fill_ghosts)

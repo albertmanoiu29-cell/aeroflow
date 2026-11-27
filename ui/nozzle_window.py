@@ -84,6 +84,10 @@ PRESETS: dict[str, dict] = {
         prop="Cold gas: air", pc=20.0, alt=0.0, plume=(14.0, 6.0),
         geom=dict(throat_diameter=0.02, exit_diameter=0.02, chamber_diameter=0.05, chamber_length=0.02,
                   contour=S, wall_thickness=0.002)),
+    "Aerospike · methalox, truncated plug (altitude-compensating)": dict(
+        prop="LOX / CH4 (methane)", pc=50.0, alt=0.0, plume=(3.0, 1.7),
+        geom=dict(throat_diameter=0.10, exit_diameter=0.316, chamber_diameter=0.20, chamber_length=0.05,
+                  contour=nz.Contour.AEROSPIKE, plug_length=0.25, wall_thickness=0.006)),
     "Overexpanded test nozzle (shock diamonds)": dict(
         prop="Cold gas: air", pc=16.0, alt=0.0, plume=(12.0, 3.0),
         geom=dict(throat_diameter=0.05, exit_diameter=0.10, chamber_diameter=0.10, chamber_length=0.03,
@@ -118,6 +122,10 @@ def _card(title: str, content: QWidget) -> QWidget:
         lbl.setWordWrap(True)
         lbl.setMinimumWidth(1)
         lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    head = frame.layout().itemAt(0).layout()
+    if head is not None and head.count() >= 2:          # the title takes the row (not the spacer beside it)
+        head.setStretch(0, 1)
+        head.setStretch(1, 0)
     return frame
 
 
@@ -491,6 +499,9 @@ class NozzleWindow(QMainWindow):
                            "ends (0 = 35 % of the full ε). At low altitude the flow separates there.")
         self.ext_angle = _dspin(0.0, 40.0, 0.0, 1, "°", 0.5, "Dual-bell: wall angle just after the inflection "
                                 "(0 = automatic, 7° more than the base bell's exit)")
+        self.plug = _dspin(5.0, 100.0, 25.0, 0, "%", 5.0, "Aerospike: plug length as a percentage of the ideal "
+                           "(full-length) spike. Shorter plugs are lighter; the flat base recovers most of the thrust.")
+        self.row_plug = labeled_row("Plug length", self.plug)
         self.row_infl = labeled_row("Inflection at ε", self.infl)
         self.row_ext = labeled_row("Extension angle", self.ext_angle)
         self.btn_import = button("Import contour…", "ghost", "folder", "Load the inner wall from a CSV (x, r or x, d "
@@ -501,14 +512,15 @@ class NozzleWindow(QMainWindow):
         for text, w in (("Throat diameter", self.dt), ("Exit diameter", self.de), ("Expansion ratio ε", self.eps),
                         ("Chamber diameter", self.dc), ("Chamber length", self.lc), ("Convergent half-angle", self.conv)):
             card.add(labeled_row(text, w))
-        for row in (self.row_div, self.row_bell, self.row_tn, self.row_te, self.row_infl, self.row_ext, self.btn_import,
+        for row in (self.row_div, self.row_bell, self.row_tn, self.row_te, self.row_infl, self.row_ext, self.row_plug,
+                    self.btn_import,
                     self.custom_note):
             card.add(row)
         for text, w in (("Throat radius upstream", self.ru), ("Throat radius downstream", self.rd),
                         ("Wall thickness", self.wall), ("Vehicle body diameter", self.body)):
             card.add(labeled_row(text, w))
         for w in (self.dt, self.dc, self.lc, self.conv, self.div, self.bell, self.tn, self.te, self.ru, self.rd,
-                  self.wall, self.body, self.infl, self.ext_angle):
+                  self.wall, self.body, self.infl, self.ext_angle, self.plug):
             w.valueChanged.connect(lambda _v: self._schedule())
         self.de.valueChanged.connect(lambda _v: self._exit_edited("de"))
         self.eps.valueChanged.connect(lambda _v: self._exit_edited("eps"))
@@ -833,6 +845,7 @@ class NozzleWindow(QMainWindow):
             self.ru.setValue(g.throat_upstream_radius)
             self.rd.setValue(g.throat_downstream_radius)
             self.wall.setValue(g.wall_thickness * 1e3)
+            self.plug.setValue(g.plug_length * 100.0)
             self.body.setValue(g.vehicle_diameter * 1e3)
             self.shape.set_index(0)
             self.t_alt.setChecked(True)
@@ -925,6 +938,7 @@ class NozzleWindow(QMainWindow):
             throat_upstream_radius=self.ru.value(), throat_downstream_radius=self.rd.value(),
             wall_thickness=self.wall.value() * 1e-3, vehicle_diameter=self.body.value() * 1e-3,
             inflection_ratio=self.infl.value(), extension_angle=self.ext_angle.value(),
+            plug_length=self.plug.value() / 100.0,
             custom_x=tuple(self._custom[0]) if contour is nz.Contour.CUSTOM and self._custom is not None else (),
             custom_r=tuple(self._custom[1]) if contour is nz.Contour.CUSTOM and self._custom is not None else ())
 
@@ -955,6 +969,8 @@ class NozzleWindow(QMainWindow):
             row.setVisible(c in (B, nz.Contour.DUAL_BELL))
         for row in (self.row_infl, self.row_ext):
             row.setVisible(c is nz.Contour.DUAL_BELL)
+        spike = c is nz.Contour.AEROSPIKE
+        self.row_plug.setVisible(spike)
         custom = c is nz.Contour.CUSTOM
         self.btn_import.setVisible(custom)
         self.custom_note.setVisible(custom)
@@ -962,6 +978,8 @@ class NozzleWindow(QMainWindow):
             QTimer.singleShot(0, self._import_contour)      # nothing to show yet: ask for a file
         for wdg in (self.dt, self.de, self.eps, self.dc, self.lc, self.conv, self.ru, self.rd):
             wdg.setEnabled(not custom)                       # an imported contour fixes these
+        for wdg in (self.conv, self.ru, self.rd):
+            wdg.setEnabled(not custom and not spike)         # the aerospike has a straight annular duct
         self.de.setEnabled(c not in (S, nz.Contour.CUSTOM))
         self.eps.setEnabled(c not in (S, nz.Contour.CUSTOM))
 
@@ -1072,7 +1090,7 @@ class NozzleWindow(QMainWindow):
 
     # -- history and design files -----------------------------------------------------------------------
     _SPINS = ("of", "gamma", "molar", "tc", "pc", "mdot", "dt", "de", "eps", "dc", "lc", "conv", "div", "bell", "tn", "te",
-              "ru", "rd", "wall", "body", "infl", "ext_angle", "alt", "pa", "ta", "fm", "plume_l", "plume_r", "ramp",
+              "ru", "rd", "wall", "body", "infl", "ext_angle", "plug", "alt", "pa", "ta", "fm", "plume_l", "plume_r", "ramp",
               "ramp_off", "asc_top", "asc_time")
 
     def _state(self) -> dict:
@@ -1406,9 +1424,17 @@ class NozzleWindow(QMainWindow):
         s = self.view.setup
         geom = s.geom
         cx, cr = geom.inner_contour()
-        for k, sign in enumerate((1.0, -1.0)):
-            self.c_geo[k].setData(cx * 1e3, sign * cr * 1e3)
-            self.c_geo_out[k].setData(cx * 1e3, sign * (cr + geom.wall_thickness) * 1e3)
+        if geom.is_aerospike:                         # the real walls: cowl (inner side) and plug surface
+            sh = geom.aerospike(s.planar)
+            for k, sign in enumerate((1.0, -1.0)):
+                self.c_geo[k].setData(sh.cowl_x * 1e3, sign * sh.cowl_r * 1e3)
+                self.c_geo_out[k].setData(np.append(sh.plug_x, sh.x_base) * 1e3,
+                                          sign * np.append(sh.plug_r, 0.0) * 1e3)
+            cx = np.append(cx[:-1], sh.x_base)
+        else:
+            for k, sign in enumerate((1.0, -1.0)):
+                self.c_geo[k].setData(cx * 1e3, sign * cr * 1e3)
+                self.c_geo_out[k].setData(cx * 1e3, sign * (cr + geom.wall_thickness) * 1e3)
         tn, te = geom.bell_angles()
         lay = self.view.layout_
         lines = [f"Length (injector face → exit): {cx[-1] * 1e3:.1f} mm   throat at x = {geom.throat_x() * 1e3:.1f} mm",
@@ -1421,6 +1447,12 @@ class NozzleWindow(QMainWindow):
                          + (" (typical Rao values)" if geom.theta_n <= 0 or geom.theta_e <= 0 else ""))
         elif geom.contour is C:
             lines.append(f"Conical, half-angle {geom.divergent_angle:.1f}°")
+        elif geom.is_aerospike:
+            sh = geom.aerospike(s.planar)
+            lines.append(f"Aerospike: design Mach {sh.design_mach:.2f} (plug designed for γ = {nz.AEROSPIKE_GAMMA}); "
+                         f"throat gap {sh.gap * 1e3:.2f} mm; plug {geom.plug_length * 100:.0f} % of the ideal "
+                         f"{sh.full_length * 1e3:.0f} mm, base Ø {2 * sh.r_base * 1e3:.1f} mm; annular chamber "
+                         f"{sh.r_inner * 2e3:.0f} - {sh.r_outer * 2e3:.0f} mm Ø")
         if lay is not None:
             lines.append(f"Grid cell {lay.dx * 1e3:.2f} mm · throat {lay.throat_cells:.1f} cells across")
         self.geo_info.setText("\n".join(lines))

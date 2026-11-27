@@ -24,19 +24,13 @@ from config.theme import PALETTE, mono_font
 from core import nozzle as nz
 from core import nozzle_design as nd
 from ui.cfd_panel import ToggleSwitch, button, labeled_row
-from visualization.telemetry_charts import _card as _plain_card
 from visualization.telemetry_charts import _style_plot
 
 
 def _card(title: str, content: QWidget) -> QWidget:
-    frame = _plain_card(title, content)
-    from PySide6.QtWidgets import QSizePolicy
+    from ui.nozzle_window import _card as card
 
-    for lbl in frame.findChildren(QLabel):
-        lbl.setWordWrap(True)
-        lbl.setMinimumWidth(1)
-        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    return frame
+    return card(title, content)
 
 
 def _muted(text: str = "") -> QLabel:

@@ -242,3 +242,60 @@ def test_contour_import_csv_and_dxf(tmp_path) -> None:
     (tmp_path / "bad.csv").write_text("1,2\n3,4\n")
     with pytest.raises(ValueError):
         nz.read_contour_file(tmp_path / "bad.csv")
+
+
+def _spike(eps: float = 8.0, plug: float = 0.25) -> nz.NozzleGeometry:
+    return nz.NozzleGeometry(throat_diameter=0.1, exit_diameter=0.1 * math.sqrt(eps), chamber_diameter=0.2,
+                             chamber_length=0.05, contour=nz.Contour.AEROSPIKE, plug_length=plug,
+                             wall_thickness=0.006)
+
+
+def test_aerospike_geometry() -> None:
+    g = _spike(8.0, 1.0)
+    sh = g.aerospike()
+    assert sh.r_base == pytest.approx(0.0, abs=1e-9)                   # the ideal spike ends on the axis
+    assert np.all(np.diff(sh.plug_x) >= 0.0) and np.all(np.diff(sh.plug_r[1:]) <= 1e-12)
+    # annular throat: π (r_e² - r_p²) / cos ν_e = A_t, so the gap is close to r_t² / (2 r_e)
+    assert sh.gap == pytest.approx(g.rt ** 2 / (2.0 * g.re), rel=0.08)
+    short = _spike(8.0, 0.25).aerospike()
+    assert short.x_base < sh.x_base and short.r_base > 0.0
+    x, r = g.inner_contour()                                          # equivalent round nozzle
+    assert float(r.min()) == pytest.approx(g.rt, rel=1e-6)
+    assert g.throat_x() == pytest.approx(sh.x_throat)
+    lay = nz.layout_nozzle(_spike(), 480, 120, plume_length=3.0, plume_radius=1.6)
+    assert lay.is_aerospike and lay.j_inlet0 > 0 and lay.n_inlet > lay.j_inlet0      # annular injector
+    assert lay.mask[0, 0] and not lay.mask[lay.j_inlet0, 0]
+
+
+def test_aerospike_compensates_altitude() -> None:
+    gas = nz.Gas(1.2, 21.0, 3500.0)
+    g = _spike(10.0)
+    bell = nz.NozzleGeometry(throat_diameter=0.1, exit_diameter=0.1 * math.sqrt(10.0), contour=nz.Contour.BELL)
+    sea = nz.nozzle_theory(g, gas, 50e5, 101325.0)
+    assert "compensating" in sea.regime and not sea.separation
+    assert sea.exit_pressure == pytest.approx(101325.0)
+    assert sea.isp > nz.nozzle_theory(bell, gas, 50e5, 101325.0).isp
+    vac = nz.nozzle_theory(g, gas, 50e5, 100.0)
+    assert "compensating" not in vac.regime and vac.isp > sea.isp
+
+
+def test_aerospike_simulation_runs() -> None:
+    geom = _spike()
+    gas = nz.Gas(1.22, 22.0, 3400.0)
+    pc, pa, ta = 40e5, 1e5, 288.15
+    lay = nz.layout_nozzle(geom, 480, 120, plume_length=3.0, plume_radius=1.6)
+    s = nz.NozzleFlow(480, 120, gamma=1.22)
+    s.set_geometry(lay)
+    rg = gas.gas_constant
+    sc = nz.Scales(lay.dx, pa / (rg * ta), math.sqrt(1.22 * rg * ta), ta)
+    s.set_conditions(pa / sc.pressure, 1.0, 0.0, pc / sc.pressure, gas.chamber_temperature / ta)
+    s.reset()
+    s.ignite(10.0)
+    s.step(4000)
+    assert np.isfinite(s.U).all()
+    m = nz.measure(s, lay, sc, geom)
+    th = nz.nozzle_theory(geom, gas, pc, pa)
+    assert m["chamber_pressure"] == pytest.approx(pc, rel=0.03)
+    assert m["mdot_throat"] == pytest.approx(th.mass_flow, rel=0.08)    # a coarse grid: ~3 cells in the gap
+    assert m["thrust"] == pytest.approx(th.thrust, rel=0.12)
+    assert len(m["wall_x"]) > 10                                         # the plug's wall pressure

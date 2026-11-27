@@ -271,6 +271,9 @@ class Nozzle3DView(QWidget):
             r_hi = solver.ny * lay.dx * 0.97
             out[:, 0] = rng.uniform(0.0, solver.nx * lay.dx * 0.9, n)
             out[:, 1] = rng.uniform(r_lo, max(r_hi, r_lo * 1.01), n)
+        elif lay.is_aerospike:                     # the annular chamber
+            out[:, 0] = rng.uniform(0.1, 0.6, n) * lay.x_throat
+            out[:, 1] = lay.inlet_lo + rng.uniform(0.1, 0.9, n) * (lay.inlet_hi - lay.inlet_lo)
         else:
             x0 = lay.x_throat
             out[:, 0] = x0 + rng.uniform(-0.3, 0.2, n) * float(np.min(lay.contour_r))
@@ -382,8 +385,13 @@ class Nozzle3DView(QWidget):
         x = np.maximum(lay.wall_x, 0.0)
         if planar:
             self._add_planar_walls(x, lay.wall_r)
+            if lay.plug_x is not None:
+                self._add_planar_walls(np.maximum(lay.plug_x, 0.0), lay.plug_r, "plug")
         else:
             shell = revolve(x, lay.wall_r, math.pi, 2.5 * math.pi, 144)
+            if lay.plug_x is not None:                 # the aerospike's plug, cut away like the cowl
+                shell = shell.merge(revolve(np.maximum(lay.plug_x, 0.0), lay.plug_r, math.pi, 2.5 * math.pi, 144))
+                shell = shell.extract_surface(algorithm="dataset_surface")
             shell = shell.compute_normals(split_vertices=True, feature_angle=50.0, auto_orient_normals=False)
             shell.point_data["rgb"] = np.tile((STEEL * 255).astype(np.uint8), (shell.n_points, 1))
             self._wall_mesh = shell
@@ -443,10 +451,10 @@ class Nozzle3DView(QWidget):
         vtk_to_numpy(colours)[:] = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
         colours.Modified()
 
-    def _add_planar_walls(self, x: np.ndarray, r: np.ndarray) -> None:
+    def _add_planar_walls(self, x: np.ndarray, r: np.ndarray, name: str = "walls") -> None:
         import pyvista as pv
 
-        width = 2.0 * float(np.max(r))
+        width = 2.0 * float(np.max(self.source.layout_.wall_r))
         for sign in (1.0, -1.0):
             n = len(x)
             pts = np.concatenate([np.column_stack([x, sign * r, np.full(n, -width / 2)]),
@@ -455,7 +463,7 @@ class Nozzle3DView(QWidget):
             for k in range(n - 1):
                 faces += [4, k, k + 1, n + k + 1, n + k]
             self.plotter.add_mesh(pv.PolyData(pts, faces=np.asarray(faces)), color="#A9B4C2", smooth_shading=True,
-                                  specular=0.5, name=f"walls{sign}", reset_camera=False)
+                                  specular=0.5, name=f"{name}{sign}", reset_camera=False)
 
     # -- volume mode ---------------------------------------------------------------------
     def _build_volume(self) -> None:

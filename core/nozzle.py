@@ -50,7 +50,7 @@ NEVER: Final[float] = 1e300                     # "not yet" for ignition / shut-
 
 # Boundary-parameter vector (shared with the CUDA kernels, which read it from device memory so that
 # throttling, altitude changes and ignition never invalidate the captured CUDA graphs).
-BC_PA, BC_RHOA, BC_UF, BC_P0, BC_T0, BC_TIGN, BC_TAU, BC_TOFF, BC_TAUOFF, BC_FOFF, BC_NIN, BC_MC = range(12)
+BC_PA, BC_RHOA, BC_UF, BC_P0, BC_T0, BC_TIGN, BC_TAU, BC_TOFF, BC_TAUOFF, BC_FOFF, BC_NIN, BC_MC, BC_JIN0 = range(13)
 BC_SIZE: Final[int] = 16
 
 
@@ -178,6 +178,43 @@ class Contour(str, Enum):
     SONIC = "Convergent only (sonic)"
     DUAL_BELL = "Dual-bell (altitude-adaptive)"
     CUSTOM = "Imported contour (CSV / DXF)"
+    AEROSPIKE = "Aerospike (annular plug)"
+
+
+#: Ratio of specific heats the aerospike plug contour is designed for (typical rocket exhaust).
+AEROSPIKE_GAMMA: Final[float] = 1.22
+
+
+def prandtl_meyer(m: float, g: float) -> float:
+    """Prandtl-Meyer angle ν(M) in radians."""
+    if m <= 1.0:
+        return 0.0
+    a = math.sqrt((g + 1.0) / (g - 1.0))
+    b = math.sqrt(m * m - 1.0)
+    return a * math.atan(b / a) - math.atan(b)
+
+
+@dataclass(frozen=True)
+class AerospikeShape:
+    """An annular aerospike: an annular chamber between the plug and the cowl, an inclined annular throat at the
+    cowl lip, and the plug surface along which the flow expands to the axis (truncated with a flat base)."""
+
+    cowl_x: F64                 # inner cowl wall (outer edge of the flow), injector face -> lip (m)
+    cowl_r: F64
+    plug_x: F64                 # plug surface, injector face -> top of the base (m)
+    plug_r: F64
+    plug_mach: F64              # design Mach number at each plug point (1 up to the throat)
+    x_lip: float
+    r_lip: float
+    x_throat: float             # middle of the inclined throat gap
+    x_base: float
+    r_base: float               # radius of the flat base (0 for a full-length spike)
+    r_inner: float              # chamber annulus
+    r_outer: float
+    gap: float                  # throat gap width (m)
+    contraction: float          # chamber / throat area
+    design_mach: float
+    full_length: float          # ideal (untruncated) plug length from the throat (m)
 
 
 def schmucker_ratio(mach: float) -> float:
@@ -223,10 +260,15 @@ class NozzleGeometry:
     extension_angle: float = 0.0                # dual-bell: wall angle just after the inflection (0 = automatic)
     custom_x: tuple = ()                        # imported contour (m), injector face at x = 0
     custom_r: tuple = ()
+    plug_length: float = 0.25                   # aerospike: kept fraction of the ideal plug length (flat base)
 
     @property
     def is_custom(self) -> bool:
         return self.contour is Contour.CUSTOM and len(self.custom_x) >= 5
+
+    @property
+    def is_aerospike(self) -> bool:
+        return self.contour is Contour.AEROSPIKE
 
     @property
     def rt(self) -> float:
@@ -266,8 +308,8 @@ class NozzleGeometry:
 
     def exit_angle(self) -> float:
         """Wall angle at the exit lip (deg)."""
-        if self.contour is Contour.SONIC:
-            return 0.0
+        if self.contour in (Contour.SONIC, Contour.AEROSPIKE):
+            return 0.0                            # an ideal plug turns the flow axial
         if self.contour is Contour.CONICAL:
             return self.divergent_angle
         if self.contour is Contour.BELL:
@@ -287,8 +329,92 @@ class NozzleGeometry:
         te = self.theta_e if self.theta_e > 0 else te0
         return tn, min(te, tn - 1.0)
 
+    def aerospike(self, planar: bool = False) -> AerospikeShape:
+        """The aerospike's walls. The plug is the ideal isentropic spike for the expansion ratio ε = π r_e² / A_t
+        (Angelino's approximate method): every Mach line of the centred expansion fan at the cowl lip carries
+        the whole mass flow, which fixes where it meets the plug. ``planar`` gives the linear aerospike."""
+        g = AEROSPIKE_GAMMA
+        rt = self.rt
+        re = max(self.re, 1.25 * rt)
+        eps = re / rt if planar else (re / rt) ** 2
+        me = mach_from_area_ratio(eps, g, True)
+        nue = prandtl_meyer(me, g)
+        ms = np.linspace(1.0, me, 200)
+        rr = np.empty_like(ms)
+        xr = np.empty_like(ms)
+        for k, m in enumerate(ms):
+            mu = math.asin(1.0 / m)
+            phi = nue - prandtl_meyer(m, g) + mu               # Mach line angle to the axis
+            q = min(max(area_mach(m, g) * math.sin(phi) / (eps * math.sin(mu)), 0.0), 1.0)
+            rr[k] = re * (1.0 - q) if planar else re * math.sqrt(1.0 - q)
+            xr[k] = (re - rr[k]) * math.cos(phi) / max(math.sin(phi), 1e-9)
+        rr = np.minimum.accumulate(rr)
+        xr = np.maximum.accumulate(xr)
+        full = float(xr[-1] - xr[0])
+        frac = min(max(self.plug_length, 0.05), 1.0)
+        cut = xr[0] + frac * full
+        keep = xr <= cut
+        xs_p, rs_p, ms_p = list(xr[keep]), list(rr[keep]), list(ms[keep])
+        if frac < 1.0 and keep.sum() < len(xr):
+            xs_p.append(cut)
+            rs_p.append(float(np.interp(cut, xr, rr)))
+            ms_p.append(float(np.interp(cut, xr, ms)))
+        r_p = float(rr[0])
+        gap = math.hypot(re - r_p, xr[0])
+        # annular chamber and a straight converging duct to the inclined throat
+        rc = max(0.5 * self.chamber_diameter, 1.05 * rt)
+        cr = max((rc / rt) if planar else (rc / rt) ** 2, 1.5)
+        beta = min(nue, math.radians(55.0))
+        mid_r = 0.5 * (re + r_p)
+        w = cr * rt
+        ld = 4.0 * gap
+        for _ in range(4):
+            ld = max(1.5 * w, 4.0 * gap)
+            r_m = mid_r + ld * math.sin(beta)
+            w = cr * rt if planar else cr * rt * rt / (2.0 * r_m)
+        r_m = mid_r + ld * math.sin(beta)
+        lc = max(self.chamber_length, 0.5 * w)
+        x_tm = lc + ld * math.cos(beta)
+        x_lip = x_tm - 0.5 * xr[0]
+        r_in, r_out = r_m - 0.5 * w, r_m + 0.5 * w
+        s_ = np.linspace(0.0, 1.0, 24)
+        cowl_x = np.concatenate([[0.0], lc + s_ * (x_lip - lc)])
+        cowl_r = np.concatenate([[r_out], r_out + s_ * (re - r_out)])
+        x_p0 = x_lip + xr[0]
+        px = np.concatenate([[0.0], lc + s_ * (x_p0 - lc), x_lip + np.asarray(xs_p[1:])])
+        pr = np.concatenate([[r_in], r_in + s_ * (r_p - r_in), np.asarray(rs_p[1:])])
+        pm = np.concatenate([np.ones(1 + len(s_)), np.asarray(ms_p[1:])])
+        return AerospikeShape(cowl_x, cowl_r, px, pr, pm, x_lip, re, x_tm, float(px[-1]), float(pr[-1]), r_in, r_out,
+                              gap, cr, me, full)
+
+    @property
+    def throat_gap(self) -> float:
+        """Narrowest flow width at the throat: the throat radius, or an aerospike's annular gap."""
+        return self.aerospike().gap if self.is_aerospike else self.rt
+
+    def _aerospike_equivalent(self) -> tuple[F64, F64]:
+        """An aerospike as an equivalent round nozzle of the same area ratio at each x (chamber, duct, then the
+        design Mach number along the plug), so the area-ratio tools (1-D wall pressure, heat transfer) apply."""
+        sh = self.aerospike()
+        rt = self.rt
+        lc = float(sh.plug_x[1])
+        xs = [0.0, lc]
+        rs = [rt * math.sqrt(sh.contraction)] * 2
+        for f in np.linspace(0.0, 1.0, 24)[1:]:
+            xs.append(lc + f * (sh.x_throat - lc))
+            rs.append(rt * math.sqrt(sh.contraction + f * (1.0 - sh.contraction)))
+        sel = sh.plug_x > sh.x_throat + 1e-12
+        for x, m in zip(sh.plug_x[sel], sh.plug_mach[sel]):
+            if x > xs[-1]:
+                xs.append(float(x))
+                rs.append(rt * math.sqrt(area_mach(float(max(m, 1.0)), AEROSPIKE_GAMMA)))
+        return np.asarray(xs), np.asarray(rs)
+
     def inner_contour(self) -> tuple[F64, F64]:
-        """Inner wall (x, r) from the injector face (x = 0) to the exit plane, x increasing."""
+        """Inner wall (x, r) from the injector face (x = 0) to the exit plane, x increasing. (An aerospike gives its
+        equivalent round nozzle: see :meth:`aerospike` for the real walls.)"""
+        if self.is_aerospike:
+            return self._aerospike_equivalent()
         if self.is_custom:
             return np.asarray(self.custom_x, dtype=float), np.asarray(self.custom_r, dtype=float)
         if self.contour is Contour.DUAL_BELL:
@@ -454,7 +580,42 @@ def nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: 
         return _replace(full, regime=f"Dual-bell, high-altitude mode ({full.regime.lower()})",
                         regime_note="The flow fills the whole nozzle, extension included: the full expansion ratio "
                                     "works. " + full.regime_note)
+    if geom.is_aerospike:
+        return _aerospike_theory(geom, gas, pc, pa, planar)
     return _nozzle_theory(geom, gas, pc, pa, planar)
+
+
+def _aerospike_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: bool) -> NozzlePerformance:
+    """An aerospike is a nozzle whose outer flow boundary is the ambient air. Below its design altitude the jet
+    boundary moves in and the flow expands only to about the ambient pressure (altitude compensation): no
+    overexpansion loss and no wall separation. Above it, it acts like a fixed nozzle of the same ε."""
+    from dataclasses import replace as _replace
+
+    full = _nozzle_theory(geom, gas, pc, pa, planar)
+    sh = geom.aerospike(planar)
+    trunc = (f" The plug is cut at {geom.plug_length * 100:.0f} % of its ideal length; the flat base recovers most "
+             "of the lost thrust (base pressure), typically within 1 - 2 %.") if geom.plug_length < 0.999 else ""
+    if not full.choked:
+        return full
+    g, rgas, tc = gas.gamma, gas.gas_constant, gas.chamber_temperature
+    pe_design = pc * p_over_p0(full.exit_mach if full.shock_x is None else sh.design_mach, g)
+    if pe_design < pa:
+        mj = full.jet_mach
+        te = tc * t_over_t0(mj, g)
+        ve = mj * math.sqrt(g * rgas * te)
+        thrust = full.mass_flow * ve
+        return _replace(full, regime="Aerospike, altitude-compensating",
+                        regime_note="Below its design altitude the jet boundary (the free edge of the plug flow) "
+                                    "moves in, so the flow expands only to about the ambient pressure: no "
+                                    "overexpansion loss and no flow separation, unlike a bell nozzle. Real "
+                                    "aerospikes recover most, not all, of this ideal gain." + trunc,
+                        exit_mach=mj, exit_pressure=pa, exit_temperature=te, exit_velocity=ve, thrust=thrust,
+                        thrust_ideal=thrust, isp=thrust / (full.mass_flow * G0), cf=thrust / (pc * full.throat_area),
+                        separation=False, separation_x=None, shock_x=None, divergence_factor=1.0)
+    return _replace(full, regime=f"Aerospike, {full.regime.lower()}",
+                    regime_note=("At or above its design altitude the aerospike behaves like a fixed nozzle of "
+                                 "the same ε: the plume expands freely beyond the plug. " + trunc).strip(),
+                    separation=False, separation_x=None)
 
 
 def _nozzle_theory(geom: NozzleGeometry, gas: Gas, pc: float, pa: float, planar: bool = False) -> NozzlePerformance:
@@ -661,9 +822,22 @@ class NozzleLayout:
     kappa: F64                       # fluid volume fraction of each cell (ny, nx)
     ax: F64                          # open fraction of each x face (ny, nx + 1)
     ay: F64                          # open fraction of each y face (ny + 1, nx)
+    j_inlet0: int = 0                # first row of the injector face (an aerospike's chamber is annular)
+    plug_x: Optional[F64] = None     # aerospike plug outline (closed polygon, m) for drawing
+    plug_r: Optional[F64] = None
+    throat_gap: float = 0.0          # aerospike: annular throat gap (m)
+    contraction: float = 0.0         # aerospike: chamber / throat area
+    inlet_lo: float = 0.0            # radial extent of the injector face (m)
+    inlet_hi: float = 0.0
+
+    @property
+    def is_aerospike(self) -> bool:
+        return self.plug_x is not None
 
     @property
     def throat_cells(self) -> float:
+        if self.throat_gap > 0.0:
+            return self.throat_gap / self.dx
         return float(np.min(self.contour_r)) / self.dx
 
     def r_inner(self, x: F64 | float) -> F64:
@@ -671,6 +845,8 @@ class NozzleLayout:
 
     def chamber_mach(self, gamma: float, planar: bool = False) -> float:
         """1-D Mach number in the chamber at the injector face (subsonic root of A_c / A_t)."""
+        if self.contraction > 0.0:
+            return mach_from_area_ratio(self.contraction, gamma, supersonic=False)
         q = float(self.contour_r[0] / np.min(self.contour_r))
         return mach_from_area_ratio(q if planar else q * q, gamma, supersonic=False)
 
@@ -697,20 +873,89 @@ def cut_cells(segs: F64, nx: int, ny: int, ncol: int, k: int = 8) -> tuple[F64, 
     return kappa, ax, ay
 
 
-def cell_size(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 10.0, plume_radius: float = 3.5) -> float:
-    """The grid cell size (m) :func:`layout_nozzle` will use (cheap: no meshing)."""
+def _extent(geom: NozzleGeometry, planar: bool = False) -> tuple[float, float]:
+    """(x of the exit / plug base, outer radius of the engine) in metres."""
+    if geom.is_aerospike:
+        sh = geom.aerospike(planar)
+        return sh.x_base, sh.r_outer + geom.wall_thickness
     cx, cr = geom.inner_contour()
+    return float(cx[-1]), float(cr.max()) + geom.wall_thickness
+
+
+def cell_size(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 10.0, plume_radius: float = 3.5,
+              planar: bool = False) -> float:
+    """The grid cell size (m) :func:`layout_nozzle` will use (cheap: no meshing)."""
+    x_e, r_out = _extent(geom, planar)
     re = geom.re
-    r_out = float(cr.max()) + geom.wall_thickness
-    l_need = float(cx[-1]) + max(plume_length, 1.0) * 2.0 * re
+    l_need = x_e + max(plume_length, 1.0) * 2.0 * re
     r_need = max(max(plume_radius, 1.3) * re, 1.25 * r_out, 1.15 * 0.5 * geom.vehicle_diameter)
     return max(l_need / nx, r_need / ny)
 
 
+def _finish_cut(segs: F64, nx: int, ny: int, i_exit: int) -> tuple[NDArray[np.bool_], F64, F64, F64]:
+    """Cut-cell geometry with (nearly) all-solid cells turned into walls and their faces closed."""
+    kappa, ax, ay = cut_cells(segs, nx, ny, i_exit + 6)
+    mask = kappa < 0.02
+    ax[:, 1:-1][mask[:, 1:] | mask[:, :-1]] = 0.0
+    ax[:, 0][mask[:, 0]] = 0.0
+    ax[:, -1][mask[:, -1]] = 0.0
+    ay[1:-1][mask[1:] | mask[:-1]] = 0.0
+    ay[0][mask[0]] = 0.0
+    ay[-1][mask[-1]] = 0.0
+    return mask, kappa, ax, ay
+
+
+def _layout_aerospike(geom: NozzleGeometry, nx: int, ny: int, plume_length: float, plume_radius: float,
+                      planar: bool) -> NozzleLayout:
+    sh = geom.aerospike(planar)
+    dx = cell_size(geom, nx, ny, plume_length, plume_radius, planar)
+    t = max(geom.wall_thickness, 2.6 * dx)
+    x0 = -3.0 * dx
+    lc = float(sh.cowl_x[1])
+    # plug: a solid of revolution from the axis up to the chamber's inner wall and the plug surface
+    plug_x = np.concatenate([[x0, x0], sh.plug_x, [sh.x_base]])
+    plug_r = np.concatenate([[0.0, sh.r_inner], sh.plug_r, [0.0]])
+    # cowl: the chamber's outer wall, converging to the lip; a blunt lip of the wall thickness
+    rv = 0.5 * geom.vehicle_diameter
+    top = sh.r_outer + t
+    cx_ = [x0, lc, sh.x_lip, sh.x_lip, lc]
+    cr_ = [sh.r_outer, sh.r_outer, sh.r_lip, sh.r_lip + t, top]
+    if rv > top + dx:
+        cx_ += [lc, x0]
+        cr_ += [rv, rv]
+    else:
+        cx_ += [x0]
+        cr_ += [top]
+    cowl_x, cowl_r = np.asarray(cx_, float), np.asarray(cr_, float)
+    segs = np.concatenate([polygon_segments(np.column_stack([plug_x / dx - 0.5, plug_r / dx - 0.5])),
+                           polygon_segments(np.column_stack([cowl_x / dx - 0.5, cowl_r / dx - 0.5]))])
+    x_e = sh.x_base
+    i_exit = int(min(max(math.floor(x_e / dx - 0.5), 0), nx - 1))
+    mask, kappa, ax, ay = _finish_cut(segs, nx, ny, i_exit)
+    xc = (np.arange(nx) + 0.5) * dx
+    rc_ = (np.arange(ny) + 0.5) * dx
+    r_cowl = np.interp(xc, sh.cowl_x, sh.cowl_r)
+    r_plug = np.interp(xc, sh.plug_x, sh.plug_r)
+    inside = ((xc[None, :] < sh.x_lip) & (rc_[:, None] < r_cowl[None, :]) & (rc_[:, None] > r_plug[None, :])
+              & ~mask)
+    rows = ~mask[:, 0] & (rc_ < sh.r_outer + 0.5 * dx) & (rc_ > sh.r_inner - 0.5 * dx)
+    idx = np.nonzero(rows)[0]
+    j0, n_in = (int(idx[0]), int(idx[-1]) + 1) if idx.size else (0, 0)
+    i_throat = int(min(max(round(sh.x_throat / dx - 0.5), 0), nx - 1))
+    # the flow's outer boundary: the cowl to the lip, then the lip radius (the plume edge) to the base
+    con_x = np.concatenate([sh.cowl_x, [x_e]]) if x_e > sh.x_lip else sh.cowl_x
+    con_r = np.concatenate([sh.cowl_r, [sh.r_lip]]) if x_e > sh.x_lip else sh.cowl_r
+    return NozzleLayout(nx, ny, dx, mask, segs, inside, n_in, i_exit, i_throat, x_e, sh.x_throat, cowl_x, cowl_r,
+                        con_x, con_r, t, kappa, ax, ay, j_inlet0=j0, plug_x=plug_x, plug_r=plug_r,
+                        throat_gap=sh.gap, contraction=sh.contraction, inlet_lo=sh.r_inner, inlet_hi=sh.r_outer)
+
+
 def layout_nozzle(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 10.0,
-                  plume_radius: float = 3.5) -> NozzleLayout:
+                  plume_radius: float = 3.5, planar: bool = False) -> NozzleLayout:
     """Scale ``geom`` onto an ``nx`` × ``ny`` grid: the injector face on the left edge, the axis on the
     bottom edge, ``plume_length`` exit diameters of plume downstream and ``plume_radius`` exit radii above."""
+    if geom.is_aerospike:
+        return _layout_aerospike(geom, nx, ny, plume_length, plume_radius, planar)
     cx, cr = geom.inner_contour()
     x_e = float(cx[-1])
     re = geom.re
@@ -737,14 +982,7 @@ def layout_nozzle(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 
     pts = np.column_stack([wall_x / dx - 0.5, wall_r / dx - 0.5])
     segs = polygon_segments(pts)
     i_exit = int(min(max(math.floor(x_e / dx - 0.5), 0), nx - 1))
-    kappa, ax, ay = cut_cells(segs, nx, ny, i_exit + 6)
-    mask = kappa < 0.02                         # (nearly) all-solid cells are walls; the rest are cut cells
-    ax[:, 1:-1][mask[:, 1:] | mask[:, :-1]] = 0.0
-    ax[:, 0][mask[:, 0]] = 0.0
-    ax[:, -1][mask[:, -1]] = 0.0
-    ay[1:-1][mask[1:] | mask[:-1]] = 0.0
-    ay[0][mask[0]] = 0.0
-    ay[-1][mask[-1]] = 0.0
+    mask, kappa, ax, ay = _finish_cut(segs, nx, ny, i_exit)   # (nearly) all-solid cells are walls
     xc = (np.arange(nx) + 0.5) * dx
     rc_ = (np.arange(ny) + 0.5) * dx
     inside = (xc[None, :] < x_e) & (rc_[:, None] < np.interp(xc, cx, cr)[None, :]) & ~mask
@@ -752,7 +990,7 @@ def layout_nozzle(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 
     x_t = float(cx[int(np.argmin(cr))])
     i_throat = int(min(max(round(x_t / dx - 0.5), 0), nx - 1))
     return NozzleLayout(nx, ny, dx, mask, segs, inside, n_inlet, i_exit, i_throat, x_e, x_t, wall_x, wall_r,
-                        cx, cr, t, kappa, ax, ay)
+                        cx, cr, t, kappa, ax, ay, inlet_hi=float(cr[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +1155,7 @@ class NozzleFlow(ss.Supersonic2D):
         self._set_cut_cells(layout.kappa, layout.ax, layout.ay)
         self._inside = layout.inside.copy()
         self.bc[BC_NIN] = float(layout.n_inlet)
+        self.bc[BC_JIN0] = float(layout.j_inlet0)
         self.bc[BC_MC] = layout.chamber_mach(self.gamma, not self.axi)
         self.ref_length = max(float(layout.r_inner(layout.x_exit)) / layout.dx, 1.0)
         self._update_primitives()
@@ -1001,7 +1240,7 @@ class NozzleFlow(ss.Supersonic2D):
         # left: injector face (inlet rows) and far field above the engine
         r, u, v, p = W[0, g:-g, g], W[1, g:-g, g], W[2, g:-g, g], W[3, g:-g, g]
         n = r.shape[0]
-        inlet = np.arange(n) < int(bc[BC_NIN])
+        inlet = (np.arange(n) < int(bc[BC_NIN])) & (np.arange(n) >= int(bc[BC_JIN0]))
         f = ramp(bc, self._t_bc)
         p0 = pa + f * (bc[BC_P0] - pa)
         t0 = bc[BC_T0]
@@ -1339,9 +1578,9 @@ def measure(solver: NozzleFlow, lay: NozzleLayout, sc: Scales, geom: NozzleGeome
     fw = (pw - pa) * solver._wx[js, iis] * a_row[js]
     xw, rw = (iis + 0.5) * sc.dx, (js + 0.5) * sc.dx
     inner = (xw < lay.x_exit + sc.dx) & (rw < lay.r_inner(xw) + 0.5 * lay.wall_thickness)
-    nin = max(int(solver.bc[BC_NIN]), 1)
-    ri, ui, pi = r[:nin, 0], u[:nin, 0], p[:nin, 0]
-    f_inj = float(((pi + ri * ui * ui - pa) * solver._ax[:nin, 0] * a_row[:nin]).sum())
+    inj = slice(int(solver.bc[BC_JIN0]), max(int(solver.bc[BC_NIN]), int(solver.bc[BC_JIN0]) + 1))
+    ri, ui, pi = r[inj, 0], u[inj, 0], p[inj, 0]
+    f_inj = float(((pi + ri * ui * ui - pa) * solver._ax[inj, 0] * a_row[inj]).sum())
     out["thrust"] = (float(fw[inner].sum()) + f_inj) * sc.pressure
     out["base_force"] = float(fw[~inner].sum()) * sc.pressure
     out["thrust_installed"] = out["thrust"] + out["base_force"]
@@ -1359,11 +1598,11 @@ def measure(solver: NozzleFlow, lay: NozzleLayout, sc: Scales, geom: NozzleGeome
     else:
         out["exit_velocity"] = out["exit_mach"] = 0.0
         out["exit_temperature"] = float(np.mean(g * p[rows, ie] / r[rows, ie])) * sc.temperature
-    md = out["mdot_exit"]
+    # an aerospike's "exit plane" (at the plug base) cuts through the base recirculation: use the throat flow
+    md = out["mdot_throat"] if lay.is_aerospike else out["mdot_exit"]
     out["isp"] = out["thrust"] / (md * G0) if md > 1e-9 else 0.0
     # chamber: static and total pressure at the injector face, averaged over the chamber rows
-    nin = max(int(solver.bc[BC_NIN]), 1)
-    rch, uch, pch = r[:nin, 0], u[:nin, 0], p[:nin, 0]
+    rch, uch, pch = r[inj, 0], u[inj, 0], p[inj, 0]
     mch = np.abs(uch) / np.sqrt(g * pch / rch)
     p0ch = pch * (1.0 + 0.5 * (g - 1.0) * mch * mch) ** (g / (g - 1.0))
     out["chamber_pressure"] = float(np.mean(p0ch)) * sc.pressure
@@ -1390,8 +1629,12 @@ def measure(solver: NozzleFlow, lay: NozzleLayout, sc: Scales, geom: NozzleGeome
     # pressure on the inner wall (cut cells whose wall lies above them, inside the engine)
     js, iis, pw = solver.wall_pressure_cells()
     xw, rw = (iis + 0.5) * sc.dx, (js + 0.5) * sc.dx
-    inner = ((xw < lay.x_exit) & (rw < lay.r_inner(xw) + 0.5 * lay.wall_thickness) & (solver._nwr[js, iis] > 0.2)
-             & (solver._kappa[js, iis] > 0.3))                    # sliver cells carry little information
+    if lay.is_aerospike:                                          # the plug surface (wall below the cell)
+        inner = ((xw < lay.x_exit) & (rw < lay.r_inner(xw)) & (solver._nwr[js, iis] < -0.2)
+                 & (solver._kappa[js, iis] > 0.3))
+    else:
+        inner = ((xw < lay.x_exit) & (rw < lay.r_inner(xw) + 0.5 * lay.wall_thickness) & (solver._nwr[js, iis] > 0.2)
+                 & (solver._kappa[js, iis] > 0.3))                # sliver cells carry little information
     xi, pi_ = xw[inner], pw[inner] * sc.pressure
     if xi.size:
         k = np.round(xi / sc.dx).astype(np.int64)                  # one sample per column: the mean
