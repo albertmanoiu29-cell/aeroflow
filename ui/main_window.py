@@ -511,6 +511,8 @@ class MainWindow(QMainWindow):
         m_tools = mb.addMenu("&Tools")
         a(m_tools, "Airfoil analysis (panel method)…", self.open_airfoil_tool, "Ctrl+Shift+A",
           "Cp distribution, lift curve, stall estimate and drag polar of a NACA or imported airfoil")
+        a(m_tools, "Wing analysis (lifting line)…", self.open_wing_tool, "Ctrl+Shift+W",
+          "Spanwise lift, induced drag, span efficiency and where the wing stalls first")
         a(m_tools, "Aero calculator (atmosphere, Mach, Reynolds)…", self.open_aero_calc, "Ctrl+Shift+U",
           "Standard atmosphere, flight-condition numbers, lift and stall speed")
         a(m_tools, "Flight dynamics (trim, modes, response)…", self.open_flight_dynamics, "",
@@ -1535,6 +1537,13 @@ class MainWindow(QMainWindow):
         from ui.airfoil_dialog import AirfoilDialog
 
         dlg = AirfoilDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+
+    def open_wing_tool(self) -> None:
+        from ui.wing_dialog import WingDialog
+
+        dlg = WingDialog(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
 

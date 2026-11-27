@@ -64,3 +64,32 @@ def test_aero_calculator_numbers() -> None:
     assert n["re"] == pytest.approx(50.0 / 1.46e-5, rel=0.02)
     hi = flight_numbers(11000.0, 250.0, 1.0)
     assert hi["eas"] < 250.0 and hi["mach"] == pytest.approx(250.0 / 295.1, rel=2e-3)
+
+
+def test_lifting_line_classical_results() -> None:
+    from core import lifting_line as ll
+
+    rect = ll.Wing(10.0, 1.25, 1.0)                                   # AR 8, rectangular
+    s = ll.solve(rect, 5.0)
+    assert rect.aspect_ratio == pytest.approx(8.0)
+    assert 0.92 < s.e < 0.97                                           # Glauert: δ ≈ 0.05 at AR 8
+    assert 0.38 < s.cl < 0.45                                          # below the 2-D value 0.55
+    ell = ll.Wing(10.0, 2 * 10 / 8 / 1.4, 0.4)                         # taper 0.4: nearly elliptic loading
+    se = ll.solve(ell, 5.0)
+    assert se.e > 0.98
+    a_ell = 2 * math.pi * 8 / (8 + 2)                                   # elliptic wing lift slope 2π AR / (AR + 2)
+    assert se.cl / math.radians(5.0) == pytest.approx(a_ell, rel=0.02)
+    assert se.cdi == pytest.approx(se.cl ** 2 / (math.pi * 8 * se.e), rel=1e-6)
+
+
+def test_lifting_line_stall_pattern() -> None:
+    from core import lifting_line as ll
+
+    alphas = np.arange(0.0, 25.01, 0.25)
+    rect = ll.polar(ll.Wing(10.0, 1.25, 1.0, cl_max=1.4), alphas)
+    tapered = ll.polar(ll.Wing(10.0, 1.6, 0.3, cl_max=1.4), alphas)
+    washed = ll.polar(ll.Wing(10.0, 1.6, 0.3, washout=4.0, cl_max=1.4), alphas)
+    assert rect.stall_y < 1.0                                          # rectangular wings stall at the root
+    assert tapered.stall_y > 2.5                                       # strongly tapered wings stall outboard
+    assert washed.stall_y < tapered.stall_y                            # washout moves it inboard
+    assert rect.cl_max < 1.4                                           # the wing reaches less than the section
