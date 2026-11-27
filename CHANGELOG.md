@@ -3,6 +3,41 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [Unreleased]
+
+### Added: Rocket Nozzle Lab design tools
+- **Propellant mixture ratio (O/F):** each propellant's chamber temperature, γ and molar mass follow the O/F you set; a sweep marks the best-Isp ratio (kerolox about 2.3).
+- **Heat transfer and cooling:** Bartz wall heat flux along the nozzle with regenerative, radiation-cooled, mixed (regenerative chamber plus radiation-cooled extension) or adiabatic walls. The 3-D hot-wall glow uses this wall temperature.
+- **Flow separation:** the Schmucker criterion is drawn on the wall pressure profile, and the predicted separation point is reported.
+- **Expansion-ratio optimiser:** finds the expansion ratio with the best thrust at one altitude, or averaged over an ascent.
+- **Noise estimate** (NASA SP-8072): overall sound level against distance and direction, and the spectrum peak.
+- **Ascent profile:** flies the engine from sea level to a chosen altitude while the simulation runs, and plots simulated thrust against theory.
+- **Engine comparison** of saved designs side by side, and a **PDF report** with the charts and results.
+- **Dual-bell nozzles** that switch between a low-altitude and a high-altitude mode, and **imported contours** from CSV, TXT or DXF files.
+- **Auto grid resolution:** picks the smallest grid that puts at least 12 cells across the throat.
+- **Undo / redo** (Ctrl+Z / Ctrl+Y) and engine design files (`.aeronozzle`, Ctrl+S / Ctrl+O).
+
+### Added: visuals
+- Afterburning in the mixing layer for fuel-rich exhausts, bloom on the bright core, smoke for solid motors.
+- 3-D tracer particles that follow the exhaust and the entrained air.
+
+### Added: new tools
+- **Propeller analysis** (*Simulation ▸ Propeller analysis*): blade-element momentum theory with Prandtl tip and hub losses. It gives thrust, power and efficiency curves against advance ratio and the loading along the blade, and can build the propeller in 3-D.
+- **Flight dynamics** (*Simulation ▸ Flight dynamics*): from the computed polar, trims the aircraft (angle of attack and elevator) and finds the short-period and phugoid modes. It simulates the response to an elevator pulse or a gust and adds plain-language handling notes.
+- **CAD import:** STEP, IGES and BREP files are meshed with gmsh and converted from millimetres to metres.
+- **OpenFOAM options:** a choice of turbulence model (k-ω SST, Spalart-Allmaras, realizable or standard k-ε, laminar), extra surface refinement and wake refinement.
+
+### Improved
+- **Speed:** GPU kernels are compiled during setup, so the first run starts at once. A single-precision GPU option makes the Supersonic Lab about 5.8x faster, with the same drag coefficient to five digits.
+- **Usability:**
+  - a light theme and an interface-size setting (*View ▸ Appearance*);
+  - an in-app guide (F1 in the Nozzle Lab, Shift+F1 elsewhere);
+  - problem reports now bundle the log files.
+
+### Not included
+- **Two-gas (mixture) exhausts, engine clusters and local grid refinement.** These need a multi-species solver, a 3-D solver and a non-uniform grid respectively; the Nozzle Lab's solver is 2-D, single-gas and uniform. The Auto grid above is the part of local refinement that fits the current solver.
+- **Aerospike nozzles** need an annular inlet and an inner plug wall, which the solver does not support yet.
+
 ## [1.7.2] - 2026-11-27
 
 ### Fixed: Rocket Nozzle Lab layout

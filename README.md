@@ -6,7 +6,7 @@
 [Changelog](CHANGELOG.md) · [Report a problem](https://github.com/albertmanoiu29-cell/aeroflow/issues)
 (or *Help ▸ Report a problem* in the app)
 
-You can import an STL or OBJ file, or start from one of the six built-in shapes, and press **Run** to get:
+You can import an STL, OBJ or STEP file, or start from one of the six built-in shapes, and press **Run** to get:
 
 - 3-D streamlines.
 - The surface pressure map.
@@ -24,6 +24,29 @@ Colour conventions are the same in every view:
 
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
+
+## What's new since 1.7 (next release)
+
+- **Rocket Nozzle Lab design tools:**
+  - O/F mixture ratio;
+  - Bartz heat transfer and cooling modes;
+  - Schmucker flow separation;
+  - an expansion-ratio optimiser;
+  - a noise estimate;
+  - ascent profile;
+  - engine comparison;
+  - PDF report;
+  - dual-bell nozzles;
+  - CSV / DXF contour import;
+  - Auto grid resolution;
+  - undo / redo and `.aeronozzle` design files.
+- **Propeller analysis** (blade-element momentum theory) and **flight dynamics** from the polar (trim, short-period and phugoid modes, gust and elevator responses), both in the *Simulation* menu.
+- **CAD import:** STEP, IGES and BREP files.
+- **OpenFOAM:** selectable turbulence models, plus surface and wake refinement.
+- **Interface:** a light theme, an interface-size setting and an in-app guide.
+- **Supersonic Lab:** a faster single-precision GPU mode.
+
+See the [Changelog](CHANGELOG.md) for details.
 
 ## What's new in 1.6: Rocket Nozzle Lab
 
