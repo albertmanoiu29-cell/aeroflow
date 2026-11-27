@@ -611,6 +611,25 @@ class CFDPanel(QWidget):
         ob.addWidget(labeled_row("Boundary layers", self.of_layers,
                                  "Prism-cell layers grown on the body (Auto: 2 / 3 / 4 for Coarse / Medium / Fine). "
                                  "More layers resolve skin friction better; check y+ afterwards (Surface shows: y+)."))
+        from core.openfoam_bridge import TURBULENCE_MODELS
+
+        self.of_turb = QComboBox()
+        for key, (label, _f) in TURBULENCE_MODELS.items():
+            self.of_turb.addItem(label, key)
+        ob.addWidget(labeled_row("Turbulence model", self.of_turb,
+                                 "k-ω SST suits most external aerodynamics (separation, stall); Spalart-Allmaras is "
+                                 "cheaper for attached flows; k-ε suits jets and wakes; laminar only for low Re."))
+        self.of_refine = QSpinBox()
+        self.of_refine.setRange(0, 3)
+        self.of_refine.setValue(0)
+        self.of_refine.setSpecialValueText("None")
+        self.of_refine.setSuffix(" level(s)")
+        ob.addWidget(labeled_row("Extra surface refinement", self.of_refine,
+                                 "Refine the mesh on the body further (each level halves the cells there; the cell "
+                                 "count and run time grow quickly)."))
+        self.of_wake = ToggleSwitch("Refine the wake", False, "A longer, finer refinement box behind the body: better "
+                                    "drag, wakes and vortex shedding")
+        ob.addWidget(self.of_wake)
         card.add(self.of_box)
         self.of_box.setVisible(False)
         self.live = ToggleSwitch("Live update", True, "Re-solve automatically with the Instant engine when you release a slider")
@@ -891,6 +910,13 @@ class CFDPanel(QWidget):
 
     def openfoam_rpm(self) -> float:
         return float(self.of_rpm.value())
+
+    def openfoam_turbulence(self) -> str:
+        return str(self.of_turb.currentData() or "kOmegaSST")
+
+    def openfoam_refinement(self) -> tuple[int, bool]:
+        """(extra surface levels, wake refinement)."""
+        return int(self.of_refine.value()), bool(self.of_wake.isChecked())
 
     def openfoam_layers(self) -> Optional[int]:
         """Requested prism layers (None: the grid preset's number)."""

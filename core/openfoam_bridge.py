@@ -327,6 +327,19 @@ class CaseSettings:
     frames: int = 24                           # transient: saved, evenly spaced snapshots
     mrf_rpm: float = 0.0                       # > 0: the body rotates about +X (MRF zone) - propellers, rotors
     esi: bool = False                          # OpenFOAM flavour (ESI and .org differ in MRF wall conditions)
+    turbulence: str = "kOmegaSST"              # RAS model (see TURBULENCE_MODELS) or "laminar"
+    surface_refinement: int = 0                # extra snappyHexMesh refinement levels on the body
+    wake_refinement: bool = False              # a longer, finer refinement box over the wake
+
+
+#: Turbulence models offered: OpenFOAM name -> (label, the extra fields it solves).
+TURBULENCE_MODELS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "kOmegaSST": ("k-ω SST (recommended: separation, adverse pressure gradients)", ("k", "omega")),
+    "SpalartAllmaras": ("Spalart-Allmaras (one equation, attached aerofoil flows)", ("nuTilda",)),
+    "realizableKE": ("Realizable k-ε (free shear flows, jets, wakes)", ("k", "epsilon")),
+    "kEpsilon": ("Standard k-ε", ("k", "epsilon")),
+    "laminar": ("Laminar (no turbulence model: low Reynolds numbers only)", ()),
+}
 
 
 @dataclass(frozen=True)
@@ -413,14 +426,15 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
             "system/blockMeshDict": _block_mesh_dict(layout),
             "system/surfaceFeaturesDict": _surface_features_dict(),
             "system/surfaceFeatureExtractDict": _surface_feature_extract_dict(),
-            "system/snappyHexMeshDict": _snappy_dict(layout, info, preset, settings.quality),
+            "system/snappyHexMeshDict": _snappy_dict(layout, info, preset, settings.quality,
+                                                     settings.surface_refinement, settings.wake_refinement),
             "system/meshQualityDict": _mesh_quality_dict(),
             "system/controlDict": _control_dict(layout, info, cond, settings),
             "system/fvSchemes": _fv_schemes(settings.transient and not settings.compressible),
             "system/fvSolution": _fv_solution(settings.transient and not settings.compressible),
             "system/decomposeParDict": _decompose_dict(max(1, settings.n_procs)),
-            "constant/turbulenceProperties": _turbulence(esi=True),
-            "constant/momentumTransport": _turbulence(esi=False),
+            "constant/turbulenceProperties": _turbulence(esi=True, model=settings.turbulence),
+            "constant/momentumTransport": _turbulence(esi=False, model=settings.turbulence),
             "constant/transportProperties": _transport(nu, "transportProperties"),
             "constant/physicalProperties": _transport(nu, "physicalProperties"),
             "0/U": _field_u(layout),
@@ -429,6 +443,19 @@ def write_case(model: GeometryModel, settings: CaseSettings, case_dir: Optional[
             "0/omega": _field_turb(layout, "omega", "[0 0 -1 0 0 0 0]", omega_in, "omegaWallFunction"),
             "0/nut": _field_nut(layout),
         }
+        need = TURBULENCE_MODELS.get(settings.turbulence, TURBULENCE_MODELS["kOmegaSST"])[1]
+        if "epsilon" in need:                   # ε = Cμ k ω at the inlet (same turbulence as the SST inflow)
+            files["0/epsilon"] = _field_turb(layout, "epsilon", "[0 2 -3 0 0 0 0]", 0.09 * k_in * omega_in,
+                                             "epsilonWallFunction")
+        if "nuTilda" in need:                   # Spalart-Allmaras free stream: 3 ν; zero at the wall
+            txt = _field_turb(layout, "nuTilda", "[0 2 -1 0 0 0 0]", 3.0 * nu, "fixedValue")
+            body = txt.rfind(f"uniform {3.0 * nu:.9g}")      # the wall (last entry): nuTilda = 0
+            files["0/nuTilda"] = txt[:body] + "uniform 0" + txt[body + len(f"uniform {3.0 * nu:.9g}"):]
+        for f in ("k", "omega"):
+            if f not in need:
+                files.pop(f"0/{f}", None)
+        if "k" not in need:                     # no k: Spalding's wall function works from the velocity alone
+            files["0/nut"] = files["0/nut"].replace("nutkWallFunction", "nutUSpaldingWallFunction")
         if settings.compressible:
             phys = _cmp_physical(atm.dynamic_viscosity)
             files.update({"constant/physicalProperties": phys, "constant/thermophysicalProperties": phys,
@@ -531,14 +558,18 @@ def _surface_feature_extract_dict() -> str:
 """
 
 
-def _snappy_dict(c: CaseLayout, info: GeometryInfo, preset: Any, quality: GridQuality) -> str:
+def _snappy_dict(c: CaseLayout, info: GeometryInfo, preset: Any, quality: GridQuality, extra_levels: int = 0,
+                 wake: bool = False) -> str:
     lo = np.asarray(info.bounds_min)
     hi = np.asarray(info.bounds_max)
     l_c = max(info.chord_m, 0.2 * max(info.chord_m, info.span_m, info.height_m))
     box_lo = lo - np.array([0.5, 0.5, 0.5]) * l_c
-    box_hi = hi + np.array([2.5, 0.5, 0.5]) * l_c
-    box_level = 1 if quality == GridQuality.COARSE else 2
-    lmin, lmax = preset.surface_min_level, preset.surface_max_level
+    box_hi = hi + np.array([6.0 if wake else 2.5, 0.8 if wake else 0.5, 0.8 if wake else 0.5]) * l_c
+    if wake:                                    # keep the box inside the domain
+        box_hi = np.minimum(box_hi, np.asarray(c.domain_max) - 0.05 * c.base_cell)
+    box_level = (1 if quality == GridQuality.COARSE else 2) + (1 if wake else 0)
+    extra = int(max(extra_levels, 0))
+    lmin, lmax = preset.surface_min_level + extra, preset.surface_max_level + extra
     return _header("dictionary", "snappyHexMeshDict") + f"""castellatedMesh true;
 snap            true;
 addLayers       {"true" if preset.boundary_layers > 0 else "false"};
@@ -929,6 +960,8 @@ divSchemes
     div(phi,U)      bounded Gauss linearUpwind grad(U);
     div(phi,k)      bounded Gauss upwind;
     div(phi,omega)  bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div(phi,nuTilda) bounded Gauss upwind;
     div((nuEff*dev2(T(grad(U))))) Gauss linear;
     div((nuEff*dev(T(grad(U))))) Gauss linear;
 }
@@ -963,7 +996,7 @@ def _fv_solution(transient: bool = False) -> str:
     {
         p               %g;
         U               %g;
-        "(k|omega)"     %g;
+        "(k|omega|epsilon|nuTilda)" %g;
     }
 }""" % (OPENFOAM.residual_target, OPENFOAM.residual_target * 0.1, OPENFOAM.residual_target * 0.1)
     return _header("dictionary", "fvSolution") + f"""solvers
@@ -975,14 +1008,14 @@ def _fv_solution(transient: bool = False) -> str:
         tolerance       1e-7;
         relTol          0.05;
     }}
-    "(U|k|omega)"
+    "(U|k|omega|epsilon|nuTilda)"
     {{
         solver          smoothSolver;
         smoother        symGaussSeidel;
         tolerance       1e-8;
         relTol          0.1;
     }}
-    "(U|k|omega)Final"
+    "(U|k|omega|epsilon|nuTilda)Final"
     {{
         solver          smoothSolver;
         smoother        symGaussSeidel;
@@ -1041,10 +1074,12 @@ method          scotch;
 """
 
 
-def _turbulence(esi: bool) -> str:
+def _turbulence(esi: bool, model: str = "kOmegaSST") -> str:
     name = "turbulenceProperties" if esi else "momentumTransport"
+    if model == "laminar":
+        return _header("dictionary", name) + "simulationType  laminar;\n"
     # ESI reads RASModel (older releases) or model (v2206+); Foundation reads only model.
-    model_lines = "RASModel        kOmegaSST;\n    model           kOmegaSST;" if esi else "model           kOmegaSST;"
+    model_lines = f"RASModel        {model};\n    model           {model};" if esi else f"model           {model};"
     return _header("dictionary", name) + f"""simulationType  RAS;
 
 RAS
@@ -1297,7 +1332,7 @@ def _cmp_fv_solution() -> str:
         tolerance       1e-8;
         relTol          0.01;
     }
-    "(U|k|omega|h|e)"
+    "(U|k|omega|epsilon|nuTilda|h|e)"
     {
         solver          PBiCGStab;
         preconditioner  DILU;
@@ -1309,7 +1344,7 @@ def _cmp_fv_solution() -> str:
 PIMPLE
 {
     nNonOrthogonalCorrectors 0;
-    residualControl { p 1e-6; U 1e-5; "(k|omega|h)" 1e-5; }
+    residualControl { p 1e-6; U 1e-5; "(k|omega|epsilon|nuTilda|h)" 1e-5; }
 }
 
 SIMPLE
@@ -1319,7 +1354,7 @@ SIMPLE
     consistent      no;
     pMinFactor      0.1;
     pMaxFactor      2;
-    residualControl { p 1e-6; U 1e-5; "(k|omega|h|e)" 1e-5; }
+    residualControl { p 1e-6; U 1e-5; "(k|omega|epsilon|nuTilda|h|e)" 1e-5; }
 }
 
 relaxationFactors

@@ -448,3 +448,32 @@ def test_bem_propeller() -> None:
     assert 0.3 * 0.8 < sw["J"][k] < 1.3 * 0.8
     more_blades = bem.solve(bem.Propeller(1.0, 4, 0.8), 2000.0, 15.0, 1.225)
     assert more_blades.thrust > r.thrust
+
+
+def test_openfoam_turbulence_models_and_refinement(tmp_path) -> None:
+    from dataclasses import replace
+
+    from config.settings import FlowConditions, GeometryPreset, GridQuality
+    from core import openfoam_bridge as ob
+    from core.geometry_manager import build_preset
+
+    model = build_preset(list(GeometryPreset)[0])
+    base = ob.CaseSettings(FlowConditions(velocity_ms=30.0), GridQuality.COARSE)
+    for turb, (_label, fields) in ob.TURBULENCE_MODELS.items():
+        d = ob.write_case(model, replace(base, turbulence=turb), tmp_path / turb).case_dir
+        present = {p.name for p in (d / "0").iterdir()}
+        assert set(fields) <= present and {"U", "p", "nut"} <= present
+        assert not ({"k", "omega", "epsilon", "nuTilda"} - set(fields)) & present
+        mt = (d / "constant/momentumTransport").read_text()
+        assert ("laminar" in mt) if turb == "laminar" else (f"model           {turb};" in mt)
+        if "k" not in fields:
+            assert "nutUSpaldingWallFunction" in (d / "0/nut").read_text()
+    sa = (tmp_path / "SpalartAllmaras" / "0" / "nuTilda").read_text()
+    assert sa.rstrip().rstrip("}").rstrip().splitlines()[-2].strip() == "value           uniform 0;"   # zero at the wall
+    plain = (ob.write_case(model, base, tmp_path / "plain").case_dir / "system/snappyHexMeshDict").read_text()
+    fine = (ob.write_case(model, replace(base, surface_refinement=2, wake_refinement=True), tmp_path / "fine").case_dir
+            / "system/snappyHexMeshDict").read_text()
+    lv = [ln for ln in plain.splitlines() if "level (" in ln][0]
+    lv2 = [ln for ln in fine.splitlines() if "level (" in ln][0]
+    a, b = (int(x) for x in lv.split("(")[1].split(")")[0].split())
+    assert lv2.strip() == f"level ({a + 2} {b + 2});"

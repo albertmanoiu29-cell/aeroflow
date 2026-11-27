@@ -947,7 +947,10 @@ class MainWindow(QMainWindow):
                                 n_procs=self.cfd_panel.openfoam_procs(),
                                 boundary_layers=self.cfd_panel.openfoam_layers(),
                                 compressible=self.cfd_panel.openfoam_compressible(),
-                                mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi)
+                                mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi,
+                                turbulence=self.cfd_panel.openfoam_turbulence(),
+                                surface_refinement=self.cfd_panel.openfoam_refinement()[0],
+                                wake_refinement=self.cfd_panel.openfoam_refinement()[1])
         transient, ctimes, frames = self.cfd_panel.openfoam_transient()
         if transient:
             if settings.compressible:
@@ -1049,7 +1052,10 @@ class MainWindow(QMainWindow):
                                     n_procs=self.cfd_panel.openfoam_procs(),
                                     boundary_layers=self.cfd_panel.openfoam_layers(),
                                     compressible=self.cfd_panel.openfoam_compressible(),
-                                    mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi)
+                                    mrf_rpm=self.cfd_panel.openfoam_rpm(), esi=self.of_env.is_esi,
+                                    turbulence=self.cfd_panel.openfoam_turbulence(),
+                                    surface_refinement=self.cfd_panel.openfoam_refinement()[0],
+                                    wake_refinement=self.cfd_panel.openfoam_refinement()[1])
             worker = OpenFOAMPolarWorker(self.of_env, model, settings, angles)
             worker.signals.message.connect(self._on_worker_message)
         else:
