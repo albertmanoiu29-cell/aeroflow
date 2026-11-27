@@ -26,14 +26,14 @@ from typing import Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from config.settings import APP_NAME, get_paths, isa_atmosphere
+from config.settings import APP_NAME, ORG_NAME, get_paths, isa_atmosphere
 from config.theme import PALETTE, make_icon, make_logo_icon, mono_font
 from core import nozzle as nz
 from ui.cfd_panel import AccordionCard, SegmentedControl, ToggleSwitch, button, compact_combo, labeled_row, scroll_wrap
@@ -42,7 +42,8 @@ from ui.supersonic_window import ValueSlider
 from visualization.nozzle_view import (
     FLAMES, NOZZLE_RESOLUTIONS, EngineSetup, NField, NozzleView, default_resolution, flame_for, fmt_force,
 )
-from visualization.telemetry_charts import _card, _style_plot
+from visualization.telemetry_charts import _card as _plain_card
+from visualization.telemetry_charts import _style_plot
 
 B = nz.Contour.BELL
 C = nz.Contour.CONICAL
@@ -103,6 +104,15 @@ def _dspin(lo: float, hi: float, val: float, dec: int = 2, suffix: str = "", ste
     return sp
 
 
+def _card(title: str, content: QWidget) -> QWidget:
+    """A titled chart card whose title wraps, so a long title never forces the panel wider."""
+    frame = _plain_card(title, content)
+    for lbl in frame.findChildren(QLabel):
+        lbl.setWordWrap(True)
+        lbl.setMinimumWidth(1)
+    return frame
+
+
 def _muted(text: str = "") -> QLabel:
     lbl = QLabel(text)
     lbl.setWordWrap(True)
@@ -117,15 +127,30 @@ class NozzleWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(f"Rocket Nozzle Lab — {APP_NAME}")
         self.setWindowIcon(make_logo_icon(64))
-        self.resize(1640, 960)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+        width = min(1680, int(avail.width() * 0.96)) if avail is not None else 1640
+        height = min(980, int(avail.height() * 0.92)) if avail is not None else 960
+        self.resize(width, height)
         self._loading = False
         self.view = NozzleView()
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(scroll_wrap(self._controls()))
+        self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        controls = self._controls()
+        self.left = scroll_wrap(controls)
+        # never narrower than the controls need (no clipped inputs); drag the handle to make it wider
+        self.left.setMinimumWidth(controls.minimumSizeHint().width() + 18)
+        splitter.addWidget(self.left)
         splitter.addWidget(self._centre())
-        splitter.addWidget(self._analysis())
+        self.right = self._analysis()
+        self.right.setMinimumWidth(260)
+        splitter.addWidget(self.right)
+        splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([390, 820, 470])
+        splitter.setStretchFactor(2, 0)
+        left_w = max(self.left.minimumWidth() + 40, int(0.29 * width))
+        right_w = max(320, int(0.27 * width))
+        splitter.setSizes([left_w, max(width - left_w - right_w, 300), right_w])
         self.setCentralWidget(splitter)
         self.status_label = QLabel("")
         self.status_label.setProperty("role", "muted")
@@ -142,6 +167,7 @@ class NozzleWindow(QMainWindow):
         self._apply_timer.setInterval(200)
         self._apply_timer.timeout.connect(self._apply)
         self._last_refresh = 0.0
+        self._restore_layout()
         self.load_preset(DEFAULT_PRESET)
 
     # -- centre: 2-D section or 3-D view --------------------------------------------------------
@@ -156,12 +182,51 @@ class NozzleWindow(QMainWindow):
                                           ["The solution in the r-x plane, mirrored about the axis",
                                            "The solution revolved about the axis: a glowing 3-D plume or a cut-away"])
         self.view_mode.changed.connect(self._set_view_mode)
-        lay.addWidget(self.view_mode, 0, Qt.AlignmentFlag.AlignHCenter)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(4, 0, 4, 0)
+        self.btn_left = button("Hide controls", "ghost", "", "Show or hide the control panel (more room for the flow view)")
+        self.btn_right = button("Hide analysis", "ghost", "", "Show or hide the analysis panel (more room for the controls)")
+        for b, which in ((self.btn_left, "left"), (self.btn_right, "right")):
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.toggled.connect(lambda on, w=which: self._show_panel(w, on))
+        bar.addWidget(self.btn_left)
+        bar.addStretch(1)
+        bar.addWidget(self.view_mode)
+        bar.addStretch(1)
+        bar.addWidget(self.btn_right)
+        lay.addLayout(bar)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.view)
         lay.addWidget(self.stack, 1)
         self.view3d = None
         return box
+
+    def _show_panel(self, which: str, on: bool) -> None:
+        panel = self.left if which == "left" else self.right
+        panel.setVisible(on)
+        btn = self.btn_left if which == "left" else self.btn_right
+        btn.setText(("Hide " if on else "Show ") + ("controls" if which == "left" else "analysis"))
+
+    def _settings(self) -> QSettings:
+        return QSettings(ORG_NAME, APP_NAME)
+
+    def _restore_layout(self) -> None:
+        """Panel widths and visibility from the last session."""
+        st = self._settings()
+        state = st.value("nozzle_lab/splitter")
+        if state is not None:
+            self.splitter.restoreState(state)
+        for b, key in ((self.btn_left, "nozzle_lab/show_controls"), (self.btn_right, "nozzle_lab/show_analysis")):
+            v = st.value(key)
+            if v is not None:
+                b.setChecked(str(v).lower() in ("true", "1"))
+
+    def _save_layout(self) -> None:
+        st = self._settings()
+        st.setValue("nozzle_lab/splitter", self.splitter.saveState())
+        st.setValue("nozzle_lab/show_controls", self.btn_left.isChecked())
+        st.setValue("nozzle_lab/show_analysis", self.btn_right.isChecked())
 
     def _set_view_mode(self, i: int) -> None:
         if i == 1 and self.view3d is None:
@@ -514,9 +579,10 @@ class NozzleWindow(QMainWindow):
         live = QWidget()
         ll = QVBoxLayout(live)
         ll.setContentsMargins(6, 6, 6, 6)
-        ll.addWidget(_card("Thrust (dashed: 1-D theory at the set conditions)", self.p_thrust), 3)
+        ll.addWidget(_card("Thrust", self.p_thrust), 3)
         ll.addWidget(_card("Chamber pressure", self.p_pc), 2)
-        ll.addWidget(_card("Mass flow (dashed: theory)", self.p_md), 2)
+        ll.addWidget(_card("Mass flow", self.p_md), 2)
+        ll.addWidget(_muted("Dashed lines: 1-D theory at the set conditions."))
         tabs.addTab(live, "Live")
         # centre line
         self.p_axp = self._plot("x − x_exit (exit diameters)", "p / pₐ (log)")
@@ -531,8 +597,10 @@ class NozzleWindow(QMainWindow):
         cl = QWidget()
         cll = QVBoxLayout(cl)
         cll.setContentsMargins(6, 6, 6, 6)
-        cll.addWidget(_card("Pressure along the axis (each peak is a shock crossing: one shock cell)", self.p_axp), 1)
-        cll.addWidget(_card("Mach number and temperature along the axis (white: Mach disks)", self.p_axm), 1)
+        cll.addWidget(_card("Pressure along the axis", self.p_axp), 1)
+        cll.addWidget(_card("Mach number and temperature along the axis", self.p_axm), 1)
+        cll.addWidget(_muted("Each pressure peak is a shock crossing the axis (one shock cell); white lines are "
+                             "Mach disks."))
         cll.addWidget(self.ax_info)
         tabs.addTab(cl, "Centre line")
         # exit plane
@@ -578,8 +646,7 @@ class NozzleWindow(QMainWindow):
         al = QWidget()
         all_ = QVBoxLayout(al)
         all_.setContentsMargins(6, 6, 6, 6)
-        all_.addWidget(_card("Thrust vs altitude (1-D theory, ISA; white: now, amber: design altitude p_e = pₐ)",
-                             self.p_altf), 1)
+        all_.addWidget(_card("Thrust vs altitude", self.p_altf), 1)
         all_.addWidget(_card("Specific impulse vs altitude", self.p_alti), 1)
         all_.addWidget(self.alt_info)
         tabs.addTab(al, "Altitude")
@@ -1035,8 +1102,10 @@ class NozzleWindow(QMainWindow):
             info.append(f"Design altitude (p_e = pₐ) ≈ {design:.0f} km")
         if sep.any():
             info.append(f"1-D separation likely below {alts[sep].max():.0f} km (red)")
-        self.alt_info.setText(" · ".join(info) + ". Thrust rises with altitude as the ambient pressure falls; below "
-                              "the design altitude the nozzle is overexpanded, above it underexpanded.")
+        self.alt_info.setText(" · ".join(info) + ". 1-D theory in the standard atmosphere; white line: the current "
+                              "altitude, amber: the design altitude (pₑ = pₐ). Thrust rises with altitude as the ambient "
+                              "pressure falls; below the design altitude the nozzle is overexpanded, above it "
+                              "underexpanded.")
 
     # -- media and export -----------------------------------------------------------------------------
     def _snapshot(self) -> None:
@@ -1089,11 +1158,13 @@ class NozzleWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         """Closing hides the window (the state is kept); the simulation pauses."""
+        self._save_layout()
         self.view.stop()
         self._sync_run_button()
         event.accept()
 
     def shutdown(self) -> None:
+        self._save_layout()
         if self.view3d is not None:
             self.view3d.shutdown()
         self.view.shutdown()

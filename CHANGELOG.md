@@ -3,6 +3,16 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [1.7.2] - 2026-11-27
+
+### Fixed: Rocket Nozzle Lab layout
+- **The control panel was too narrow and could hardly be widened**, which clipped some inputs.
+  - **Cause:** long, non-wrapping chart titles forced the analysis panel to at least ~590 px.
+  - **Fix:** the titles are now short and wrap, and their explanations moved into the notes under the charts, so the analysis panel can shrink to 260 px. The control panel can no longer be squeezed below the width its inputs need, and it can be dragged much wider.
+- **Panel buttons:** *Hide controls* and *Hide analysis* buttons beside the 2-D / 3-D switch give the flow view, or the controls, the whole width.
+- **Screen fit:** the window and the starting panel widths fit the screen (a 1920-pixel display at 125 % scaling included).
+- **Remembered layout:** panel widths and visibility carry over between sessions.
+
 ## [1.7.1] - 2026-11-26
 
 ### Improved: smoother, more realistic 3-D nozzle view
