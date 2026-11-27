@@ -283,7 +283,7 @@ def test_main_window_imports() -> None:
 
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel", "ui.nozzle_window",
-                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance"):
+                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance", "ui.propeller_dialog"):
         importlib.import_module(mod)
 
 
@@ -424,3 +424,27 @@ def test_guide_and_appearance_modules() -> None:
     assert len(TOPICS) >= 8 and all(body.strip().startswith("<h2>") for body in TOPICS.values())
     assert theme.appearance()[0] in ("dark", "light") and 0.75 <= theme.appearance()[1] <= 2.0
     assert theme.LIGHT_PALETTE.bg != theme.Palette().bg
+
+
+def test_bem_propeller() -> None:
+    import warnings
+
+    from core import bem
+
+    p = bem.Propeller(1.0, 2, 0.8)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = bem.solve(p, 2000.0, 15.0, 1.225)
+        sw = bem.sweep_advance_ratio(p, 2000.0)
+    assert r.J == pytest.approx(15.0 / (2000.0 / 60.0 * 1.0))
+    assert r.thrust > 0 and r.torque > 0 and 0.3 < r.efficiency < bem.ideal_efficiency(r.thrust, 15.0, 1.225, 1.0)
+    # coefficients are consistent with the dimensional results
+    n = 2000.0 / 60.0
+    assert r.CT == pytest.approx(r.thrust / (1.225 * n * n), rel=1e-9)
+    assert r.CP == pytest.approx(2.0 * math.pi * r.CQ, rel=1e-9)
+    # thrust falls with advance ratio and vanishes beyond J ~ P/D; efficiency peaks in between
+    assert sw["CT"][0] > sw["CT"][len(sw["J"]) // 2] > sw["CT"][-1]
+    k = int(np.argmax(sw["eta"]))
+    assert 0.3 * 0.8 < sw["J"][k] < 1.3 * 0.8
+    more_blades = bem.solve(bem.Propeller(1.0, 4, 0.8), 2000.0, 15.0, 1.225)
+    assert more_blades.thrust > r.thrust

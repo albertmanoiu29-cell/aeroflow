@@ -477,6 +477,8 @@ class MainWindow(QMainWindow):
         m_sim = mb.addMenu("&Simulation")
         a(m_sim, "Run", self.run_simulation, "Ctrl+R", "Solve the current geometry")
         a(m_sim, "Abort", self.abort, "Esc", "Stop the running solve or sweep")
+        a(m_sim, "Propeller analysis (BEM)…", self.open_propeller_tool, "",
+          "Fast propeller thrust, torque, power and efficiency curves by blade-element momentum theory")
         a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
           "Sweep sideslip, speed (Reynolds / Mach), altitude or angle of attack and plot CL, CD, CM, L/D")
         a(m_sim, "Pin result for comparison", self.pin_result, "",
@@ -1499,6 +1501,20 @@ class MainWindow(QMainWindow):
                                "(Roache / Celik et al. 2008). The Instant engine's resolution is the number of surface "
                                "elements.")
         box.exec()
+
+    def open_propeller_tool(self) -> None:
+        from ui.propeller_dialog import PropellerDialog
+
+        def build(d: float, blades: int, pd: float) -> None:
+            from core.geometry_manager import build_propeller
+
+            self.geometry_mgr.set_model(build_propeller(d, blades, pd))
+            self._model_changed(reset_camera=True)
+            self.notify(f"Propeller D {d:g} m, {blades} blades, P/D {pd:g} loaded into the wind tunnel.")
+
+        dlg = PropellerDialog(build, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
 
     def open_param_study(self) -> None:
         model = self.geometry_mgr.model
