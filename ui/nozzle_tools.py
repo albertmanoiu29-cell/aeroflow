@@ -4,6 +4,7 @@ optimisation, noise, engine comparison) and its PDF report."""
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import html
 import math
 import time
@@ -538,6 +539,22 @@ class FlightTab(QWidget):
         controls = _grid([("Engines", self.engines), ("Dry mass", self.dry), ("Propellant", self.prop_m),
                           ("Diameter", self.dia), ("Drag Cd", self.cd), ("Launch angle", self.angle),
                           ("Pitch-over at", self.turn)])
+        # optional upper stage: the Lab's engine with a vacuum nozzle
+        self.t_upper = ToggleSwitch("Upper stage", False, "Add a second stage that fires after the first burns out "
+                                    "(the Lab's engine with a larger vacuum nozzle)")
+        self.up_dry = _spin(0.001, 1e7, 1000.0, 3, "kg", 10.0, "Upper stage dry mass, payload included")
+        self.up_prop = _spin(0.0, 1e8, 5000.0, 3, "kg", 100.0, "Upper stage propellant")
+        self.up_eps = _spin(2.0, 400.0, 100.0, 0, "", 5.0, "Expansion ratio of the upper stage's vacuum nozzle")
+        self.up_engines = QSpinBox()
+        self.up_engines.setRange(1, 10)
+        self.t_horiz = ToggleSwitch("Steer horizontally", True, "The upper stage thrusts along the local horizontal "
+                                    "to build orbital speed (otherwise along its velocity)")
+        self.upper_box = _grid([("Dry + payload", self.up_dry), ("Propellant", self.up_prop),
+                                ("Vacuum ε", self.up_eps), ("Engines", self.up_engines)])
+        self.t_upper.toggled.connect(lambda on: (self.upper_box.setVisible(on), self.t_horiz.setVisible(on),
+                                                 self._resize_or_run()))
+        self.upper_box.setVisible(False)
+        self.t_horiz.setVisible(False)
         self.p_h = _plot("time (s)", "altitude (km)", legend=False)
         self.c_h = self.p_h.plot(pen=pg.mkPen(PALETTE.cyan, width=2))
         self.p_v = _plot("time (s)", "speed (m/s)", legend=False)
@@ -550,8 +567,11 @@ class FlightTab(QWidget):
             pw.setXLink(self.p_h)
         self.burn_lines = [pg.InfiniteLine(angle=90, pen=pg.mkPen("#FFFFFF", width=1, style=Qt.PenStyle.DotLine))
                            for _ in range(3)]
-        for pw, ln in zip((self.p_h, self.p_v, self.p_q), self.burn_lines):
+        self.stage_lines = [pg.InfiniteLine(angle=90, pen=pg.mkPen(PALETTE.warning, width=1,
+                                                                   style=Qt.PenStyle.DashLine)) for _ in range(3)]
+        for pw, ln, sl in zip((self.p_h, self.p_v, self.p_q), self.burn_lines, self.stage_lines):
             pw.addItem(ln, ignoreBounds=True)
+            pw.addItem(sl, ignoreBounds=True)
         charts = QWidget()
         cg = QGridLayout(charts)
         cg.setContentsMargins(0, 0, 0, 0)
@@ -561,13 +581,18 @@ class FlightTab(QWidget):
         self.info = QLabel("")
         self.info.setFont(mono_font(10))
         self.info.setWordWrap(True)
-        note = _muted("Point-mass flight over a flat Earth (gravity falls with altitude), ISA atmosphere, drag with a "
-                      "transonic rise, thrust at each altitude from the nozzle theory. One stage, no throttling or "
-                      "steering after pitch-over: a quick feasibility check, not a mission design.")
+        note = _muted("Point-mass flight over a round, non-rotating Earth, ISA atmosphere, drag with a transonic "
+                      "rise, thrust at each altitude from the nozzle theory. A gravity turn after pitch-over, no "
+                      "throttling; an optional upper stage. A quick feasibility check, not a mission design.")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(_scroll_page(labeled_row("Thrust from", self.source), controls, self.btn_size, (charts, 420),
-                                   self.info, note))
+        lay.addWidget(_scroll_page(labeled_row("Thrust from", self.source), controls, self.t_upper, self.upper_box,
+                                   self.t_horiz, self.btn_size, (charts, 420), self.info, note))
+        for w in (self.up_dry, self.up_prop):
+            w.valueChanged.connect(lambda _v: (setattr(self, "_user_mass", True), self._timer.start()))
+        self.up_eps.valueChanged.connect(lambda _v: self._timer.start())
+        self.up_engines.valueChanged.connect(lambda _v: self._timer.start())
+        self.t_horiz.toggled.connect(lambda _v: self._timer.start())
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(250)
@@ -651,7 +676,18 @@ class FlightTab(QWidget):
         m0 = self.engines.value() * f0 / ((1.5 if m_prop is None else 5.0) * tj.G0)
         self.dry.blockSignals(True)
         self.prop_m.blockSignals(True)
-        if m_prop is None:
+        if m_prop is None and self.t_upper.isChecked():
+            # a typical two-stage split: the upper stage is about a fifth of the lift-off mass
+            m_up = 0.2 * m0
+            self.up_dry.blockSignals(True)
+            self.up_prop.blockSignals(True)
+            self.up_prop.setValue(0.85 * m_up)
+            self.up_dry.setValue(0.15 * m_up)
+            self.up_dry.blockSignals(False)
+            self.up_prop.blockSignals(False)
+            self.prop_m.setValue(0.94 * (m0 - m_up))
+            self.dry.setValue(0.06 * (m0 - m_up))
+        elif m_prop is None:
             self.prop_m.setValue(0.9 * m0)
             self.dry.setValue(0.1 * m0)
         else:
@@ -677,7 +713,20 @@ class FlightTab(QWidget):
         prop = m_prop * n if m_prop is not None else self.prop_m.value()
         v = tj.Vehicle(self.dry.value(), prop, self.dia.value(), self.cd.value(), n, self.angle.value(),
                        turn_speed=self.turn.value())
-        fl = tj.fly(v, thrust_at)
+        upper = None
+        if self.t_upper.isChecked():
+            kind = s.geom.contour
+            if kind in (nz.Contour.SONIC, nz.Contour.AEROSPIKE, nz.Contour.CUSTOM):
+                kind = nz.Contour.BELL
+            vac = replace(s.geom, contour=kind, exit_diameter=2.0 * s.geom.rt * math.sqrt(self.up_eps.value()))
+
+            def vac_theory(pa: float) -> tuple[float, float]:
+                th = nz.nozzle_theory(vac, s.gas, s.pc, pa, False)
+                return max(th.thrust, 0.0), th.mass_flow
+
+            upper = tj.UpperStage(self.up_dry.value(), self.up_prop.value(), tj.engine_thrust_table(vac_theory),
+                                  self.up_engines.value(), horizontal=self.t_horiz.isChecked())
+        fl = tj.fly(v, thrust_at, upper)
         self.flight = fl
         self.c_h.setData(fl.t, fl.altitude / 1e3)
         self.c_v.setData(fl.t, fl.speed)
@@ -685,7 +734,11 @@ class FlightTab(QWidget):
         self.c_path.setData(fl.downrange / 1e3, fl.altitude / 1e3)
         for ln in self.burn_lines:
             ln.setPos(fl.burnout_time)
-        m0 = v.dry_mass + v.propellant_mass
+        for ln in self.stage_lines:
+            ln.setVisible(fl.staging is not None)
+            if fl.staging is not None:
+                ln.setPos(fl.staging[0])
+        m0 = v.dry_mass + v.propellant_mass + (upper.dry_mass + upper.propellant_mass if upper else 0.0)
         lines = [fl.message,
                  f"Lift-off mass {m0:,.1f} kg, thrust-to-weight {fl.liftoff_twr:.2f}",
                  f"Burnout at {fl.burnout_time:.1f} s: {fl.burnout_altitude / 1e3:,.2f} km, {fl.burnout_speed:,.0f} m/s",
@@ -695,8 +748,10 @@ class FlightTab(QWidget):
                  f"{fl.max_accel_g:.1f} g",
                  f"Δv: ideal {fl.dv_ideal:,.0f} m/s - gravity loss {fl.gravity_loss:,.0f} - drag loss "
                  f"{fl.drag_loss:,.0f}"]
-        if fl.burnout_speed > 7600.0 and fl.burnout_altitude > 150e3:
-            lines.append("Fast enough for orbit at burnout (with the right steering).")
+        if fl.staging is not None:
+            lines.insert(3, f"Staging at {fl.staging[0]:.1f} s: {fl.staging[1] / 1e3:,.1f} km, {fl.staging[2]:,.0f} m/s")
+        if fl.orbit is None and fl.burnout_speed > 7600.0 and fl.burnout_altitude > 150e3:
+            lines.append("Fast enough for orbit at burnout, but not on a closed orbit above 100 km: steer flatter.")
         self.info.setText("\n".join(lines))
 
 

@@ -110,3 +110,25 @@ def test_exports(tmp_path, contour) -> None:
         assert float(x[-1]) == pytest.approx(float(xi[-1]), rel=1e-3)
     with pytest.raises(ValueError):
         ne.write_stl(g, tmp_path / "p.stl", planar=True)
+
+
+def test_orbit_from_state() -> None:
+    r = tj.R_EARTH + 400e3
+    v_circ = math.sqrt(tj.MU_EARTH / r)
+    peri, apo = tj.orbit_from_state(400e3, v_circ, 0.0)
+    assert peri == pytest.approx(400e3, abs=1.0) and apo == pytest.approx(400e3, abs=1.0)
+    assert tj.orbit_from_state(400e3, 0.9 * v_circ, 0.0) is None            # perigee inside the atmosphere
+    assert tj.orbit_from_state(400e3, 1.5 * v_circ, 0.0) is None            # escape
+
+
+def test_two_stage_rocket_reaches_orbit() -> None:
+    # a light, high-Isp two-stage vehicle with a horizontal upper-stage burn
+    booster = lambda t, h: (1.2e6, 1.2e6 / (290.0 * tj.G0))                  # noqa: E731
+    upper_engine = lambda t, h: (1.2e5, 1.2e5 / (340.0 * tj.G0))             # noqa: E731
+    v = tj.Vehicle(6000.0, 60000.0, 2.0, engines=1, launch_angle=89.0, turn_speed=150.0)
+    up = tj.UpperStage(1500.0, 14000.0, upper_engine, horizontal=True)
+    fl = tj.fly(v, booster, up)
+    assert fl.staging is not None and fl.staging[0] < fl.burnout_time
+    assert fl.orbit is not None and fl.orbit[0] > 100e3 and "In orbit" in fl.message
+    single = tj.fly(v, booster)                                              # no upper stage: suborbital
+    assert single.orbit is None                                              # a high arc, not an orbit
