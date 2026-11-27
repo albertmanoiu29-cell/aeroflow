@@ -20,12 +20,38 @@ from config.theme import make_logo_pixmap, make_section_label, mono_font, set_pr
 from core.openfoam_bridge import OpenFOAMEnvironment, setup_instructions
 
 
+def bundle_logs(report: str) -> Optional[Path]:
+    """Zip the log files and the system report into the exports folder (to attach to a bug report).
+    Nothing leaves the computer: the user decides whether to attach it."""
+    import time
+    import zipfile
+
+    from config.settings import get_paths
+
+    paths = get_paths()
+    out = paths.exports / f"aeroflow_problem_report_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("system.txt", report)
+            for f in sorted(paths.logs.glob("*.log*")):
+                z.write(f, f"logs/{f.name}")
+        return out
+    except OSError:
+        return None
+
+
 def open_issue_page(report: str) -> None:
-    """Open a pre-filled 'new issue' page in the browser (nothing is sent until the user submits it)."""
+    """Open a pre-filled 'new issue' page in the browser (nothing is sent until the user submits it), and put
+    the logs in a zip file next to it, shown in the file explorer, so they can be attached in one drag."""
+    zipped = bundle_logs(report)
     body = ("**What happened?**\n\n\n**What did you expect?**\n\n\n**Steps to reproduce**\n1. \n\n"
-            "**System**\n```\n" + report + "\n```\n")
+            "**System**\n```\n" + report + "\n```\n"
+            + (f"\n_The log files are in `{zipped.name}` (drag it into this box to attach it)._\n" if zipped else ""))
     query = urlencode({"title": "", "body": body})
     QDesktopServices.openUrl(QUrl(f"{PROJECT_URL}/issues/new?{query}"))
+    if zipped is not None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(zipped.parent)))
 
 
 def _card() -> tuple[QFrame, QVBoxLayout]:

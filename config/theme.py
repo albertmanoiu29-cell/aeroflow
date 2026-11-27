@@ -65,7 +65,31 @@ class Palette:
     viewport_top: str = "#1B263B"
 
 
-PALETTE: Final[Palette] = Palette()
+#: The light theme (Appearance setting; the flow views keep their dark scientific backgrounds).
+LIGHT_PALETTE: Final[Palette] = Palette(
+    bg="#F4F6FA", bg_deep="#FFFFFF", surface="#FFFFFF", surface_alt="#EEF2F7", surface_hover="#E2E8F0",
+    border="#D7DEE8", border_strong="#B6C2D2", text="#0F172A", text_muted="#475569", text_dim="#64748B",
+    on_accent="#FFFFFF", cyan="#0891B2", cyan_hi="#06B6D4", sky="#0284C7", indigo="#4F46E5", success="#059669",
+    warning="#D97706", danger="#DC2626", viewport_bottom="#C9D3E0", viewport_top="#F1F5F9")
+
+
+def appearance() -> tuple[str, float]:
+    """The saved theme ("dark" / "light") and interface scale (1.0 = 100 %); read before the UI is built."""
+    try:
+        from PySide6.QtCore import QSettings
+
+        from config.settings import APP_NAME, ORG_NAME
+
+        st = QSettings(ORG_NAME, APP_NAME)
+        theme = str(st.value("ui/theme", "dark") or "dark").lower()
+        scale = float(st.value("ui/scale", 1.0) or 1.0)
+        return ("light" if theme == "light" else "dark"), min(max(scale, 0.75), 2.0)
+    except Exception:  # noqa: BLE001 - settings unreadable: defaults
+        return "dark", 1.0
+
+
+IS_LIGHT: Final[bool] = appearance()[0] == "light"
+PALETTE: Final[Palette] = LIGHT_PALETTE if IS_LIGHT else Palette()
 
 # --- Viewport / scene colours ---------------------------------------------
 CFD_BACKGROUND_BOTTOM: Final[str] = PALETTE.viewport_bottom
@@ -497,14 +521,14 @@ def build_stylesheet(assets: Optional[dict[str, str]] = None) -> str:
     if assets is None:
         assets = generate_assets()
     tokens: dict[str, str] = dict(asdict(PALETTE))
-    tokens["white"] = "#FFFFFF"
+    tokens["white"] = "#0F172A" if IS_LIGHT else "#FFFFFF"      # hover tints: dark on light, light on dark
     tokens["ui_font"] = _font_stack(UI_FONT_CANDIDATES, "sans-serif")
     tokens["mono_font"] = _font_stack(MONO_FONT_CANDIDATES, "monospace")
     for name in ("cyan", "indigo", "success", "warning", "danger", "white"):
         for pct in (6, 10, 15, 18, 25, 40, 60):
             tokens[f"{name}_a{pct:02d}"] = rgba(tokens[name], pct / 100.0)
     tokens["glass"] = rgba(PALETTE.surface, 0.72)
-    tokens["glass_border"] = rgba("#FFFFFF", 0.10)
+    tokens["glass_border"] = rgba("#0F172A" if IS_LIGHT else "#FFFFFF", 0.10)
     for key, path in assets.items():
         tokens[f"asset_{key}"] = path
     return Template(_QSS_TEMPLATE).substitute(tokens)

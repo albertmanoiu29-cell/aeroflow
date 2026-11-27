@@ -283,7 +283,7 @@ def test_main_window_imports() -> None:
 
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel", "ui.nozzle_window",
-                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools"):
+                "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance"):
         importlib.import_module(mod)
 
 
@@ -415,3 +415,12 @@ def test_no_unreachable_code_after_return() -> None:
                     if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
                         bad.append(f"{path.name}:{block[i + 1].lineno}")
     assert not bad, f"unreachable code at {bad}"
+
+
+def test_guide_and_appearance_modules() -> None:
+    from config import theme
+    from ui.guide import TOPICS
+
+    assert len(TOPICS) >= 8 and all(body.strip().startswith("<h2>") for body in TOPICS.values())
+    assert theme.appearance()[0] in ("dark", "light") and 0.75 <= theme.appearance()[1] <= 2.0
+    assert theme.LIGHT_PALETTE.bg != theme.Palette().bg

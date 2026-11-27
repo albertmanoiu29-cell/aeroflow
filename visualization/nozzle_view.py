@@ -145,7 +145,9 @@ class ColorBar(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor(8, 11, 19, 190))
+        bg = QColor(PALETTE.surface)
+        bg.setAlpha(215)
+        p.setBrush(bg)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(self.rect(), 6, 6)
         grad = QLinearGradient(10, 0, self.width() - 10, 0)

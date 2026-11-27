@@ -27,7 +27,7 @@ from typing import Callable, Optional
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QGuiApplication
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
@@ -174,6 +174,14 @@ class NozzleWindow(QMainWindow):
         self._apply_timer.setInterval(200)
         self._apply_timer.timeout.connect(self._apply)
         self._last_refresh = 0.0
+        self._history: list[dict] = []
+        self._hist_pos = -1
+        self._restoring = False
+        for keys, slot in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
+                           (QKeySequence.StandardKey.Save, self.save_design), (QKeySequence.StandardKey.Open, self.open_design),
+                           (QKeySequence(Qt.Key.Key_F1), self._guide)):
+            sc = QShortcut(QKeySequence(keys), self)
+            sc.activated.connect(slot)
         self._restore_layout()
         self.load_preset(DEFAULT_PRESET)
 
@@ -201,6 +209,9 @@ class NozzleWindow(QMainWindow):
         bar.addStretch(1)
         bar.addWidget(self.view_mode)
         bar.addStretch(1)
+        guide = button("Guide", "ghost", "help", "What everything means: shock diamonds, thrust, Isp, cooling... (F1)")
+        guide.clicked.connect(lambda: self._guide())
+        bar.addWidget(guide)
         bar.addWidget(self.btn_right)
         lay.addLayout(bar)
         self.stack = QStackedWidget()
@@ -208,6 +219,11 @@ class NozzleWindow(QMainWindow):
         lay.addWidget(self.stack, 1)
         self.view3d = None
         return box
+
+    def _guide(self, topic: str = "Rocket Nozzle Lab: first run") -> None:
+        from ui.guide import show_guide
+
+        show_guide(self, topic)
 
     def _show_panel(self, which: str, on: bool) -> None:
         panel = self.left if which == "left" else self.right
@@ -382,6 +398,18 @@ class NozzleWindow(QMainWindow):
         self.preset.activated.connect(lambda _i: self.load_preset(self.preset.currentText()))
         card.add(self.preset)
         card.add(_muted("Class-typical values for well-known engine types. Every field below stays editable."))
+        row = QHBoxLayout()
+        self.btn_undo = button("Undo", "ghost", "", "Undo the last change (Ctrl+Z)")
+        self.btn_redo = button("Redo", "ghost", "", "Redo (Ctrl+Y)")
+        save = button("Save…", "ghost", "export", "Save this engine design to a file (Ctrl+S)")
+        open_ = button("Open…", "ghost", "folder", "Open a saved engine design (Ctrl+O)")
+        for b in (self.btn_undo, self.btn_redo, save, open_):
+            row.addWidget(b)
+        card.add_layout(row)
+        self.btn_undo.clicked.connect(self.undo)
+        self.btn_redo.clicked.connect(self.redo)
+        save.clicked.connect(self.save_design)
+        open_.clicked.connect(self.open_design)
         return card
 
     def _card_propellant(self) -> QWidget:
@@ -1038,6 +1066,117 @@ class NozzleWindow(QMainWindow):
         self.view.configure(setup)
         self._refresh_static()
         self._refresh(force=True)
+        self._push_history()
+
+    # -- history and design files -----------------------------------------------------------------------
+    _SPINS = ("of", "gamma", "molar", "tc", "pc", "mdot", "dt", "de", "eps", "dc", "lc", "conv", "div", "bell", "tn", "te",
+              "ru", "rd", "wall", "body", "infl", "ext_angle", "alt", "pa", "ta", "fm", "plume_l", "plume_r", "ramp",
+              "ramp_off", "asc_top", "asc_time")
+
+    def _state(self) -> dict:
+        """Every input of the window, for undo/redo and design files."""
+        st = {name: getattr(self, name).value() for name in self._SPINS}
+        st.update(prop=self.prop.currentText(), preset=self.preset.currentText(),
+                  contour=nz.Contour(self.contour.currentData()).name, feed_mode=self.feed_mode.index(),
+                  shape=self.shape.index(), isa=self.t_alt.isChecked(),
+                  custom=[list(map(float, self._custom[0])), list(map(float, self._custom[1]))] if self._custom else None)
+        return st
+
+    def _set_state(self, st: dict) -> None:
+        self._loading = True
+        try:
+            if st.get("custom"):
+                self._custom = (np.asarray(st["custom"][0], float), np.asarray(st["custom"][1], float))
+            if st.get("prop") in [self.prop.itemText(i) for i in range(self.prop.count())]:
+                self.prop.setCurrentText(st["prop"])
+            self.row_of.setVisible(nd.of_range(self.prop.currentText()) is not None)
+            if nd.of_range(self.prop.currentText()):
+                self.of.setRange(*nd.of_range(self.prop.currentText()))
+            names = [c.name for c in nz.Contour]
+            if st.get("contour") in names:
+                self.contour.setCurrentIndex(names.index(st["contour"]))
+            self.feed_mode.set_index(int(st.get("feed_mode", 0)))
+            self.shape.set_index(int(st.get("shape", 0)))
+            self.t_alt.setChecked(bool(st.get("isa", True)))
+            for name in self._SPINS:
+                if name in st:
+                    getattr(self, name).setValue(float(st[name]))
+            if st.get("preset") in [self.preset.itemText(i) for i in range(self.preset.count())]:
+                self.preset.setCurrentText(st["preset"])
+        finally:
+            self._loading = False
+        self._sync_contour_ui()
+        mass = self.feed_mode.index() == 1
+        self.pc.setEnabled(not mass)
+        self.mdot.setEnabled(mass)
+        self._env_edited(apply=False)
+        self._apply()
+
+    def _push_history(self) -> None:
+        if self._restoring or getattr(self, "_ascent", None) is not None:   # an ascent is not an edit
+            return
+        st = self._state()
+        if self._hist_pos >= 0 and self._history[self._hist_pos] == st:
+            return
+        del self._history[self._hist_pos + 1:]
+        self._history.append(st)
+        if len(self._history) > 200:
+            del self._history[0]
+        self._hist_pos = len(self._history) - 1
+        self._sync_history_buttons()
+
+    def _sync_history_buttons(self) -> None:
+        self.btn_undo.setEnabled(self._hist_pos > 0)
+        self.btn_redo.setEnabled(self._hist_pos < len(self._history) - 1)
+
+    def _go_history(self, k: int) -> None:
+        if not 0 <= k < len(self._history):
+            return
+        self._hist_pos = k
+        self._restoring = True
+        try:
+            self._set_state(self._history[k])
+        finally:
+            self._restoring = False
+        self._sync_history_buttons()
+
+    def undo(self) -> None:
+        self._go_history(self._hist_pos - 1)
+
+    def redo(self) -> None:
+        self._go_history(self._hist_pos + 1)
+
+    def save_design(self) -> None:
+        import json
+
+        default = get_paths().exports / f"engine_{time.strftime('%Y%m%d_%H%M%S')}.aeronozzle"
+        path, _ = QFileDialog.getSaveFileName(self, "Save engine design", str(default),
+                                              "Engine design (*.aeronozzle);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(json.dumps({"format": "aeroflow-nozzle", "version": 1, "inputs": self._state()},
+                                             indent=1), encoding="utf-8")
+            self.status_label.setText(f"Engine design saved: {path}")
+        except OSError as exc:
+            self.status_label.setText(f"Could not save: {exc}")
+
+    def open_design(self, path: Optional[str] = None) -> None:
+        import json
+
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open engine design", str(get_paths().exports),
+                                                  "Engine design (*.aeronozzle *.json)")
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if data.get("format") != "aeroflow-nozzle":
+                raise ValueError("not an AeroFlow engine design")
+            self._set_state(data["inputs"])
+            self.status_label.setText(f"Engine design opened: {path}")
+        except (OSError, ValueError, KeyError) as exc:
+            self.status_label.setText(f"Could not open the design: {exc}")
 
     # -- run control ----------------------------------------------------------------------------------
     def _ignite(self) -> None:

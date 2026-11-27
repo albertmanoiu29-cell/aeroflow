@@ -153,6 +153,14 @@ def main() -> int:
 
     # Qt 6 enables high-DPI scaling automatically; pass fractional factors (125 %, 150 %) straight through.
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    try:                                       # the user's interface scale (Appearance), on top of Windows scaling
+        from config.theme import appearance
+
+        scale = appearance()[1]
+        if abs(scale - 1.0) > 1e-3 and "QT_SCALE_FACTOR" not in os.environ:
+            os.environ["QT_SCALE_FACTOR"] = f"{scale:g}"
+    except Exception:  # noqa: BLE001 - never block start-up over a preference
+        pass
     app = QApplication(sys.argv)
 
     from config.settings import APP_ID, APP_NAME, APP_VERSION

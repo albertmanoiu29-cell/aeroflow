@@ -438,6 +438,9 @@ class MainWindow(QMainWindow):
         a(m_view, "Rocket Nozzle Lab (separate window)…", self.open_nozzle, "Ctrl+5",
           "Rocket engine nozzle and exhaust plume: ignition, shock diamonds, thrust and Isp vs 1-D theory")
         m_view.addSeparator()
+        a(m_view, "Appearance (theme, interface size)…", self.open_appearance, "",
+          "Light or dark theme and a larger or smaller interface")
+        m_view.addSeparator()
         for key, label in (("iso", "Isometric view"), ("front", "Front view"), ("top", "Top view"),
                            ("side", "Side view"), ("reset", "Reset camera")):
             a(m_view, label, lambda k=key: self.cfd_view.view(k))
@@ -503,6 +506,8 @@ class MainWindow(QMainWindow):
 
         m_help = mb.addMenu("&Help")
         a(m_help, "Help and shortcuts", self.show_help, "F1")
+        a(m_help, "Guide (what everything means)…", lambda: __import__("ui.guide", fromlist=["show_guide"]).show_guide(self),
+          "Shift+F1", "Explanations of each lab and of the physics on screen")
         a(m_help, "Open log folder", lambda: self._open_folder(get_paths().logs))
         m_help.addSeparator()
         a(m_help, "Check for updates…", lambda: self.check_for_updates(manual=True), "",
@@ -1082,6 +1087,15 @@ class MainWindow(QMainWindow):
         win.activateWindow()
         if not win.view.running:
             win.toggle_run()
+
+    def open_appearance(self) -> None:
+        from ui.appearance import AppearanceDialog, restart_application
+
+        dlg = AppearanceDialog(self)
+        if dlg.exec() and dlg.restart_requested:
+            restart_application(self)
+        elif dlg.result():
+            self.notify("Appearance saved: it applies the next time the program starts.")
 
     def open_nozzle(self) -> None:
         """Show the Rocket Nozzle Lab window (created on first use, then kept with its state)."""
