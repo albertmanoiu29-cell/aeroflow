@@ -87,6 +87,14 @@ if errorlevel 1 (
     )
 )
 
+rem ---- 6. Compile the solver kernels now, so the first start of the app is instant ----------------
+echo.
+echo Compiling the solver kernels (one time, about a minute)...
+pushd "%~dp0"
+"%VPY%" -m core.precompile
+if errorlevel 1 echo    WARNING: kernel pre-compilation failed - they will compile on first use instead.
+popd
+
 echo.
 echo === Setup complete. Start the app with run_windows.bat ===
 echo.

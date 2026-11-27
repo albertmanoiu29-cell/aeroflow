@@ -959,14 +959,6 @@ class NozzleFlow(ss.Supersonic2D):
         R[:, self.solid_int] = 0.0
         return R
 
-    def set_gpu_precision(self, single: bool) -> None:
-        """Float32 (fast) or float64 (exact) GPU fields; the state carries over."""
-        if bool(single) == self.gpu_single:
-            return
-        self._drain()
-        self._leave_gpu()                    # fetch the state, free the old device arrays
-        self.gpu_single = bool(single)
-
     def _dt(self, use_nb: bool) -> float:
         from core.nozzle_gpu import NOZZLE_CFL
 

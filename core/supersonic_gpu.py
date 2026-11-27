@@ -347,14 +347,19 @@ class SupersonicGPU:
     #: Field precision on the device (the Nozzle Lab's fast mode uses float32).
     dtype = np.float64
 
+    single = False
+
     def _load_module(self):
-        return _module()
+        return _module(single=self.single)
 
     def _r(self, x: float):
         """A kernel scalar of the field type (kernel arguments must match the C type exactly)."""
         return np.dtype(self.dtype).type(x)
 
-    def __init__(self, nx: int, ny: int) -> None:
+    def __init__(self, nx: int, ny: int, single: Optional[bool] = None) -> None:
+        if single is not None:                     # float32 fields: several times faster on consumer GPUs
+            self.single = bool(single)
+            self.dtype = np.float32 if self.single else np.float64
         cp = compute.cupy()
         self.cp = cp
         self.nx, self.ny = int(nx), int(ny)

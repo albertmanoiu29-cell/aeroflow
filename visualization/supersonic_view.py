@@ -265,7 +265,9 @@ class SupersonicView(QWidget):
         self.legend.setFont(mono_font(11))
 
         self.resolution = DEFAULT_SUPER_RESOLUTION
+        self.gpu_single = True
         self.solver = Supersonic2D(*SUPER_RESOLUTIONS[self.resolution], mach=2.0)
+        self.solver.gpu_single = True
         self.body = SBody.WEDGE
         self.half_angle = 10.0
         self.aoa = 0.0
@@ -329,7 +331,13 @@ class SupersonicView(QWidget):
         m = self.solver.mach
         self.solver.finish_step()                # let a batch in flight finish before dropping the solver
         self.solver = Supersonic2D(*SUPER_RESOLUTIONS[name], mach=m)
+        self.solver.gpu_single = self.gpu_single
         self.rebuild_body(reset=True)
+
+    def set_gpu_precision(self, single: bool) -> None:
+        """Single (fast) or double (exact) precision for the GPU solver; the flow carries over."""
+        self.gpu_single = bool(single)
+        self.solver.set_gpu_precision(self.gpu_single)
 
     def set_field(self, field: SField) -> None:
         self.field = SField(field)

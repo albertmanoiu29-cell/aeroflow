@@ -371,6 +371,17 @@ class Supersonic2D:
         self._mach_pub: Optional[F64] = None   # Mach field computed on the GPU for the published state
         self.resize(nx, ny)
 
+    #: GPU field precision: float64 (identical to the CPU) by default; float32 is several times faster.
+    gpu_single = False
+
+    def set_gpu_precision(self, single: bool) -> None:
+        """Float32 (fast) or float64 (exact) GPU fields; the state carries over."""
+        if bool(single) == self.gpu_single:
+            return
+        self._drain()
+        self._leave_gpu()                    # fetch the state, free the old device arrays
+        self.gpu_single = bool(single)
+
     @property
     def U(self) -> F64:
         """Conserved variables ``(rho, rho u, rho v, E)`` (ny, nx); fetched from the GPU when needed."""
@@ -713,10 +724,11 @@ class Supersonic2D:
 
     def _begin_gpu(self, n: int) -> bool:
         try:
-            if self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny):
+            if (self._gpu is None or (self._gpu.nx, self._gpu.ny) != (self.nx, self.ny)
+                    or self._gpu.single != self.gpu_single):
                 from core.supersonic_gpu import SupersonicGPU
 
-                self._gpu = SupersonicGPU(self.nx, self.ny)
+                self._gpu = SupersonicGPU(self.nx, self.ny, single=self.gpu_single)
                 self._gpu_dirty = True
             if self._gpu_dirty:
                 self._gpu.upload(self.U, self._solid_pad, self._wall_pad, self._ib_arrays())

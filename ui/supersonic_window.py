@@ -145,6 +145,15 @@ class SupersonicWindow(QMainWindow):
         sim.add(labeled_row("Grid", self.resolution, "Finer grids give sharper shocks but run slower."))
         self.device = DeviceSelector()
         sim.add(self.device)
+        self.precision = QComboBox()
+        self.precision.addItem("Single (fast)", True)
+        self.precision.addItem("Double (exact)", False)
+        self.precision.currentIndexChanged.connect(
+            lambda _i: self.view.set_gpu_precision(bool(self.precision.currentData())))
+        sim.add(labeled_row("GPU precision", self.precision,
+                            "Single precision runs several times faster on consumer GPUs (they have few "
+                            "double-precision units); shock positions and pressures agree with double precision "
+                            "to about 0.1 %. Double precision matches the CPU solver exactly."))
         snap = button("Save snapshot…", "ghost", "camera", "Save the current view as PNG")
         snap.clicked.connect(self._snapshot)
         self.btn_rec = button("Record video…", "ghost", "camera", "Record the running simulation to an MP4 video")
