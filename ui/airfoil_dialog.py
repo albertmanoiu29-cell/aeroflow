@@ -1,0 +1,243 @@
+"""Airfoil analysis: Hess-Smith panel method (Cp distribution, lift, moment), stall estimate and drag polar."""
+
+from __future__ import annotations
+
+import csv
+import math
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pyqtgraph as pg
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSlider,
+    QSpinBox, QVBoxLayout, QWidget,
+)
+
+from config.settings import APP_NAME, get_paths
+from config.theme import PALETTE, mono_font
+from core import panel as pm
+from core.shapes2d import naca_outline, read_airfoil_dat
+from ui.cfd_panel import button
+from visualization.telemetry_charts import _card, _style_plot
+
+
+def _spin(lo: float, hi: float, val: float, dec: int, suffix: str, step: float, tip: str = "") -> QDoubleSpinBox:
+    sp = QDoubleSpinBox()
+    sp.setRange(lo, hi)
+    sp.setDecimals(dec)
+    sp.setSingleStep(step)
+    sp.setValue(val)
+    sp.setKeyboardTracking(False)
+    if suffix:
+        sp.setSuffix(" " + suffix)
+    if tip:
+        sp.setToolTip(tip)
+    return sp
+
+
+def _plot(xl: str, yl: str, legend: bool = False, corner: tuple[int, int] = (-8, 8)) -> pg.PlotWidget:
+    w = pg.PlotWidget()
+    _style_plot(w, xl, yl)
+    if legend:
+        w.addLegend(offset=corner, labelTextColor=PALETTE.text_muted, brush=pg.mkBrush(PALETTE.surface_alt + "B0"))
+    return w
+
+
+class AirfoilDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Airfoil analysis (panel method) — {APP_NAME}")
+        self.resize(1280, 820)
+        self.code = QLineEdit("2412")
+        self.code.setToolTip("NACA 4-digit code (e.g. 0012, 2412, 4415)")
+        self.code.editingFinished.connect(self._from_code)
+        load = button("Load .dat…", "ghost", "folder", "Airfoil coordinates (UIUC / XFOIL Selig or Lednicer format)")
+        load.clicked.connect(self._load)
+        row = QHBoxLayout()
+        row.addWidget(self.code, 1)
+        row.addWidget(load)
+        rw = QWidget()
+        rw.setLayout(row)
+        self.panels = QSpinBox()
+        self.panels.setRange(40, 400)
+        self.panels.setValue(160)
+        self.panels.setSingleStep(20)
+        self.re = _spin(1e4, 1e9, 3e6, 0, "", 1e5, "Chord Reynolds number (drag and the stall limit)")
+        self.a_lo = _spin(-30.0, 0.0, -10.0, 1, "°", 1.0)
+        self.a_hi = _spin(0.0, 30.0, 20.0, 1, "°", 1.0)
+        self.a_step = _spin(0.1, 5.0, 0.5, 1, "°", 0.1)
+        self.alpha = QSlider(Qt.Orientation.Horizontal)
+        self.alpha.setRange(-200, 250)
+        self.alpha.setValue(50)
+        self.alpha_lbl = QLabel("α = 5.0°")
+        form = QFormLayout()
+        form.addRow("Airfoil", rw)
+        form.addRow("Panels", self.panels)
+        form.addRow("Reynolds number", self.re)
+        form.addRow("α from", self.a_lo)
+        form.addRow("α to", self.a_hi)
+        form.addRow("α step", self.a_step)
+        form.addRow(self.alpha_lbl, self.alpha)
+        self.info = QLabel("")
+        self.info.setFont(mono_font(10))
+        self.info.setWordWrap(True)
+        exp = button("Export polar CSV…", "ghost", "", "α, CL (viscous estimate and inviscid), CD, Cm")
+        exp.clicked.connect(self._export)
+        note = QLabel("Hess-Smith panel method: inviscid pressures and lift (close to wind-tunnel data while the "
+                      "flow stays attached); the viscous CL is 0.9 × inviscid. Stall from the Valarezo-Chin "
+                      "pressure-recovery limit; drag from skin friction with a thickness form factor. Expect "
+                      "±15 % on CL,max (more for thick, cambered trailing-edge stallers).")
+        note.setWordWrap(True)
+        note.setProperty("role", "muted")
+        left = QVBoxLayout()
+        left.addLayout(form)
+        left.addWidget(exp)
+        left.addWidget(self.info, 1)
+        left.addWidget(note)
+        lw = QWidget()
+        lw.setLayout(left)
+        lw.setMaximumWidth(380)
+        self.p_cp = _plot("x / c", "Cp", legend=True)
+        self.p_cp.getPlotItem().invertY(True)
+        self.c_up = self.p_cp.plot(name="upper", pen=pg.mkPen(PALETTE.cyan, width=2))
+        self.c_lo = self.p_cp.plot(name="lower", pen=pg.mkPen(PALETTE.warning, width=2))
+        self.p_shape = _plot("x / c", "y / c")
+        self.p_shape.setAspectLocked(True)
+        self.c_shape = self.p_shape.plot(pen=pg.mkPen(PALETTE.text, width=1.5), fillLevel=None)
+        self.p_cl = _plot("α (°)", "CL", legend=True, corner=(-8, -8))
+        self.c_cl = self.p_cl.plot(name="viscous estimate", pen=pg.mkPen(PALETTE.cyan, width=2))
+        self.c_cli = self.p_cl.plot(name="inviscid", pen=pg.mkPen(PALETTE.text_muted, width=1,
+                                                                 style=Qt.PenStyle.DashLine))
+        self.c_stall = self.p_cl.plot(name="estimated stall", pen=None, symbol="x", symbolSize=12,
+                                      symbolPen=pg.mkPen(PALETTE.danger, width=2))
+        self.now = [pg.InfiniteLine(angle=90, pen=pg.mkPen("#FFFFFF", width=1, style=Qt.PenStyle.DotLine))
+                    for _ in range(2)]
+        self.p_cl.addItem(self.now[0], ignoreBounds=True)
+        self.p_polar = _plot("CD", "CL")
+        self.c_polar = self.p_polar.plot(pen=pg.mkPen(PALETTE.success, width=2))
+        self.p_cm = _plot("α (°)", "Cm (¼ chord)")
+        self.c_cm = self.p_cm.plot(pen=pg.mkPen(PALETTE.indigo, width=2))
+        self.p_cm.addItem(self.now[1], ignoreBounds=True)
+        grid = QGridLayout()
+        grid.addWidget(_card("Pressure distribution", self.p_cp), 0, 0)
+        grid.addWidget(_card("Section", self.p_shape), 0, 1)
+        grid.addWidget(_card("Lift curve", self.p_cl), 1, 0)
+        grid.addWidget(_card("Drag polar", self.p_polar), 1, 1)
+        grid.addWidget(_card("Pitching moment", self.p_cm), 2, 0, 1, 2)
+        root = QHBoxLayout(self)
+        root.addWidget(lw)
+        root.addLayout(grid, 1)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(250)
+        self._timer.timeout.connect(self.recompute)
+        for w in (self.re, self.a_lo, self.a_hi, self.a_step):
+            w.valueChanged.connect(lambda _v: self._timer.start())
+        self.panels.valueChanged.connect(lambda _v: (self._prepare(), self._timer.start()))
+        self.alpha.valueChanged.connect(lambda _v: self._show_alpha())
+        self.outline: Optional[np.ndarray] = None
+        self.name = ""
+        self.nodes: Optional[np.ndarray] = None
+        self.polar: Optional[pm.Polar] = None
+        self._from_code()
+
+    # -- input -----------------------------------------------------------------------------------
+    def _from_code(self) -> None:
+        code = self.code.text().strip()
+        try:
+            self.outline = naca_outline(code, 240)
+        except Exception as exc:  # noqa: BLE001 - a malformed code
+            self.info.setText(f"Not a NACA 4-digit code: {exc}")
+            return
+        self.name = f"NACA {code}"
+        self._prepare()
+        self.recompute()
+
+    def _load(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Load airfoil", str(get_paths().root),
+                                              "Airfoil coordinates (*.dat *.txt *.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            self.name, self.outline = read_airfoil_dat(path)
+        except Exception as exc:  # noqa: BLE001
+            self.info.setText(f"Could not read the file: {exc}")
+            return
+        self.code.setText(self.name)
+        self._prepare()
+        self.recompute()
+
+    def _prepare(self) -> None:
+        if self.outline is not None:
+            self.nodes = pm.prepare(self.outline, self.panels.value())
+            self.c_shape.setData(self.nodes[:, 0], self.nodes[:, 1])
+
+    # -- results -----------------------------------------------------------------------------------
+    def recompute(self) -> None:
+        if self.nodes is None:
+            return
+        lo, hi = self.a_lo.value(), self.a_hi.value()
+        alphas = np.arange(lo, hi + 1e-9, max(self.a_step.value(), 0.1))
+        if len(alphas) < 3:
+            return
+        p = pm.polar(self.nodes, alphas, self.re.value())
+        self.polar = p
+        self.c_cli.setData(p.alpha, p.cl_inviscid)
+        self.c_cm.setData(p.alpha, p.cm)
+        attached = np.ones_like(p.alpha, dtype=bool)
+        if math.isfinite(p.stall_alpha):
+            attached &= p.alpha <= p.stall_alpha
+            self.c_stall.setData([p.stall_alpha], [p.cl_max])
+        else:
+            self.c_stall.setData([], [])
+        if math.isfinite(p.stall_negative):
+            attached &= p.alpha >= p.stall_negative
+        self.c_cl.setData(p.alpha[attached], p.cl[attached])          # the viscous estimate ends at stall
+        self.c_polar.setData(p.cd[attached], p.cl[attached])
+        ld = p.cl[attached] / np.maximum(p.cd[attached], 1e-9)
+        k = int(np.argmax(ld)) if ld.size else 0
+        cm0 = float(np.interp(p.alpha_zero_lift, p.alpha, p.cm))
+        lines = [f"{self.name}: t/c {p.t_c * 100:.1f} %, Re {self.re.value():,.0f}",
+                 f"CLα {p.cl_alpha * math.pi / 180:.4f} /° ({p.cl_alpha:.2f} /rad; thin-airfoil 2π = 6.28 inviscid)",
+                 f"Zero-lift α {p.alpha_zero_lift:+.2f}°, Cm0 {cm0:+.4f}"]
+        if math.isfinite(p.stall_alpha):
+            lines.append(f"Stall ≈ {p.stall_alpha:.1f}°, CL,max ≈ {p.cl_max:.2f}"
+                         + (f"; negative stall ≈ {p.stall_negative:.1f}°" if math.isfinite(p.stall_negative) else ""))
+        else:
+            lines.append("No stall within the α range (extend it).")
+        if ld.size:
+            lines.append(f"Best L/D ≈ {ld[k]:.0f} at α {p.alpha[attached][k]:.1f}° (CL {p.cl[attached][k]:.2f}, "
+                         f"CD {p.cd[attached][k]:.4f})")
+        self.info.setText("\n".join(lines))
+        self._show_alpha()
+
+    def _show_alpha(self) -> None:
+        a = self.alpha.value() / 10.0
+        self.alpha_lbl.setText(f"α = {a:.1f}°")
+        for ln in self.now:
+            ln.setPos(a)
+        if self.nodes is None:
+            return
+        s = pm.solve(self.nodes, a)
+        up, lo = s.upper, ~s.upper
+        self.c_up.setData(s.x[up], s.cp[up])
+        self.c_lo.setData(s.x[lo][::-1], s.cp[lo][::-1])
+        self.p_cp.setTitle(f"CL {pm.VISCOUS_LIFT_FACTOR * s.cl:.3f} (inviscid {s.cl:.3f}) · Cm {s.cm_quarter:+.4f}",
+                           color=PALETTE.text_muted, size="9pt")
+
+    def _export(self) -> None:
+        if self.polar is None:
+            return
+        name = "".join(ch if ch.isalnum() else "_" for ch in self.name) or "airfoil"
+        path, _ = QFileDialog.getSaveFileName(self, "Export polar", str(get_paths().exports / f"{name}_polar.csv"),
+                                              "CSV (*.csv)")
+        if not path:
+            return
+        p = self.polar
+        with Path(path).open("w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["alpha_deg", "CL", "CL_inviscid", "CD", "Cm_quarter", "dCp"])
+            for row in zip(p.alpha, p.cl, p.cl_inviscid, p.cd, p.cm, p.delta_cp):
+                w.writerow([f"{v:.6g}" for v in row])

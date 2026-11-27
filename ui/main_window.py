@@ -508,6 +508,15 @@ class MainWindow(QMainWindow):
             m_dev.addAction(act)
             self._device_actions[dev] = act
 
+        m_tools = mb.addMenu("&Tools")
+        a(m_tools, "Airfoil analysis (panel method)…", self.open_airfoil_tool, "Ctrl+Shift+A",
+          "Cp distribution, lift curve, stall estimate and drag polar of a NACA or imported airfoil")
+        a(m_tools, "Aero calculator (atmosphere, Mach, Reynolds)…", self.open_aero_calc, "Ctrl+Shift+U",
+          "Standard atmosphere, flight-condition numbers, lift and stall speed")
+        a(m_tools, "Flight dynamics (trim, modes, response)…", self.open_flight_dynamics, "",
+          "Longitudinal stability from the last polar")
+        a(m_tools, "Propeller analysis (BEM)…", self.open_propeller_tool, "", "Blade-element momentum theory")
+
         m_help = mb.addMenu("&Help")
         a(m_help, "Help and shortcuts", self.show_help, "F1")
         a(m_help, "Guide (what everything means)…", lambda: __import__("ui.guide", fromlist=["show_guide"]).show_guide(self),
@@ -1519,6 +1528,20 @@ class MainWindow(QMainWindow):
         from ui.flight_dialog import FlightDialog
 
         dlg = FlightDialog(polar, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+
+    def open_airfoil_tool(self) -> None:
+        from ui.airfoil_dialog import AirfoilDialog
+
+        dlg = AirfoilDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+
+    def open_aero_calc(self) -> None:
+        from ui.aero_calc_dialog import AeroCalculator
+
+        dlg = AeroCalculator(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
 
