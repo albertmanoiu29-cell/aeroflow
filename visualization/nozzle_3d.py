@@ -175,8 +175,8 @@ class Nozzle3DView(QWidget):
         from ui.cfd_panel import ToggleSwitch
 
         self.hot_wall = ToggleSwitch("Hot nozzle glow", True,
-                                     "Colour the nozzle wall by its estimated temperature (about half the local gas "
-                                     "temperature), as on radiation-cooled nozzle extensions that glow orange")
+                                     "Colour the nozzle wall by its temperature from the heat-transfer model (Heat tab: "
+                                     "choose regenerative or radiation cooling) - radiation-cooled extensions glow")
         self.hot_wall.toggled.connect(lambda _c: self._update_walls())
         h.addWidget(self.hot_wall)
         h.addStretch(1)
@@ -298,7 +298,13 @@ class Nozzle3DView(QWidget):
             return
         pts = mesh.points
         rgb = np.tile(STEEL, (len(pts), 1))
-        if self.hot_wall.isChecked():
+        prof = getattr(s, "wall_temperature_profile", None)
+        if self.hot_wall.isChecked() and prof is not None:
+            # the heat-transfer model's wall temperature (Heat tab: cooling mode, emissivity...)
+            t_wall = np.interp(pts[:, 0], prof[0], prof[1], left=float(prof[1][0]), right=float(prof[1][-1]))
+            e = np.clip((t_wall - 650.0) / 800.0, 0.0, 1.0) ** 1.2
+            rgb = rgb * (1.0 - e[:, None]) + blackbody_rgb(t_wall) * e[:, None] * 1.6
+        elif self.hot_wall.isChecked():
             lay, solver = s.layout_, s.solver
             r, _, _, p = solver.primitives()
             g = solver.gamma

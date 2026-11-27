@@ -235,6 +235,7 @@ class NozzleView(QWidget):
         self.shutdown_ms = 1.0
         self.auto_ignite = True
         self.gpu_single = True
+        self.wall_temperature_profile: Optional[tuple] = None   # (x, T_wall) from the heat-transfer model
         self.solver: Optional[nz.NozzleFlow] = None
         self.layout_: Optional[nz.NozzleLayout] = None
         self.scales: Optional[nz.Scales] = None

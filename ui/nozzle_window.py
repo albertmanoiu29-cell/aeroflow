@@ -36,8 +36,12 @@ from PySide6.QtWidgets import (
 from config.settings import APP_NAME, ORG_NAME, get_paths, isa_atmosphere
 from config.theme import PALETTE, make_icon, make_logo_icon, mono_font
 from core import nozzle as nz
+from core import nozzle_design as nd
 from ui.cfd_panel import AccordionCard, SegmentedControl, ToggleSwitch, button, compact_combo, labeled_row, scroll_wrap
 from ui.device_selector import DeviceSelector
+from ui.nozzle_tools import (
+    CompareTab, DesignTab, HeatTab, NoiseTab, altitude_curve, build_report_html, plot_image, widget_image, write_report,
+)
 from ui.supersonic_window import ValueSlider
 from visualization.nozzle_view import (
     FLAMES, NOZZLE_RESOLUTIONS, EngineSetup, NField, NozzleView, default_resolution, flame_for, fmt_force,
@@ -107,9 +111,12 @@ def _dspin(lo: float, hi: float, val: float, dec: int = 2, suffix: str = "", ste
 def _card(title: str, content: QWidget) -> QWidget:
     """A titled chart card whose title wraps, so a long title never forces the panel wider."""
     frame = _plain_card(title, content)
+    from PySide6.QtWidgets import QSizePolicy
+
     for lbl in frame.findChildren(QLabel):
         lbl.setWordWrap(True)
         lbl.setMinimumWidth(1)
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     return frame
 
 
@@ -310,7 +317,61 @@ class NozzleWindow(QMainWindow):
                                  "Steps per frame. Higher reaches steady state faster but lowers the frame rate.")
         self.speed.slider.valueChanged.connect(lambda _v: self.view.set_speed(self.speed.value()))
         card.add(self.speed)
+        # ascent: the engine climbs through the standard atmosphere while it fires
+        self.asc_top = _dspin(1.0, 80.0, 40.0, 1, "km", 5.0, "Altitude at the end of the climb")
+        self.asc_time = _dspin(0.5, 500.0, 20.0, 1, "ms", 5.0, "Simulated time of the climb (compressed: a real "
+                               "ascent takes minutes; the plume adapts within milliseconds)")
+        grid = QGridLayout()
+        grid.addWidget(labeled_row("Climb to", self.asc_top), 0, 0)
+        grid.addWidget(labeled_row("over", self.asc_time), 0, 1)
+        card.add_layout(grid)
+        self.btn_ascent = button("Fly an ascent", "ghost", "plane", "Ignite (if needed) and climb from the current "
+                                 "altitude: watch the plume widen and the thrust grow as the air thins")
+        self.btn_ascent.setCheckable(True)
+        self.btn_ascent.toggled.connect(self._toggle_ascent)
+        card.add(self.btn_ascent)
+        self._ascent: Optional[tuple[float, float, float, float]] = None
+        self._ascent_pts: list[tuple[float, float]] = []
         return card
+
+    def _toggle_ascent(self, on: bool) -> None:
+        if not on:
+            self._ascent = None
+            self.btn_ascent.setText("Fly an ascent")
+            return
+        self.t_alt.setChecked(True)
+        if self.view.engine_state() in ("READY", "SHUT DOWN"):
+            self._ignite()
+        elif not self.view.running:
+            self.view.start()
+        t_now = self.view.meas.get("time_s", 0.0) * 1e3
+        start_after = self.ramp.value() * 1.5 if self.view.engine_state() == "IGNITION" else 0.0
+        self._ascent = (t_now + start_after, self.asc_time.value(), self.alt.value(), self.asc_top.value())
+        self._ascent_pts = []
+        self.btn_ascent.setText("Stop the ascent")
+        self.status_label.setText(f"Ascent: {self.alt.value():g} → {self.asc_top.value():g} km over "
+                                  f"{self.asc_time.value():g} ms of simulated time.")
+
+    def _advance_ascent(self, summ: dict) -> None:
+        if self._ascent is None:
+            return
+        t0, dur, h0, h1 = self._ascent
+        t = summ["meas"].get("time_s", 0.0) * 1e3
+        if t < t0:
+            return
+        frac = min((t - t0) / max(dur, 1e-9), 1.0)
+        h = h0 + (h1 - h0) * frac
+        if abs(h - self.alt.value()) > 0.05:
+            self.alt.setValue(h)
+        avg = summ["avg"]
+        if avg.get("thrust") and summ["state"] == "FIRING":
+            self._ascent_pts.append((h, avg["thrust"] / 1e3))
+            pts = np.asarray(self._ascent_pts)
+            self.c_alt_sim.setData(pts[:, 0], pts[:, 1])
+        if frac >= 1.0:
+            self.btn_ascent.setChecked(False)
+            self.status_label.setText(f"Ascent complete at {h1:g} km. The simulated thrust points are on the "
+                                      "Altitude tab.")
 
     def _card_presets(self) -> QWidget:
         card = AccordionCard("Presets")
@@ -331,6 +392,11 @@ class NozzleWindow(QMainWindow):
         self.prop.addItem(CUSTOM)
         self.prop.activated.connect(lambda _i: self._propellant_selected())
         card.add(self.prop)
+        self.of = _dspin(0.5, 12.0, 2.6, 2, "", 0.1, "Oxidiser-to-fuel mass ratio. γ, molar mass and chamber "
+                         "temperature follow from approximate equilibrium chemistry tables.")
+        self.row_of = labeled_row("Mixture ratio O/F", self.of)
+        card.add(self.row_of)
+        self.of.valueChanged.connect(lambda _v: self._of_edited())
         self.gamma = _dspin(1.05, 1.67, 1.22, 3, "", 0.01, "Ratio of specific heats of the exhaust (frozen)")
         self.molar = _dspin(2.0, 60.0, 22.5, 2, "kg/kmol", 0.5, "Mean molar mass of the exhaust gas")
         self.tc = _dspin(100.0, 4500.0, 3650.0, 0, "K", 25.0, "Combustion (chamber stagnation) temperature")
@@ -480,6 +546,10 @@ class NozzleWindow(QMainWindow):
         grid.addWidget(exp, 1, 0)
         grid.addWidget(fit, 1, 1)
         grid.addWidget(zoom, 2, 0)
+        pdf = button("PDF report…", "ghost", "export", "A report with the inputs, results table, the flow views and "
+                                                     "every chart")
+        pdf.clicked.connect(self._export_pdf)
+        grid.addWidget(pdf, 2, 1)
         card.add_layout(grid)
         card.add(_muted("Scroll to zoom, drag to pan; hover the flow for local values."))
         return card
@@ -602,7 +672,9 @@ class NozzleWindow(QMainWindow):
         cll.addWidget(_muted("Each pressure peak is a shock crossing the axis (one shock cell); white lines are "
                              "Mach disks."))
         cll.addWidget(self.ax_info)
-        tabs.addTab(cl, "Centre line")
+        self.profiles = QTabWidget()
+        self.profiles.currentChanged.connect(lambda _i: self._refresh(force=True))
+        self.profiles.addTab(cl, "Centre line")
         # exit plane
         self.p_ex = self._plot("r / R_exit", "value")
         self.c_exm = self.p_ex.plot(name="Mach", pen=pg.mkPen(PALETTE.cyan, width=2))
@@ -612,7 +684,7 @@ class NozzleWindow(QMainWindow):
         self.p_ex.addItem(self.l_exm, ignoreBounds=True)
         self.ex_info = _muted("Dashed: 1-D exit Mach number. A real nozzle's exit flow is not uniform: the Mach number "
                               "and pressure vary across the exit (the 1-D theory gives their average).")
-        tabs.addTab(self._tab(_card("Across the exit plane", self.p_ex), self.ex_info), "Exit plane")
+        self.profiles.addTab(self._tab(_card("Across the exit plane", self.p_ex), self.ex_info), "Exit plane")
         # wall pressure
         self.p_wall = self._plot("x / R_throat (from the injector face)", "p_wall / p_c (log)")
         self.p_wall.setLogMode(y=True)
@@ -625,13 +697,20 @@ class NozzleWindow(QMainWindow):
                                      label="pₐ", labelOpts={"color": "#FFFFFF", "position": 0.1})
         self.p_wall.addItem(self.l_sum, ignoreBounds=True)
         self.p_wall.addItem(self.l_amb, ignoreBounds=True)
+        self.c_sch = self.p_wall.plot(name="separation limit (Schmucker)",
+                                      pen=pg.mkPen(PALETTE.warning, width=1.5, style=Qt.PenStyle.DashLine))
         self.wall_info = _muted("Where the wall pressure falls well below the ambient, a real (viscous) nozzle separates "
                                 "from the wall; the inviscid simulation shows the shock that a separation would start.")
-        tabs.addTab(self._tab(_card("Pressure along the inner wall", self.p_wall), self.wall_info), "Wall")
+        self.sep_info = _muted("")
+        self.profiles.addTab(self._tab(_card("Pressure along the inner wall", self.p_wall), self.sep_info,
+                                       self.wall_info), "Wall")
+        tabs.addTab(self.profiles, "Profiles")
         # altitude
         self.p_altf = self._plot("altitude (km)", "thrust (kN)")
         self.c_altf = self.p_altf.plot(name="thrust", pen=pg.mkPen(PALETTE.cyan, width=2))
         self.c_altsep = self.p_altf.plot(name="separation likely", pen=pg.mkPen(PALETTE.danger, width=3))
+        self.c_alt_sim = self.p_altf.plot(name="simulated (ascent)", pen=None, symbol="o", symbolSize=6,
+                                          symbolBrush=pg.mkBrush(PALETTE.warning), symbolPen=None)
         self.p_alti = self._plot("altitude (km)", "Isp (s)", legend=False)
         self.c_alti = self.p_alti.plot(pen=pg.mkPen(PALETTE.success, width=2))
         self.p_alti.setXLink(self.p_altf)
@@ -650,6 +729,18 @@ class NozzleWindow(QMainWindow):
         all_.addWidget(_card("Specific impulse vs altitude", self.p_alti), 1)
         all_.addWidget(self.alt_info)
         tabs.addTab(al, "Altitude")
+        self.heat = HeatTab()
+        self.heat.wall_profile_changed.connect(self._wall_profile)
+        tabs.addTab(self.heat, "Heat")
+        self.design = DesignTab()
+        self.design.use_mixture_ratio.connect(lambda of: self.of.setValue(of))
+        self.design.apply_expansion_ratio.connect(self._apply_eps)
+        tabs.addTab(self.design, "Design")
+        self.noise = NoiseTab()
+        tabs.addTab(self.noise, "Noise")
+        self.compare = CompareTab(self._snapshot_engine)
+        tabs.addTab(self.compare, "Compare")
+        self._static_key = None
         # contour
         self.p_geo = self._plot("x (mm)", "r (mm)", legend=False)
         self.p_geo.setAspectLocked(True)
@@ -670,10 +761,7 @@ class NozzleWindow(QMainWindow):
         try:
             self.preset.setCurrentText(name)
             self.prop.setCurrentText(p["prop"])
-            prop = nz.PROPELLANTS[p["prop"]]
-            self.gamma.setValue(prop.gamma)
-            self.molar.setValue(prop.molar_mass)
-            self.tc.setValue(prop.chamber_temperature)
+            self._set_propellant(p["prop"])
             self.feed_mode.set_index(0)
             self.pc.setValue(p["pc"])
             g = replace(nz.NozzleGeometry(), **p["geom"])
@@ -710,23 +798,58 @@ class NozzleWindow(QMainWindow):
     def _propellant_selected(self) -> None:
         name = self.prop.currentText()
         if name in nz.PROPELLANTS:
-            p = nz.PROPELLANTS[name]
             self._loading = True
-            self.gamma.setValue(p.gamma)
-            self.molar.setValue(p.molar_mass)
-            self.tc.setValue(p.chamber_temperature)
+            self._set_propellant(name)
             self._loading = False
         self._mark_custom()
         self._schedule()
+
+    def _set_propellant(self, name: str) -> None:
+        """Fill γ, molar mass and chamber temperature for preset propellant ``name`` (at its usual O/F)."""
+        rng = nd.of_range(name)
+        self.row_of.setVisible(rng is not None)
+        if rng is not None:
+            self.of.setRange(*rng)
+            self.of.setValue(nd.DEFAULT_OF.get(name, 0.5 * (rng[0] + rng[1])))
+            gas = nd.gas_at_mixture_ratio(name, self.of.value())
+            self.gamma.setValue(gas.gamma)
+            self.molar.setValue(gas.molar_mass)
+            self.tc.setValue(gas.chamber_temperature)
+        else:
+            p = nz.PROPELLANTS[name]
+            self.gamma.setValue(p.gamma)
+            self.molar.setValue(p.molar_mass)
+            self.tc.setValue(p.chamber_temperature)
+
+    def _of_edited(self) -> None:
+        if self._loading:
+            return
+        name = self.prop.currentText()
+        if nd.of_range(name) is None:
+            return
+        gas = nd.gas_at_mixture_ratio(name, self.of.value())
+        self._loading = True
+        self.gamma.setValue(gas.gamma)
+        self.molar.setValue(gas.molar_mass)
+        self.tc.setValue(gas.chamber_temperature)
+        self._loading = False
+        self._mark_custom()
+        self._schedule()
+
+    def _current_of(self) -> Optional[float]:
+        return self.of.value() if self.row_of.isVisible() or nd.of_range(self.prop.currentText()) else None
 
     def _propellant_edited(self, *_a: object) -> None:
         if self._loading:
             return
         name = self.prop.currentText()
         p = nz.PROPELLANTS.get(name)
-        if p is not None and (abs(p.gamma - self.gamma.value()) > 1e-9 or abs(p.molar_mass - self.molar.value()) > 1e-9
-                              or abs(p.chamber_temperature - self.tc.value()) > 1e-9):
-            self.prop.setCurrentText(CUSTOM)
+        if p is not None:                            # a hand-edited gas is no longer the named propellant
+            ref = nd.gas_at_mixture_ratio(name, self.of.value()) if nd.of_range(name) else nz.Gas.of(p)
+            if (abs(ref.gamma - self.gamma.value()) > 1e-6 or abs(ref.molar_mass - self.molar.value()) > 1e-6
+                    or abs(ref.chamber_temperature - self.tc.value()) > 1e-6):
+                self.prop.setCurrentText(CUSTOM)
+                self.row_of.setVisible(False)
         self._mark_custom()
         self._schedule()
 
@@ -844,7 +967,9 @@ class NozzleWindow(QMainWindow):
             return
         setup = self._setup()
         p = nz.PROPELLANTS.get(self.prop.currentText())
-        self.prop_note.setText((p.note + ". " if p is not None else "Custom gas. ")
+        of_txt = (f"At O/F {self.of.value():.2f}. " if nd.of_range(self.prop.currentText()) else "")
+        note = p.note.split(",")[-1].strip().capitalize() if p is not None and nd.of_range(self.prop.currentText())             else (p.note if p is not None else "")
+        self.prop_note.setText(of_txt + (note + ". " if p is not None else "Custom gas. ")
                                + f"R = {setup.gas.gas_constant:.1f} J/(kg·K), c* = "
                                f"{nz.characteristic_velocity(setup.gas):.0f} m/s.")
         self.view.configure(setup)
@@ -878,6 +1003,7 @@ class NozzleWindow(QMainWindow):
         self.state_label.setText(f"<span style='color:{colour}'>● {state}</span>"
                                  + ("  <span style='color:#10B981'>steady</span>" if summ["steady"] else ""))
         self._sync_run_button()
+        self._advance_ascent(summ)
         self._refresh()
 
     def _refresh(self, force: bool = False) -> None:
@@ -887,15 +1013,24 @@ class NozzleWindow(QMainWindow):
         self._last_refresh = now
         summ = self.view.summary()
         self._refresh_table(summ)
-        tab = self.tabs.currentIndex()
-        if tab == 1:
+        if not hasattr(self, "compare"):              # still building the tabs
+            return
+        page = self.tabs.currentWidget()
+        name = self.tabs.tabText(self.tabs.currentIndex())
+        if name == "Live":
             self._refresh_live(summ)
-        elif tab == 2:
-            self._refresh_axis(summ)
-        elif tab == 3:
-            self._refresh_exit(summ)
-        elif tab == 4:
-            self._refresh_wall(summ)
+        elif page is self.profiles:
+            sub = self.profiles.tabText(self.profiles.currentIndex())
+            if sub == "Centre line":
+                self._refresh_axis(summ)
+            elif sub == "Exit plane":
+                self._refresh_exit(summ)
+            else:
+                self._refresh_wall(summ)
+        elif page is self.compare and force:
+            self.compare.refresh()
+        elif page is self.design and force:
+            self._refresh_design()
 
     def _refresh_table(self, summ: dict) -> None:
         th: Optional[nz.NozzlePerformance] = summ["theory"]
@@ -1043,6 +1178,24 @@ class NozzleWindow(QMainWindow):
             self.c_wall.setData([], [])
         self.l_sum.setPos(math.log10(max(0.4 * s.pa / s.pc, 1e-12)))
         self.l_amb.setPos(math.log10(max(s.pa / s.pc, 1e-12)))
+        g = s.gas.gamma
+        k_t = int(np.argmin(np.abs(x1 - s.geom.throat_x())))
+        mach = np.array([nz.mach_from_pressure_ratio(pp / s.pc, g) for pp in p1])
+        lim = np.array([nd.schmucker_separation_ratio(m, g) for m in mach]) * s.pa / s.pc
+        self.c_sch.setData(x1[k_t:] / rt, lim[k_t:])
+        theo = {c: nd.separation_point(s.geom, s.gas, s.pc, s.pa, c, s.planar) for c in ("summerfield", "schmucker")}
+        sim = None
+        if m and "wall_x" in m and len(m["wall_x"]):
+            xs, ps = m["wall_x"], m["wall_p"]
+            lim_sim = np.interp(xs, x1, lim * s.pc)
+            bad = np.nonzero((xs > s.geom.throat_x()) & (ps < lim_sim))[0]
+            sim = float(xs[bad[0]]) if bad.size else None
+
+        def where(x: Optional[float]) -> str:
+            return "attached to the exit" if x is None else f"separates at x = {x * 1e3:.0f} mm ({x / rt:.1f} Rt)"
+
+        self.sep_info.setText(f"Flow separation — 1-D: Summerfield {where(theo['summerfield'])}; Schmucker "
+                              f"{where(theo['schmucker'])}. Simulated wall pressure: {where(sim)} (Schmucker limit).")
 
     def _refresh_static(self) -> None:
         """Charts that depend only on the setup: altitude performance and the contour."""
@@ -1068,6 +1221,17 @@ class NozzleWindow(QMainWindow):
             lines.append(f"Grid cell {lay.dx * 1e3:.2f} mm · throat {lay.throat_cells:.1f} cells across")
         self.geo_info.setText("\n".join(lines))
         self.geom_note.setText(lines[0] + "\n" + lines[2])
+        key = (geom, s.gas, s.pc, s.planar)
+        if key != self._static_key:                  # heat transfer depends on the engine, not on the altitude
+            self._static_key = key
+            self.heat.set_setup(s)
+        th0 = self.view.theory
+        if th0 is not None:
+            self.noise.set_inputs(th0, 2.0 * geom.re, s.ta, th0.shock_cell_spacing)
+        if self.tabs.currentWidget() is self.design:
+            self._refresh_design()
+        if self.tabs.currentWidget() is self.compare:
+            self.compare.refresh()
         # altitude sweep
         alts = np.linspace(0.0, 60.0, 61)
         f, isp, sep = [], [], []
@@ -1106,6 +1270,104 @@ class NozzleWindow(QMainWindow):
                               "altitude, amber: the design altitude (pₑ = pₐ). Thrust rises with altitude as the ambient "
                               "pressure falls; below the design altitude the nozzle is overexpanded, above it "
                               "underexpanded.")
+
+    def _refresh_design(self) -> None:
+        self.design.set_setup(self.view.setup, self.prop.currentText(), self._current_of())
+
+    def _wall_profile(self, prof) -> None:
+        self.view.wall_temperature_profile = prof
+        if self.view3d is not None:
+            self.view3d._update_walls()
+
+    def _apply_eps(self, eps: float) -> None:
+        if self.contour.currentData() in (S, S.value):
+            self.contour.setCurrentIndex(list(nz.Contour).index(B))
+            self._sync_contour_ui()
+        self.eps.setValue(eps)
+        self.status_label.setText(f"Expansion ratio set to {eps:.1f}.")
+
+    def _snapshot_engine(self) -> dict:
+        """Settings, theory and the latest simulated values of the current engine (for the Compare tab)."""
+        s, th, avg = self.view.setup, self.view.theory, self.view.avg
+        sim_ok = bool(avg) and self.view.engine_state() in ("FIRING", "IGNITION")
+        rows = [("Propellant", self.prop.currentText()), ("Chamber pressure (bar)", s.pc / 1e5),
+                ("Throat Ø (mm)", s.geom.throat_diameter * 1e3), ("Exit Ø (mm)", 2.0 * s.geom.re * 1e3),
+                ("Expansion ratio ε", s.geom.area_ratio(s.planar)), ("Altitude / pₐ (kPa)", s.pa / 1e3),
+                ("Thrust, theory (kN)", th.thrust / 1e3 if th else None),
+                ("Thrust, simulated (kN)", avg["thrust"] / 1e3 if sim_ok else None),
+                ("Isp, theory (s)", th.isp if th else None), ("Isp, simulated (s)", avg["isp"] if sim_ok else None),
+                ("Vacuum Isp, theory (s)", th.isp_vacuum if th else None),
+                ("Mass flow (kg/s)", th.mass_flow if th else None), ("Exit Mach", th.exit_mach if th else None),
+                ("Exit pressure (kPa)", th.exit_pressure / 1e3 if th else None),
+                ("Regime", th.regime if th else None)]
+        label = f"{self.prop.currentText().split(' (')[0]}, ε {s.geom.area_ratio(s.planar):.1f}, {s.pc / 1e5:.0f} bar"
+        return {"label": label, "rows": rows, "values": dict(rows), "altitude_curve": altitude_curve(s)}
+
+    def _export_pdf(self) -> None:
+        default = get_paths().exports / f"nozzle_report_{time.strftime('%Y%m%d_%H%M%S')}.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "PDF report", str(default), "PDF (*.pdf)")
+        if not path:
+            return
+        self._refresh(force=True)
+        summ = self.view.summary()
+        s, th = summ["setup"], summ["theory"]
+        g = s.geom
+        tn, te = g.bell_angles()
+        inputs = [["Input", "Value"], ["Propellant", self.prop.currentText()],
+                  ["Mixture ratio O/F", f"{self.of.value():.2f}" if nd.of_range(self.prop.currentText()) else "—"],
+                  ["γ, molar mass, chamber T", f"{s.gas.gamma:.3f}, {s.gas.molar_mass:.2f} kg/kmol, "
+                                              f"{s.gas.chamber_temperature:.0f} K"],
+                  ["Chamber pressure", f"{s.pc / 1e5:.2f} bar"],
+                  ["Ambient", f"{s.pa / 1e3:.3f} kPa, {s.ta:.1f} K, flight Mach {s.flight_mach:.2f}"],
+                  ["Nozzle", f"{g.contour.value}; throat Ø {g.throat_diameter * 1e3:.1f} mm, exit Ø "
+                             f"{2 * g.re * 1e3:.1f} mm (ε {g.area_ratio(s.planar):.2f}), chamber Ø {2 * g.rc * 1e3:.1f} mm"],
+                  ["Contour angles", f"convergent {g.convergent_angle:.1f}°; "
+                                     + (f"bell θn {tn:.1f}°, θe {te:.1f}°" if g.contour is B
+                                        else f"cone {g.divergent_angle:.1f}°")],
+                  ["Grid", f"{self.resolution.currentText()}; {'planar slot' if s.planar else 'axisymmetric'}"]]
+        perf = [["Quantity", "Theory (1-D)", "Simulation"]]
+        for r in range(self.table.rowCount()):
+            perf.append([self.table.item(r, c).text() if self.table.item(r, c) else "" for c in range(3)])
+        regime = (f"<p><b>{th.regime}</b>: {th.regime_note}</p><p>State: {summ['state'].lower()}"
+                  f"{', steady' if summ['steady'] else ''}; simulated time "
+                  f"{summ['meas'].get('time_s', 0.0) * 1e3:.2f} ms.</p>") if th else ""
+        images = [("Flow (2-D section)", widget_image(self.view))]
+        if self.view3d is not None:
+            try:
+                from PySide6.QtGui import QImage as _QI
+
+                arr = self.view3d.plotter.screenshot(return_img=True)
+                h, w_ = arr.shape[:2]
+                img = _QI(arr.copy().data, w_, h, 3 * w_, _QI.Format.Format_RGB888).copy()
+                from ui.nozzle_tools import _png_b64
+
+                images.append(("Flow (3-D view)", _png_b64(img)))
+            except Exception:  # noqa: BLE001 - the 3-D view may not be available
+                pass
+        for cap, pw in (("Thrust, chamber pressure and mass flow from ignition", self.p_thrust),
+                        ("Chamber pressure", self.p_pc), ("Mass flow", self.p_md),
+                        ("Pressure along the axis", self.p_axp), ("Mach number and temperature along the axis", self.p_axm),
+                        ("Across the exit plane", self.p_ex), ("Pressure along the nozzle wall", self.p_wall),
+                        ("Thrust vs altitude", self.p_altf), ("Isp vs altitude", self.p_alti),
+                        ("Heat flux into the wall", self.heat.p_q), ("Wall temperature", self.heat.p_t),
+                        ("Isp vs mixture ratio", self.design.p_of), ("Exhaust noise directivity", self.noise.p),
+                        ("Nozzle contour", self.p_geo)):
+            images.append((cap, plot_image(pw)))
+        sections = [("Operating point", regime),
+                    ("Heat transfer", f"<p>{self.heat.info.text()}</p>"),
+                    ("Exhaust noise", "<p>" + self.noise.info.text().replace(chr(10), "<br>") + "</p>")]
+        html_text = build_report_html(f"Rocket engine report — {self.prop.currentText()}", sections, images,
+                                      [("Inputs", inputs), ("Performance: theory and simulation", perf)])
+
+        def done(out: Optional[Path], err: str) -> None:
+            self.status_label.setText(f"PDF report saved: {out}" if out else f"PDF failed ({err}); the HTML report "
+                                      f"was saved next to it.")
+
+        try:
+            write_report(Path(path), html_text, done)
+            self.status_label.setText("Writing the PDF report…")
+        except OSError as exc:
+            self.status_label.setText(f"Report failed: {exc}")
 
     # -- media and export -----------------------------------------------------------------------------
     def _snapshot(self) -> None:
