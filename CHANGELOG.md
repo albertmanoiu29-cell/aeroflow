@@ -3,7 +3,7 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
-## [Unreleased]
+## [1.9.0] - 2026-11-27
 
 ### Added: aerospike nozzles
 - **Annular aerospike** as a new divergent-section type, with a preset.
