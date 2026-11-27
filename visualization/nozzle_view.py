@@ -78,6 +78,23 @@ FLAMES: dict[str, np.ndarray] = {
 }
 
 
+#: Strength of afterburning in the mixing layer by flame style (fuel-rich soot burning with air).
+AFTERBURN: dict[str, float] = {"orange": 0.32, "white": 0.38, "cyan": 0.14, "blue": 0.06}
+
+
+def _box_blur(a: np.ndarray, k: int) -> np.ndarray:
+    """Separable box blur of radius ``k`` (twice: close to a Gaussian), via cumulative sums."""
+    out = a.astype(np.float32)
+    for _ in range(2):
+        for axis in (0, 1):
+            c = np.cumsum(np.pad(out, [(k + 1, k) if ax == axis else (0, 0) for ax in (0, 1)], mode="edge"),
+                          axis=axis, dtype=np.float32)
+            hi = np.take(c, np.arange(2 * k + 1, c.shape[axis]), axis=axis)
+            lo = np.take(c, np.arange(0, c.shape[axis] - 2 * k - 1), axis=axis)
+            out = (hi - lo) / (2 * k + 1)
+    return out
+
+
 def flame_for(propellant_name: str) -> str:
     n = propellant_name.lower()
     if "lh2" in n or "hydrogen)" in n or "hydrazine" in n:
@@ -235,6 +252,9 @@ class NozzleView(QWidget):
         self.shutdown_ms = 1.0
         self.auto_ignite = True
         self.gpu_single = True
+        self.afterburning = True
+        self.bloom = True
+        self.smoke = True
         self.wall_temperature_profile: Optional[tuple] = None   # (x, T_wall) from the heat-transfer model
         self.solver: Optional[nz.NozzleFlow] = None
         self.layout_: Optional[nz.NozzleLayout] = None
@@ -601,7 +621,8 @@ class NozzleView(QWidget):
             return np.zeros_like(r)
         return np.clip((s - sa) / d, 0.0, 1.0)
 
-    def field_values(self, which: NField) -> tuple[np.ndarray, float, float, str, str, tuple[str, str]]:
+    def field_values(self, which: NField, effects: float = 1.0) -> tuple[np.ndarray, float, float, str, str,
+                                                                         tuple[str, str]]:
         """``(values, lo, hi, lut, title, (lo label, hi label))`` of a field on the half plane."""
         solver, sc, th, s = self.solver, self.scales, self.theory, self.setup
         r, u, v, p = (a.astype(np.float32) for a in solver.primitives())     # display maths in single precision
@@ -637,8 +658,17 @@ class NozzleView(QWidget):
         tn = g * p / r * sc.temperature / max(s.gas.chamber_temperature, 1.0)
         y = self._exhaust_fraction(r, p)
         glow = y ** 0.7 * np.clip(tn, 0.0, 1.5) ** 3.0
+        if self.afterburning and effects > 0.0:
+            # fuel-rich exhaust meeting the entrained air burns again in the mixing layer (strongest where the
+            # two are mixed half and half): a sooty orange sheath for kerosene and solids, faint for hydrogen
+            ab = AFTERBURN.get(s.flame, 0.0)
+            if ab > 0.0 and s.gas.chamber_temperature > 1500.0:
+                glow = glow + effects * ab * (4.0 * y * (1.0 - y)) ** 1.5 * np.clip(tn, 0.15, 1.0) ** 0.5
         glow = 1.0 - np.exp(-2.4 * glow)
-        return glow, 0.0, 1.0, s.flame, "Exhaust glow (hot gas, brightest behind shocks)", ("dark", "white-hot")
+        if self.bloom and effects >= 1.0:
+            glow = np.clip(glow + 0.35 * _box_blur(glow ** 2, max(2, solver.ny // 40)), 0.0, 1.0)
+        return glow.astype(np.float32), 0.0, 1.0, s.flame, "Exhaust glow (hot gas, brightest behind shocks)", \
+            ("dark", "white-hot")
 
     def _render(self) -> None:
         solver, lay = self.solver, self.layout_
@@ -655,6 +685,13 @@ class NozzleView(QWidget):
             sidx = (sch * np.float32(31.0)).astype(np.uint8)
             sidx[solver.solid_int] = 32
             rgb = self._glow_table(lut_name)[idx, sidx]
+            if self.smoke and self.setup.flame == "white":
+                # a solid motor's alumina smoke: grey-white where exhaust has mixed out and cooled
+                r_, _, _, p_ = (a.astype(np.float32) for a in solver.primitives())
+                y = self._exhaust_fraction(r_, p_)
+                sm = (np.clip(y, 0.0, 1.0) * (1.0 - val) * 0.55)[..., None]
+                rgb = np.clip(rgb * (1.0 - sm) + 200.0 * sm, 0, 255).astype(np.uint8)
+                rgb[solver.solid_int] = self.WALL_RGB
         else:
             idx16 = idx.astype(np.uint16)
             idx16[solver.solid_int] = 256
@@ -847,6 +884,10 @@ class NozzleView(QWidget):
 
     def set_colormap(self, name: str) -> None:
         self.cmap = name
+        self._render()
+
+    def set_flame_effects(self, afterburning: bool, bloom: bool, smoke: bool) -> None:
+        self.afterburning, self.bloom, self.smoke = afterburning, bloom, smoke
         self._render()
 
     def set_overlays(self, sonic: bool, markers: bool, theory: bool, streamlines: bool) -> None:

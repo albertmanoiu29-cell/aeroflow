@@ -586,6 +586,18 @@ class NozzleWindow(QMainWindow):
             t.toggled.connect(lambda _c: self.view.set_overlays(self.t_sonic.isChecked(), self.t_marks.isChecked(),
                                                                 self.t_theory.isChecked(), self.t_stream.isChecked()))
         card.add_layout(grid)
+        fx = QGridLayout()
+        self.t_after = ToggleSwitch("Afterburning", True, "Fuel-rich exhaust burning again with the entrained air "
+                                    "in the mixing layer (glow view)")
+        self.t_bloom = ToggleSwitch("Bloom", True, "Bright gas bleeds light into its surroundings, as on a camera")
+        self.t_smoke = ToggleSwitch("Smoke", True, "The alumina smoke trail of solid motors")
+        fx.addWidget(self.t_after, 0, 0)
+        fx.addWidget(self.t_bloom, 0, 1)
+        fx.addWidget(self.t_smoke, 1, 0)
+        for tg in (self.t_after, self.t_bloom, self.t_smoke):
+            tg.toggled.connect(lambda _c: self.view.set_flame_effects(self.t_after.isChecked(), self.t_bloom.isChecked(),
+                                                                      self.t_smoke.isChecked()))
+        card.add_layout(fx)
         return card
 
     # -- analysis tabs --------------------------------------------------------------------------------

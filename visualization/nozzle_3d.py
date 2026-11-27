@@ -179,6 +179,10 @@ class Nozzle3DView(QWidget):
                                      "choose regenerative or radiation cooling) - radiation-cooled extensions glow")
         self.hot_wall.toggled.connect(lambda _c: self._update_walls())
         h.addWidget(self.hot_wall)
+        self.t_particles = ToggleSwitch("Tracer particles", True,
+                                        "Particles carried by the flow: glowing exhaust and blue entrained air")
+        self.t_particles.toggled.connect(lambda _c: self._reset_particles())
+        h.addWidget(self.t_particles)
         h.addStretch(1)
         self.info = QLabel("")
         self.info.setProperty("role", "muted")
@@ -237,10 +241,122 @@ class Nozzle3DView(QWidget):
             self._key = key
             self._rebuild()
             return
+        moved = self._update_particles()
         if s.solver.steps == self._last_steps and s.field is self._last_field:
+            if moved:
+                self.plotter.render()
             return
         self._update_fields()
         self.plotter.render()
+
+    # -- tracer particles -------------------------------------------------------------------
+    N_EXHAUST = 2500
+    N_AIR = 900
+    CROSS_SECONDS = 3.0                 # the fastest particles cross the domain in about this long
+
+    def _reset_particles(self) -> None:
+        self._parts = None
+        self.plotter.remove_actor("particles")
+        if not self.t_particles.isChecked():
+            self.plotter.render()
+
+    def _spawn(self, n: int, air: bool) -> np.ndarray:
+        """(x, r, θ, age) of new particles: exhaust from the throat region, air from anywhere around the plume."""
+        s = self.source
+        lay, solver = s.layout_, s.solver
+        rng = self._rng
+        out = np.empty((n, 4))
+        if air:
+            r_lo = 1.3 * float(np.max(lay.wall_r))
+            r_hi = solver.ny * lay.dx * 0.97
+            out[:, 0] = rng.uniform(0.0, solver.nx * lay.dx * 0.9, n)
+            out[:, 1] = rng.uniform(r_lo, max(r_hi, r_lo * 1.01), n)
+        else:
+            x0 = lay.x_throat
+            out[:, 0] = x0 + rng.uniform(-0.3, 0.2, n) * float(np.min(lay.contour_r))
+            out[:, 1] = np.sqrt(rng.uniform(0.0, 1.0, n)) * 0.92 * float(np.min(lay.contour_r))
+        out[:, 2] = rng.uniform(0.0, 2.0 * math.pi, n)
+        out[:, 3] = rng.uniform(0.0, 1.0, n)               # staggered ages: no bursts
+        return out
+
+    def _update_particles(self) -> bool:
+        """Advect the particles through the current flow field (speed scaled for display). True if drawn."""
+        import pyvista as pv
+
+        s = self.source
+        if not self.t_particles.isChecked() or s.solver is None or s.engine_state() == "READY":
+            if self.plotter.actors.get("particles") is not None:
+                self.plotter.remove_actor("particles")
+                return True
+            return False
+        solver, lay = s.solver, s.layout_
+        if getattr(self, "_parts", None) is None or getattr(self, "_parts_key", None) != id(lay):
+            self._rng = np.random.default_rng(7)
+            self._parts = np.vstack([self._spawn(self.N_EXHAUST, False), self._spawn(self.N_AIR, True)])
+            self._air = np.zeros(len(self._parts), bool)
+            self._air[self.N_EXHAUST:] = True
+            self._parts_key = id(lay)
+        p = self._parts
+        r, u, v, pr = solver.primitives()
+        ny, nx = u.shape
+        dx = lay.dx
+        speed = np.hypot(u, v)
+        vmax = max(float(np.percentile(speed[~solver.solid_int], 99.5)), 1e-9)
+        length = nx * dx
+        dt = 0.1 * length / (self.CROSS_SECONDS * vmax)        # display time step (one refresh = 0.1 s)
+        fi = np.clip(p[:, 0] / dx - 0.5, 0.0, nx - 1.001)
+        fj = np.clip(p[:, 1] / dx - 0.5, 0.0, ny - 1.001)
+        i0, j0 = fi.astype(int), fj.astype(int)
+        wx, wy = fi - i0, fj - j0
+
+        def interp(f: np.ndarray) -> np.ndarray:
+            return ((1 - wx) * (1 - wy) * f[j0, i0] + wx * (1 - wy) * f[j0, i0 + 1]
+                    + (1 - wx) * wy * f[j0 + 1, i0] + wx * wy * f[j0 + 1, i0 + 1])
+
+        p[:, 0] += interp(u) * dt
+        p[:, 1] += interp(v) * dt
+        neg = p[:, 1] < 0.0                                   # through the axis: come out on the other side
+        p[neg, 1] = -p[neg, 1]
+        p[neg, 2] += math.pi
+        p[:, 3] += 0.1 / (2.5 * self.CROSS_SECONDS)
+        ii = np.clip((p[:, 0] / dx).astype(int), 0, nx - 1)
+        jj = np.clip((p[:, 1] / dx).astype(int), 0, ny - 1)
+        dead = ((p[:, 0] < 0) | (p[:, 0] >= length) | (p[:, 1] >= ny * dx) | solver.solid_int[jj, ii]
+                | (p[:, 3] > 1.0))
+        if dead.any():
+            ex = dead & ~self._air
+            ai = dead & self._air
+            if ex.any():
+                p[ex] = self._spawn(int(ex.sum()), False)
+                p[ex, 3] = 0.0
+            if ai.any():
+                p[ai] = self._spawn(int(ai.sum()), True)
+                p[ai, 3] = 0.0
+        pts = np.column_stack([p[:, 0], p[:, 1] * np.cos(p[:, 2]), p[:, 1] * np.sin(p[:, 2])])
+        # colour: exhaust by its local temperature (flame colours), air a cool blue
+        g = solver.gamma
+        tt = interp(g * pr / r) * s.scales.temperature / max(s.setup.gas.chamber_temperature, 1.0)
+        lut = s._lut_for(s.setup.flame if s.setup.flame in ("orange", "blue", "cyan", "white") else "orange")
+        k = np.clip((0.35 + 0.65 * np.clip(tt, 0.0, 1.0)) * 255, 0, 255).astype(int)
+        rgb = lut[k].astype(np.uint8)
+        rgb[self._air] = (110, 170, 255)
+        cloud = getattr(self, "_cloud", None)
+        if cloud is None or cloud.n_points != len(pts) or self.plotter.actors.get("particles") is None:
+            cloud = pv.PolyData(pts)
+            cloud.point_data["rgb"] = rgb
+            self._cloud = cloud
+            self.plotter.add_mesh(cloud, scalars="rgb", rgb=True, point_size=4.0, render_points_as_spheres=True,
+                                  name="particles", reset_camera=False, lighting=False)
+        else:
+            mapper_input = self.plotter.actors["particles"].GetMapper().GetInput()
+            from vtkmodules.util.numpy_support import vtk_to_numpy
+
+            vtk_to_numpy(mapper_input.GetPoints().GetData())[:] = pts
+            mapper_input.GetPoints().Modified()
+            arr = mapper_input.GetPointData().GetArray("rgb")
+            vtk_to_numpy(arr)[:] = rgb
+            arr.Modified()
+        return True
 
     def _rebuild(self) -> None:
         """Rebuild the whole scene (new grid, geometry, mode or field)."""
@@ -259,6 +375,7 @@ class Nozzle3DView(QWidget):
             p.set_background(CFD_BACKGROUND_BOTTOM, top=CFD_BACKGROUND_TOP)
         self._vol = None
         self._wall_mesh = None
+        self._cloud = None
         lay = s.layout_
         planar = s.setup.planar
         # the engine: a 270° cut-away shell (a planar nozzle is extruded across its width instead)
@@ -409,7 +526,7 @@ class Nozzle3DView(QWidget):
         """The selected field on the half plane, scaled to 0..1 inside the exhaust and 0 in the surrounding air
         (so the volume shows the plume itself)."""
         s = self.source
-        val, lo, hi, _, _, _ = s.field_values(s.field)
+        val, lo, hi, _, _, _ = s.field_values(s.field, effects=0.25)    # 3-D: a quarter of the afterburning
         v = np.clip((np.nan_to_num(val, nan=lo) - lo) / max(hi - lo, 1e-12), 0.0, 1.0).astype(np.float32)
         if s.field is not NField.GLOW:
             y = self._exhaust() if y is None else y
