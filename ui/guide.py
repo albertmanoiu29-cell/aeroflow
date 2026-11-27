@@ -117,6 +117,17 @@ gas-dynamics theory.</p>""",
 <p>A real-time 2-D wind tunnel (lattice-Boltzmann). Behind a cylinder above Re ≈ 47 the wake sheds a <b>von Kármán
 vortex street</b> at a Strouhal number near 0.2; an airfoil at high angle of attack <b>stalls</b> as the flow
 separates. Paint walls with the mouse to build your own obstacles.</p>""",
+    "Airfoil, wing and calculator tools": """
+<h2>Airfoil, wing and calculator tools (Tools menu)</h2>
+<p><b>Airfoil analysis</b> (Ctrl+Shift+A) solves a NACA 4-digit or imported airfoil with the <b>panel method</b>.
+It shows the pressure distribution, the lift curve, the pitching moment and an estimated drag polar. The stall
+estimate uses the Valarezo-Chin criterion: the flow separates once the pressure rise from the suction peak to the
+trailing edge passes a limit that depends on the Reynolds number.</p>
+<p><b>Wing analysis</b> (Ctrl+Shift+W) applies <b>Prandtl's lifting line</b> to a tapered, twisted wing built from
+that section. It gives the spanwise lift (compared with the ideal elliptic loading), the induced drag, the span
+efficiency, and where the wing stalls first. Washout moves the stall inboard, away from the ailerons.</p>
+<p>The <b>Aero calculator</b> (Ctrl+Shift+U) gives the standard atmosphere at any altitude (ISA + ΔT), the Mach and
+Reynolds numbers, the dynamic pressure, the equivalent airspeed, and a wing's lift and stall speed.</p>""",
     "Keyboard shortcuts": """
 <h2>Keyboard shortcuts</h2>
 <table cellpadding='4'>
@@ -125,6 +136,7 @@ separates. Paint walls with the mouse to build your own obstacles.</p>""",
 <tr><td>F1</td><td>Help · in the Nozzle Lab: this guide</td></tr>
 <tr><td>Ctrl+Z / Ctrl+Y</td><td>Nozzle Lab: undo / redo a change</td></tr>
 <tr><td>Ctrl+S / Ctrl+O</td><td>Nozzle Lab: save / open an engine design</td></tr>
+<tr><td>Ctrl+Shift+A / W / U</td><td>Airfoil analysis / wing analysis / aero calculator</td></tr>
 </table>""",
 }
 

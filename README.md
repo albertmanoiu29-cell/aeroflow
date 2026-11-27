@@ -25,6 +25,17 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## What's new since 1.8 (next release)
+
+- **Aerospike nozzles** in the Rocket Nozzle Lab: annular, or linear in planar mode, with a truncated plug, a live simulation and altitude compensation in theory.
+- **Motor tab:** BATES solid-motor thrust curves with the motor class and RASP .eng export (for OpenRocket and RockSim).
+- **Flight tab:** rocket ascent over a round Earth, with an optional upper stage and orbit detection.
+- **Contour export:** CSV, DXF and a 3-D-printable STL.
+- **Tools menu:**
+  - airfoil analysis (panel method with a stall estimate);
+  - wing analysis (lifting line);
+  - an aero calculator.
+
 ## What's new in 1.8
 
 - **Rocket Nozzle Lab design tools:**

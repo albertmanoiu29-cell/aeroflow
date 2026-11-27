@@ -3,6 +3,42 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [Unreleased]
+
+### Added: aerospike nozzles
+- **Annular aerospike** as a new divergent-section type, with a preset.
+  - **Shape:** the plug is the ideal isentropic spike for the expansion ratio (Angelino's method), cut to a flat base at the plug length you choose. An annular chamber feeds an inclined, ring-shaped throat at the cowl lip.
+  - **Planar mode** gives a **linear aerospike**.
+- **Simulation:** the live solver handles the annular injector and the plug wall.
+  - **Accuracy:** at 50 bar and sea level the simulated thrust is within about 4 % of theory, and the throat mass flow within 1 %.
+  - **Base flow:** the recirculating flow behind the truncated base is visible in the views.
+- **Theory: altitude compensation.** Below its design altitude the aerospike's jet boundary moves in, so it avoids overexpansion loss and flow separation. The Altitude tab draws a bell nozzle of the same ε for comparison.
+
+### Added: rocket design tools in the Nozzle Lab
+- **Motor tab:** BATES solid-motor internal ballistics through the current nozzle.
+  - Burn-rate laws for APCP, KNSB, KNDX and double-base propellants, or your own.
+  - Outputs: thrust curve, chamber pressure, Kn, total impulse, motor class (e.g. *K1050*), delivered Isp, and warnings (erosive burning, over-pressure).
+  - **Size for the Lab's chamber pressure**, and **RASP .eng export** for OpenRocket and RockSim.
+- **Flight tab:** the ascent of a rocket powered by the Lab's engine or the Motor tab's thrust curve.
+  - Physics: a round Earth, the standard atmosphere, drag with a transonic rise, a gravity turn after a pitch-over speed.
+  - An optional **upper stage** with a vacuum nozzle and horizontal steering.
+  - Reports burnout, staging, max-Q, apogee, the Δv budget (gravity and drag losses), and the **orbit** (perigee and apogee) when one is reached.
+- **Contour export:** CSV, a DXF drawing (it reads back as an imported contour), and a watertight **3-D-printable STL** in millimetres.
+- **Video recording** now captures the 3-D view when it is showing.
+
+### Added: Tools menu
+- **Airfoil analysis** (Ctrl+Shift+A): Hess-Smith panel method for NACA 4-digit or imported airfoils.
+  - Outputs: pressure distribution, lift curve (inviscid and a viscous estimate), pitching moment, a stall estimate (Valarezo-Chin), a drag polar, and CSV export.
+  - Agreement with published data: NACA 0012 at 0° has Cp,min −0.41; NACA 2412 has a zero-lift angle of −2.1°.
+- **Wing analysis** (Ctrl+Shift+W): Prandtl lifting line with section data from the panel method.
+  - Outputs: spanwise lift against elliptic loading, induced drag, span efficiency, where the wing stalls first (washout moves it inboard), the wing's CL,max and best L/D.
+- **Aero calculator** (Ctrl+Shift+U): the standard atmosphere at any altitude and ISA + ΔT, Mach, Reynolds, dynamic pressure, equivalent airspeed, and wing lift and stall speed.
+- Flight dynamics and the propeller tool are also listed under Tools.
+
+### Fixed
+- Chart titles in the Nozzle Lab's analysis panel wrapped into a narrow column; they now use the full width.
+- The Heat tab's inputs each get a full-width row, so their labels are no longer clipped.
+
 ## [1.8.0] - 2026-11-27
 
 ### Added: Rocket Nozzle Lab design tools
