@@ -477,3 +477,22 @@ def test_openfoam_turbulence_models_and_refinement(tmp_path) -> None:
     lv2 = [ln for ln in fine.splitlines() if "level (" in ln][0]
     a, b = (int(x) for x in lv.split("(")[1].split(")")[0].split())
     assert lv2.strip() == f"level ({a + 2} {b + 2});"
+
+
+def test_cad_step_import(tmp_path) -> None:
+    gmsh = pytest.importorskip("gmsh")
+    from core.geometry_manager import load_geometry_file
+
+    gmsh.initialize(readConfigFiles=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("t")
+        gmsh.model.occ.addBox(0, 0, 0, 200, 40, 20)                  # millimetres, as CAD files usually are
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(tmp_path / "box.step"))
+    finally:
+        gmsh.finalize()
+    res = load_geometry_file(tmp_path / "box.step")
+    size = res.model.vertices.max(0) - res.model.vertices.min(0)
+    assert res.loader == "gmsh (CAD)" and res.model.is_watertight
+    assert np.allclose(size, [0.2, 0.04, 0.02], rtol=1e-3)            # converted to metres

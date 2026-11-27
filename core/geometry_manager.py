@@ -584,6 +584,46 @@ def _read_trimesh(path: Path) -> tuple[FloatArray, IntArray]:
     return np.asarray(obj.vertices, dtype=np.float64), np.asarray(obj.faces, dtype=np.int64)
 
 
+CAD_EXTENSIONS = (".step", ".stp", ".iges", ".igs", ".brep")
+
+
+def _read_cad(path: Path) -> tuple[FloatArray, IntArray]:
+    """Mesh a CAD solid (STEP / IGES / BREP) with gmsh's OpenCASCADE kernel: a curvature-adapted triangle
+    surface in metres (CAD files usually store millimetres; the target unit converts them)."""
+    import gmsh  # type: ignore[import-not-found]
+
+    started = False
+    try:
+        gmsh.initialize(readConfigFiles=False)
+        started = True
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setString("Geometry.OCCTargetUnit", "M")
+        gmsh.model.add("cad")
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+        diag = float(np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin]))
+        if not np.isfinite(diag) or diag <= 0.0:
+            raise GeometryError("The CAD file contains no solid or surface geometry.")
+        gmsh.option.setNumber("Mesh.MeshSizeMax", diag / 60.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", diag / 2000.0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 18)
+        gmsh.option.setNumber("Mesh.Algorithm", 6)                     # Frontal-Delaunay: good surface triangles
+        gmsh.model.mesh.generate(2)
+        tags, coords, _ = gmsh.model.mesh.getNodes()
+        index = {int(t): k for k, t in enumerate(tags)}
+        verts = np.asarray(coords, dtype=np.float64).reshape(-1, 3)
+        types, _etags, enodes = gmsh.model.mesh.getElements(2)
+        tris = [np.asarray(nodes, dtype=np.int64).reshape(-1, 3) for t, nodes in zip(types, enodes) if t == 2]
+        if not tris:
+            raise GeometryError("gmsh produced no surface triangles for this CAD file.")
+        faces = np.vectorize(index.get)(np.concatenate(tris)).astype(np.int64)
+        return verts, faces
+    finally:
+        if started:
+            gmsh.finalize()
+
+
 def _read_vtk(path: Path) -> tuple[FloatArray, IntArray]:
     """Load a legacy/XML VTK file through PyVista and extract its triangulated surface."""
     import pyvista as pv
@@ -610,7 +650,8 @@ def load_geometry_file(path: str | Path, progress: Optional[ProgressCallback] = 
     """Load a geometry file (safe to call from a worker thread).
 
     Args:
-        path: ``.stl``, ``.obj``, ``.ply``, ``.off`` or ``.vtk``.
+        path: ``.stl``, ``.obj``, ``.ply``, ``.off``, ``.vtk``, or a CAD file (``.step`` / ``.stp`` /
+            ``.iges`` / ``.igs`` / ``.brep``, meshed with gmsh).
         progress: Optional ``(fraction, message)`` callback.
 
     Raises:
@@ -630,6 +671,8 @@ def load_geometry_file(path: str | Path, progress: Optional[ProgressCallback] = 
     attempts: list[tuple[str, Callable[[Path], tuple[FloatArray, IntArray]]]] = []
     if ext == ".vtk":
         attempts = [("pyvista", _read_vtk)]
+    elif ext in CAD_EXTENSIONS:
+        attempts = [("gmsh (CAD)", _read_cad)]
     else:
         attempts = [("trimesh", _read_trimesh)]
         if ext == ".stl":
@@ -662,7 +705,7 @@ def load_geometry_file(path: str | Path, progress: Optional[ProgressCallback] = 
     tick(0.55, "Building mesh")
     if len(faces) > MAX_TRIANGLES_HARD:
         raise GeometryError(f"{len(faces):,} triangles exceeds the limit of {MAX_TRIANGLES_HARD:,}; decimate the model first.")
-    if used in ("trimesh", "pyvista"):
+    if used in ("trimesh", "pyvista", "gmsh (CAD)"):
         vertices, faces = _merge_vertices(vertices, faces)
     model = GeometryModel(vertices, faces, name=p.stem, source=p, history=(f"Loaded {p.name}",))
     tick(0.8, "Checking mesh")

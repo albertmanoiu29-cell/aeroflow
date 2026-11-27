@@ -30,3 +30,4 @@ matplotlib>=3.8,<4
 imageio>=2.33,<3
 imageio-ffmpeg>=0.5,<1      # MP4 video export (bundles a small ffmpeg)
 Pillow>=10.0,<13
+gmsh>=4.11            # CAD import (STEP / IGES / BREP -> surface mesh)

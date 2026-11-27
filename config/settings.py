@@ -54,9 +54,11 @@ DEFAULT_WINDOW_SIZE: Final[tuple[int, int]] = (1680, 980)
 # ---------------------------------------------------------------------------
 # Geometry import limits
 # ---------------------------------------------------------------------------
-SUPPORTED_MESH_EXTENSIONS: Final[tuple[str, ...]] = (".stl", ".obj", ".ply", ".off", ".vtk")
+SUPPORTED_MESH_EXTENSIONS: Final[tuple[str, ...]] = (".stl", ".obj", ".ply", ".off", ".vtk", ".step", ".stp",
+                                                     ".iges", ".igs", ".brep")
 MESH_FILE_FILTER: Final[str] = (
-    "3D Geometry (*.stl *.obj *.ply *.off *.vtk);;"
+    "3D Geometry (*.stl *.obj *.ply *.off *.vtk *.step *.stp *.iges *.igs *.brep);;"
+    "CAD: STEP / IGES / BREP (*.step *.stp *.iges *.igs *.brep);;"
     "STL (*.stl);;OBJ (*.obj);;PLY (*.ply);;OFF (*.off);;VTK (*.vtk);;All files (*)"
 )
 MAX_MESH_FILE_MB: Final[float] = 500.0
