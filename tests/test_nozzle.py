@@ -91,7 +91,11 @@ def test_contours() -> None:
         x, r = g.inner_contour()
         assert np.all(np.diff(x) > -1e-12)                         # x never goes backwards
         assert r.min() == pytest.approx(g.rt, rel=1e-6)            # the throat is the narrowest point
-        assert r[-1] == pytest.approx(g.re, rel=1e-6) and r[0] == pytest.approx(g.rc, rel=1e-6)
+        assert r[0] == pytest.approx(g.rc, rel=1e-6)
+        if contour is nz.Contour.AEROSPIKE:                           # equivalent nozzle: the truncated plug's Mach
+            assert g.rt < r[-1] < g.re
+        else:
+            assert r[-1] == pytest.approx(g.re, rel=1e-6)
     tn, te = nz.rao_angles(10.0, 0.8)
     assert 20.0 < tn < 35.0 and 5.0 < te < 15.0 and te < tn
     bell = nz.NozzleGeometry(contour=nz.Contour.BELL)
