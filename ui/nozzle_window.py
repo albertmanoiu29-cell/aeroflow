@@ -44,7 +44,8 @@ from ui.nozzle_tools import (
 )
 from ui.supersonic_window import ValueSlider
 from visualization.nozzle_view import (
-    FLAMES, NOZZLE_RESOLUTIONS, EngineSetup, NField, NozzleView, default_resolution, flame_for, fmt_force,
+    AUTO_RESOLUTION, FLAMES, NOZZLE_RESOLUTIONS, EngineSetup, NField, NozzleView, default_resolution, flame_for,
+    fmt_force,
 )
 from visualization.telemetry_charts import _card as _plain_card
 from visualization.telemetry_charts import _style_plot
@@ -545,6 +546,7 @@ class NozzleWindow(QMainWindow):
     def _card_simulation(self) -> QWidget:
         card = AccordionCard("Simulation")
         self.resolution = QComboBox()
+        self.resolution.addItem(AUTO_RESOLUTION)
         for name in NOZZLE_RESOLUTIONS:
             self.resolution.addItem(name)
         self.resolution.setCurrentText(default_resolution())

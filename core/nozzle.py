@@ -697,6 +697,16 @@ def cut_cells(segs: F64, nx: int, ny: int, ncol: int, k: int = 8) -> tuple[F64, 
     return kappa, ax, ay
 
 
+def cell_size(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 10.0, plume_radius: float = 3.5) -> float:
+    """The grid cell size (m) :func:`layout_nozzle` will use (cheap: no meshing)."""
+    cx, cr = geom.inner_contour()
+    re = geom.re
+    r_out = float(cr.max()) + geom.wall_thickness
+    l_need = float(cx[-1]) + max(plume_length, 1.0) * 2.0 * re
+    r_need = max(max(plume_radius, 1.3) * re, 1.25 * r_out, 1.15 * 0.5 * geom.vehicle_diameter)
+    return max(l_need / nx, r_need / ny)
+
+
 def layout_nozzle(geom: NozzleGeometry, nx: int, ny: int, plume_length: float = 10.0,
                   plume_radius: float = 3.5) -> NozzleLayout:
     """Scale ``geom`` onto an ``nx`` × ``ny`` grid: the injector face on the left edge, the axis on the

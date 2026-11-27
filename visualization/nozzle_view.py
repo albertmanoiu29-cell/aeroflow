@@ -52,6 +52,22 @@ NOZZLE_RESOLUTIONS: dict[str, tuple[int, int]] = {
     "Ultra (1200 × 300)": (1200, 300),
     "Extreme (1600 × 400, GPU)": (1600, 400),
 }
+#: Picks the smallest grid with enough cells across the throat for the current nozzle and plume region.
+AUTO_RESOLUTION = "Auto (≥ 12 cells across the throat)"
+AUTO_THROAT_CELLS = 12.0
+
+
+def auto_resolution(geom: nz.NozzleGeometry, plume_length: float, plume_radius: float) -> str:
+    """The smallest preset grid that resolves the throat with at least :data:`AUTO_THROAT_CELLS` cells
+    (Ultra at most on the CPU, Extreme on the GPU); the largest allowed one if none does."""
+    names = list(NOZZLE_RESOLUTIONS)
+    if not compute.gpu_info().available:
+        names = [n for n in names if "GPU" not in n]
+    for name in names:
+        nx, ny = NOZZLE_RESOLUTIONS[name]
+        if geom.rt / nz.cell_size(geom, nx, ny, plume_length, plume_radius) >= AUTO_THROAT_CELLS:
+            return name
+    return names[-1]
 
 
 def default_resolution() -> str:
@@ -294,6 +310,9 @@ class NozzleView(QWidget):
         otherwise rebuild the grid and restart (geometry, gas, plume region, axisymmetric / planar)."""
         old = self.setup
         self.setup = setup
+        if self.resolution == AUTO_RESOLUTION and self.solver is not None and \
+                auto_resolution(setup.geom, setup.plume_length, setup.plume_radius) != getattr(self, "grid_name", ""):
+            force = True
         rebuild = force or self.solver is None or any((
             old.geom != setup.geom, old.planar != setup.planar, old.gas.gamma != setup.gas.gamma,
             old.gas.molar_mass != setup.gas.molar_mass, old.plume_length != setup.plume_length,
@@ -307,7 +326,7 @@ class NozzleView(QWidget):
             self._emit_stats()
 
     def set_resolution(self, name: str) -> None:
-        if name not in NOZZLE_RESOLUTIONS or name == self.resolution:
+        if (name not in NOZZLE_RESOLUTIONS and name != AUTO_RESOLUTION) or name == self.resolution:
             return
         self.resolution = name
         if "GPU" in name and not compute.use_gpu(wait=False):
@@ -316,7 +335,11 @@ class NozzleView(QWidget):
 
     def _rebuild(self) -> None:
         s = self.setup
-        nx, ny = NOZZLE_RESOLUTIONS[self.resolution]
+        grid = self.resolution
+        if grid == AUTO_RESOLUTION:
+            grid = auto_resolution(s.geom, s.plume_length, s.plume_radius)
+        self.grid_name = grid
+        nx, ny = NOZZLE_RESOLUTIONS[grid]
         was_firing = self.solver is not None and self.solver.ignited
         lay = nz.layout_nozzle(s.geom, nx, ny, s.plume_length, s.plume_radius)
         need_new = (self.solver is None or (self.solver.nx, self.solver.ny) != (nx, ny)
@@ -340,8 +363,9 @@ class NozzleView(QWidget):
                 f"The throat is only {lay.throat_cells:.1f} cells across: mass flow and thrust will be off. Use a finer "
                 "grid, a shorter plume region or a smaller expansion ratio.")
         else:
-            self.status_message.emit(f"Grid: {nx} × {ny} cells of {lay.dx * 1e3:.2f} mm; throat "
-                                     f"{lay.throat_cells:.0f} cells across.")
+            self.status_message.emit(f"Grid: {nx} × {ny} cells of {lay.dx * 1e3:.2f} mm"
+                                     + (" (auto)" if self.resolution == AUTO_RESOLUTION else "")
+                                     + f"; throat {lay.throat_cells:.0f} cells across.")
         if was_firing and self.auto_ignite:
             self.ignite()
         self._render()
