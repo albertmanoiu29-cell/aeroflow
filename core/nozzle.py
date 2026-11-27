@@ -735,8 +735,15 @@ def read_contour_file(path) -> tuple[F64, F64]:
     if path.suffix.lower() == ".dxf":
         lines = [ln.strip() for ln in text.splitlines()]
         x_val = None
+        layer = ""
         for k in range(0, len(lines) - 1, 2):
             code, val = lines[k], lines[k + 1]
+            if code == "0":
+                layer = ""
+            elif code == "8":
+                layer = val.upper()
+            if layer in ("OUTER", "AXIS", "PLUG"):              # AeroFlow's own drawings: only the flow surface
+                continue
             if code in ("10", "11"):
                 try:
                     x_val = float(val)

@@ -40,7 +40,8 @@ from core import nozzle_design as nd
 from ui.cfd_panel import AccordionCard, SegmentedControl, ToggleSwitch, button, compact_combo, labeled_row, scroll_wrap
 from ui.device_selector import DeviceSelector
 from ui.nozzle_tools import (
-    CompareTab, DesignTab, HeatTab, NoiseTab, altitude_curve, build_report_html, plot_image, widget_image, write_report,
+    CompareTab, DesignTab, FlightTab, HeatTab, MotorTab, NoiseTab, altitude_curve, build_report_html, plot_image,
+    widget_image, write_report,
 )
 from ui.supersonic_window import ValueSlider
 from visualization.nozzle_view import (
@@ -775,6 +776,8 @@ class NozzleWindow(QMainWindow):
         self.p_altf = self._plot("altitude (km)", "thrust (kN)")
         self.c_altf = self.p_altf.plot(name="thrust", pen=pg.mkPen(PALETTE.cyan, width=2))
         self.c_altsep = self.p_altf.plot(name="separation likely", pen=pg.mkPen(PALETTE.danger, width=3))
+        self.c_alt_bell = self.p_altf.plot(name="bell nozzle, same ε", pen=pg.mkPen(PALETTE.text_muted, width=1.5,
+                                                                                   style=Qt.PenStyle.DashLine))
         self.c_alt_sim = self.p_altf.plot(name="simulated (ascent)", pen=None, symbol="o", symbolSize=6,
                                           symbolBrush=pg.mkBrush(PALETTE.warning), symbolPen=None)
         self.p_alti = self._plot("altitude (km)", "Isp (s)", legend=False)
@@ -795,6 +798,8 @@ class NozzleWindow(QMainWindow):
         all_.addWidget(_card("Specific impulse vs altitude", self.p_alti), 1)
         all_.addWidget(self.alt_info)
         tabs.addTab(al, "Altitude")
+        self.flight = FlightTab()
+        tabs.addTab(self.flight, "Flight")
         self.heat = HeatTab()
         self.heat.wall_profile_changed.connect(self._wall_profile)
         tabs.addTab(self.heat, "Heat")
@@ -802,6 +807,9 @@ class NozzleWindow(QMainWindow):
         self.design.use_mixture_ratio.connect(lambda of: self.of.setValue(of))
         self.design.apply_expansion_ratio.connect(self._apply_eps)
         tabs.addTab(self.design, "Design")
+        self.motor = MotorTab()
+        self.motor.curve_changed.connect(self.flight.set_motor)
+        tabs.addTab(self.motor, "Motor")
         self.noise = NoiseTab()
         tabs.addTab(self.noise, "Noise")
         self.compare = CompareTab(self._snapshot_engine)
@@ -815,7 +823,17 @@ class NozzleWindow(QMainWindow):
         self.geo_info = QLabel("")
         self.geo_info.setFont(mono_font(10))
         self.geo_info.setWordWrap(True)
-        tabs.addTab(self._tab(_card("Nozzle contour (to scale)", self.p_geo), self.geo_info), "Nozzle")
+        exp = QWidget()
+        el = QHBoxLayout(exp)
+        el.setContentsMargins(0, 0, 0, 0)
+        for text, fmt, tip in (("CSV", "csv", "The contour as a table (x, r in mm)"),
+                               ("DXF", "dxf", "A 2-D drawing for CAD (mm, axis on y = 0)"),
+                               ("STL (3-D print)", "stl", "A watertight solid of the nozzle wall in mm, ready for a "
+                                                          "slicer")):
+            b = button(f"Export {text}…", "ghost", "", tip)
+            b.clicked.connect(lambda _c=False, f=fmt: self._export_contour(f))
+            el.addWidget(b)
+        tabs.addTab(self._tab(_card("Nozzle contour (to scale)", self.p_geo), exp, self.geo_info), "Nozzle")
         return tabs
 
     # -- presets and inputs -------------------------------------------------------------------------------
@@ -1461,6 +1479,8 @@ class NozzleWindow(QMainWindow):
         if key != self._static_key:                  # heat transfer depends on the engine, not on the altitude
             self._static_key = key
             self.heat.set_setup(s)
+            self.motor.set_setup(s)
+            self.flight.set_setup(s)
         th0 = self.view.theory
         if th0 is not None:
             self.noise.set_inputs(th0, 2.0 * geom.re, s.ta, th0.shock_cell_spacing)
@@ -1478,6 +1498,13 @@ class NozzleWindow(QMainWindow):
             isp.append(t.isp)
             sep.append(t.separation or t.regime == "Shock inside the nozzle")
         f, isp, sep = np.asarray(f), np.asarray(isp), np.asarray(sep)
+        if geom.is_aerospike:                         # what the altitude compensation gains over a bell
+            bell = replace(geom, contour=B)
+            fb = [nz.nozzle_theory(bell, s.gas, s.pc, isa_atmosphere(a * 1e3).pressure_pa, s.planar).thrust / 1e3
+                  for a in alts]
+            self.c_alt_bell.setData(alts, np.asarray(fb))
+        else:
+            self.c_alt_bell.setData([], [])
         self.c_altf.setData(alts, f)
         self.c_alti.setData(alts, isp)
         self.c_altsep.setData(alts[sep], f[sep])
@@ -1488,6 +1515,9 @@ class NozzleWindow(QMainWindow):
                 line.setPos(now)
         th = self.view.theory
         pe = th.exit_pressure if th is not None and th.choked else None
+        if pe is not None and geom.is_aerospike:      # compensating: the design exit pressure, not the ambient
+            eps = geom.area_ratio(s.planar)
+            pe = s.pc * nz.p_over_p0(nz.mach_from_area_ratio(eps, s.gas.gamma, True), s.gas.gamma)
         design = None
         if pe is not None:
             pres = np.array([isa_atmosphere(a * 1e3).pressure_pa for a in alts])
@@ -1617,6 +1647,15 @@ class NozzleWindow(QMainWindow):
             except OSError as exc:
                 self.status_label.setText(f"Snapshot failed: {exc}")
 
+    def _video_frame(self):
+        """The 3-D view's image while it is shown (the 2-D view grabs itself otherwise)."""
+        if self.stack.currentIndex() == 1 and self.view3d is not None:
+            try:
+                return self.view3d.plotter.screenshot(return_img=True)
+            except Exception:  # noqa: BLE001 - fall back to the 2-D view
+                return None
+        return None
+
     def _toggle_recording(self, on: bool) -> None:
         if on:
             default = get_paths().exports / f"nozzle_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -1625,7 +1664,7 @@ class NozzleWindow(QMainWindow):
                 self.btn_rec.setChecked(False)
                 return
             try:
-                self.view.start_recording(path)
+                self.view.start_recording(path, source=self._video_frame)
             except RuntimeError as exc:
                 self.btn_rec.setChecked(False)
                 self.status_label.setText(str(exc))
@@ -1637,6 +1676,21 @@ class NozzleWindow(QMainWindow):
             self.btn_rec.setText("Record video…")
             if out is not None:
                 self.status_label.setText(f"Video saved: {out}")
+
+    def _export_contour(self, fmt: str) -> None:
+        from core import nozzle_export as ne
+
+        s = self.view.setup
+        names = {"csv": "CSV (*.csv)", "dxf": "DXF drawing (*.dxf)", "stl": "STL solid (*.stl)"}
+        default = get_paths().exports / f"nozzle_contour_{time.strftime('%Y%m%d_%H%M%S')}.{fmt}"
+        path, _ = QFileDialog.getSaveFileName(self, "Export nozzle contour", str(default), names[fmt])
+        if not path:
+            return
+        try:
+            {"csv": ne.write_csv, "dxf": ne.write_dxf, "stl": ne.write_stl}[fmt](s.geom, path, s.planar)
+            self.status_label.setText(f"Contour saved: {path}")
+        except (OSError, ValueError) as exc:
+            self.status_label.setText(f"Export failed: {exc}")
 
     def _export_csv(self) -> None:
         default = get_paths().exports / f"nozzle_results_{time.strftime('%Y%m%d_%H%M%S')}.csv"

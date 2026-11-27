@@ -12,17 +12,19 @@ from typing import Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QBuffer, QIODevice, Qt, Signal
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QScrollArea,
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from config.settings import APP_NAME, APP_VERSION, isa_atmosphere
+from config.settings import APP_NAME, APP_VERSION, get_paths, isa_atmosphere
 from config.theme import PALETTE, mono_font
 from core import nozzle as nz
 from core import nozzle_design as nd
+from core import solid_motor as sm
+from core import trajectory as tj
 from ui.cfd_panel import ToggleSwitch, button, labeled_row
 from visualization.telemetry_charts import _style_plot
 
@@ -310,6 +312,392 @@ class NoiseTab(QWidget):
             f"Spectrum peak ≈ {ns.mixing_peak_hz:,.0f} Hz (turbulent mixing)"
             + (f"\nShock-associated noise ≈ {ns.shock_peak_hz:,.0f} Hz · screech ≈ {ns.screech_hz:,.0f} Hz"
                if ns.shock_peak_hz else ""))
+
+
+def _scroll_page(*items) -> QScrollArea:
+    """A tab page that scrolls when the analysis panel is short (items: widgets or (widget, min height))."""
+    inner = QWidget()
+    lay = QVBoxLayout(inner)
+    lay.setContentsMargins(6, 6, 6, 6)
+    for it in items:
+        w, h = it if isinstance(it, tuple) else (it, 0)
+        if h:
+            w.setMinimumHeight(h)
+        lay.addWidget(w, 1 if h else 0)
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setWidget(inner)
+    return area
+
+
+def _grid(rows: list[tuple[str, QWidget]], cols: int = 2) -> QWidget:
+    box = QWidget()
+    box.setProperty("fixed", True)
+    g = QGridLayout(box)
+    g.setContentsMargins(0, 0, 0, 0)
+    for k, (text, w) in enumerate(rows):
+        g.addWidget(labeled_row(text, w), k // cols, k % cols)
+    return box
+
+
+# ---------------------------------------------------------------------------
+# Solid motor (BATES grain burn-back)
+# ---------------------------------------------------------------------------
+class MotorTab(QWidget):
+    """Thrust curve of a solid motor: a BATES grain burning through the current nozzle."""
+
+    curve_changed = Signal(object)                 # (MotorResult, BatesGrain) or None
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.prop = QComboBox()
+        for name in sm.SOLID_PROPELLANTS:
+            self.prop.addItem(name)
+        self.a = _spin(0.1, 100.0, 3.5, 2, "mm/s", 0.1, "Burn rate coefficient: r = a · p[MPa]^n")
+        self.n = _spin(0.0, 0.95, 0.35, 3, "", 0.01, "Pressure exponent n (below ~0.6 for a stable motor)")
+        self.rho = _spin(500.0, 3000.0, 1770.0, 0, "kg/m³", 10.0, "Propellant density as cast")
+        self.segs = QSpinBox()
+        self.segs.setRange(1, 40)
+        self.segs.setValue(4)
+        self.segs.setToolTip("Number of grain segments (BATES)")
+        self.od = _spin(1.0, 5000.0, 100.0, 1, "mm", 1.0, "Grain outer diameter (inside the liner)")
+        self.core = _spin(0.5, 4000.0, 35.0, 1, "mm", 1.0, "Core (port) diameter")
+        self.seg_len = _spin(1.0, 10000.0, 150.0, 1, "mm", 5.0, "Length of one segment; about 1.5 × the outer "
+                             "diameter gives the most neutral (flat) thrust curve")
+        self.eff = _spin(50.0, 100.0, 95.0, 0, "%", 1.0, "c* efficiency (combustion losses; 90-97 %)")
+        self.inhibit = ToggleSwitch("Inhibit the segment ends", False, "Only the core burns: a progressive "
+                                    "(rising) thrust curve")
+        self.btn_size = button("Size for the Lab's chamber pressure", "ghost", "", "Grain proportioned to the "
+                               "nozzle's throat, with enough segments for the chamber pressure set in the Lab")
+        self.btn_size.clicked.connect(self.auto_size)
+        self.btn_eng = button("Export .eng…", "ghost", "", "Save the thrust curve as a RASP .eng motor file for "
+                              "OpenRocket / RockSim")
+        self.btn_eng.clicked.connect(self.export_eng)
+        btns = QWidget()
+        bl = QHBoxLayout(btns)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(self.btn_size)
+        bl.addWidget(self.btn_eng)
+        controls = _grid([("Propellant", self.prop), ("Burn rate a", self.a), ("Exponent n", self.n),
+                          ("Density", self.rho), ("Segments", self.segs), ("Grain Ø", self.od), ("Core Ø", self.core),
+                          ("Segment length", self.seg_len), ("c* efficiency", self.eff)])
+        self.p_f = _plot("time (s)", "thrust (kN)", legend=False)
+        self.c_f = self.p_f.plot(pen=pg.mkPen(PALETTE.warning, width=2), fillLevel=0.0,
+                                 brush=pg.mkBrush(PALETTE.warning + "30"))
+        self.p_p = _plot("time (s)", "chamber pressure (bar)")
+        self.c_p = self.p_p.plot(name="pressure", pen=pg.mkPen(PALETTE.cyan, width=2))
+        self.c_kn = self.p_p.plot(name="Kn / 10", pen=pg.mkPen(PALETTE.text_muted, width=1,
+                                                               style=Qt.PenStyle.DashLine))
+        self.p_p.setXLink(self.p_f)
+        self.info = QLabel("")
+        self.info.setFont(mono_font(10))
+        self.info.setWordWrap(True)
+        self.note = _muted("Quasi-steady internal ballistics: p_c = (Kn a ρ c*)^(1/(1-n)) at each step of the burn, "
+                           "thrust from the nozzle theory at that pressure (over-expansion and separation included). "
+                           "No erosive burning, throat erosion or ignition / tail-off transients.")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(_scroll_page(controls, self.inhibit, btns, (_card("Thrust curve", self.p_f), 200),
+                                   (_card("Chamber pressure and Kn", self.p_p), 200), self.info, self.note))
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(150)
+        self._timer.timeout.connect(self.refresh)
+        for w in (self.a, self.n, self.rho, self.od, self.core, self.seg_len, self.eff):
+            w.valueChanged.connect(lambda _v: self._edited())
+        self.segs.valueChanged.connect(lambda _v: self._edited())
+        self.inhibit.toggled.connect(lambda _v: self._edited())
+        self.prop.currentTextChanged.connect(self._prop_changed)
+        self._setup = None
+        self._sized_for = None
+        self._loading = False
+        self.result: Optional[sm.MotorResult] = None
+        self._prop_changed(self.prop.currentText())
+
+    def _edited(self) -> None:
+        if not self._loading:
+            self._timer.start()
+
+    def _prop_changed(self, name: str) -> None:
+        pr = sm.SOLID_PROPELLANTS.get(name)
+        if pr is None:
+            return
+        self._loading = True
+        try:
+            self.a.setValue(pr.a_mm)
+            self.n.setValue(pr.n)
+            self.rho.setValue(pr.density)
+        finally:
+            self._loading = False
+        self._timer.start()
+
+    def propellant(self) -> sm.SolidPropellant:
+        base = sm.SOLID_PROPELLANTS[self.prop.currentText()]
+        return sm.SolidPropellant(base.name, self.a.value(), self.n.value(), self.rho.value(), base.gamma,
+                                  base.molar_mass, base.chamber_temperature, base.note)
+
+    def grain(self) -> sm.BatesGrain:
+        od = self.od.value() * 1e-3
+        return sm.BatesGrain(od, min(self.core.value() * 1e-3, 0.95 * od), self.seg_len.value() * 1e-3,
+                             self.segs.value(), self.inhibit.isChecked())
+
+    def set_setup(self, setup) -> None:
+        self._setup = setup
+        if setup is None:
+            return
+        if self._sized_for != setup.geom.throat_diameter:          # a new nozzle: re-proportion the grain
+            self.auto_size()
+        elif self.isVisible():
+            self._timer.start()
+
+    def auto_size(self) -> None:
+        s = self._setup
+        if s is None or s.planar:
+            return
+        g = s.geom
+        dt = 2.0 * g.rt
+        od = max(2.0 * g.rc, 3.0 * dt)
+        core = min(max(1.6 * dt, 0.3 * od), 0.6 * od)
+        self._loading = True
+        try:
+            self.od.setValue(od * 1e3)
+            self.core.setValue(core * 1e3)
+            self.seg_len.setValue(1.5 * od * 1e3)
+            n = sm.segments_for_pressure(self.grain(), self.propellant(), g, None, s.pc, self.eff.value() / 100.0)
+            self.segs.setValue(min(max(n, 1), self.segs.maximum()))
+        finally:
+            self._loading = False
+        self._sized_for = g.throat_diameter
+        self.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._timer.start()
+
+    def refresh(self) -> None:
+        s = self._setup
+        if s is None:
+            return
+        if s.planar:
+            self.info.setText("The solid-motor model needs a round (axisymmetric) nozzle.")
+            self.result = None
+            self.curve_changed.emit(None)
+            return
+        grain, prop = self.grain(), self.propellant()
+        r = sm.simulate(grain, prop, s.geom, None, s.pa, self.eff.value() / 100.0)
+        self.result = r
+        self.c_f.setData(r.t, r.thrust / 1e3)
+        self.c_p.setData(r.t, r.pc / 1e5)
+        self.c_kn.setData(r.t, r.kn / 10.0)
+        lines = [f"Motor {r.designation}: total impulse {r.total_impulse:,.1f} N·s, burn {r.burn_time:.2f} s",
+                 f"Thrust: average {r.average_thrust:,.1f} N, peak {r.peak_thrust:,.1f} N",
+                 f"Pressure: peak {r.peak_pressure / 1e5:.1f} bar; Kn {r.kn[0]:.0f} → {r.kn.max():.0f} (max)",
+                 f"Propellant {r.propellant_mass:,.3f} kg; delivered Isp {r.isp:.0f} s at {s.pa / 1e3:.1f} kPa",
+                 f"Port / throat {r.port_to_throat:.2f}; volumetric loading {r.volumetric_loading * 100:.0f} %"]
+        lines += ["⚠ " + w for w in r.warnings]
+        self.info.setText("\n".join(lines))
+        self.curve_changed.emit((r, grain))
+
+    def export_eng(self) -> None:
+        if self.result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export motor file", str(get_paths().exports /
+                                                                              f"{self.result.designation}.eng"),
+                                              "RASP motor file (*.eng)")
+        if path:
+            sm.write_eng(self.result, self.grain(), path)
+
+
+# ---------------------------------------------------------------------------
+# Flight (single-stage ascent)
+# ---------------------------------------------------------------------------
+class FlightTab(QWidget):
+    """Fly a single-stage rocket on the Lab's engine (or the Motor tab's thrust curve)."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.source = QComboBox()
+        self.source.addItem("Nozzle Lab engine (steady, thrust follows the altitude)", "engine")
+        self.source.addItem("Solid motor (Motor tab thrust curve)", "motor")
+        self.engines = QSpinBox()
+        self.engines.setRange(1, 40)
+        self.engines.setValue(1)
+        self.dry = _spin(0.001, 1e7, 1000.0, 3, "kg", 10.0, "Dry mass: structure, engines and payload")
+        self.prop_m = _spin(0.0, 1e8, 9000.0, 3, "kg", 100.0, "Propellant mass (a solid motor sets its own)")
+        self.dia = _spin(0.005, 20.0, 1.0, 3, "m", 0.05, "Body diameter (drag reference area)")
+        self.cd = _spin(0.05, 2.0, 0.35, 2, "", 0.01, "Subsonic drag coefficient; a transonic rise is added")
+        self.angle = _spin(10.0, 90.0, 89.0, 1, "°", 0.5, "Launch angle above the horizon, held until the pitch-over "
+                           "speed")
+        self.turn = _spin(0.0, 2000.0, 120.0, 0, "m/s", 10.0, "Speed at which the gravity turn starts (thrust then "
+                          "follows the velocity). With a low thrust-to-weight ratio small changes matter a lot.")
+        self.btn_size = button("Size the rocket", "ghost", "", "Masses for a lift-off thrust-to-weight ratio of 1.5 "
+                               "and a 90 % propellant fraction (liquid engine), or 5 (solid motor, like a sounding "
+                               "rocket)")
+        self.btn_size.clicked.connect(lambda: (setattr(self, "_user_mass", False), self.auto_size()))
+        controls = _grid([("Engines", self.engines), ("Dry mass", self.dry), ("Propellant", self.prop_m),
+                          ("Diameter", self.dia), ("Drag Cd", self.cd), ("Launch angle", self.angle),
+                          ("Pitch-over at", self.turn)])
+        self.p_h = _plot("time (s)", "altitude (km)", legend=False)
+        self.c_h = self.p_h.plot(pen=pg.mkPen(PALETTE.cyan, width=2))
+        self.p_v = _plot("time (s)", "speed (m/s)", legend=False)
+        self.c_v = self.p_v.plot(pen=pg.mkPen(PALETTE.warning, width=2))
+        self.p_q = _plot("time (s)", "dynamic pressure (kPa)", legend=False)
+        self.c_q = self.p_q.plot(pen=pg.mkPen(PALETTE.danger, width=2))
+        self.p_path = _plot("downrange (km)", "altitude (km)", legend=False)
+        self.c_path = self.p_path.plot(pen=pg.mkPen(PALETTE.success, width=2))
+        for pw in (self.p_v, self.p_q):
+            pw.setXLink(self.p_h)
+        self.burn_lines = [pg.InfiniteLine(angle=90, pen=pg.mkPen("#FFFFFF", width=1, style=Qt.PenStyle.DotLine))
+                           for _ in range(3)]
+        for pw, ln in zip((self.p_h, self.p_v, self.p_q), self.burn_lines):
+            pw.addItem(ln, ignoreBounds=True)
+        charts = QWidget()
+        cg = QGridLayout(charts)
+        cg.setContentsMargins(0, 0, 0, 0)
+        for k, (title, pw) in enumerate((("Altitude", self.p_h), ("Speed", self.p_v), ("Dynamic pressure", self.p_q),
+                                         ("Flight path", self.p_path))):
+            cg.addWidget(_card(title, pw), k // 2, k % 2)
+        self.info = QLabel("")
+        self.info.setFont(mono_font(10))
+        self.info.setWordWrap(True)
+        note = _muted("Point-mass flight over a flat Earth (gravity falls with altitude), ISA atmosphere, drag with a "
+                      "transonic rise, thrust at each altitude from the nozzle theory. One stage, no throttling or "
+                      "steering after pitch-over: a quick feasibility check, not a mission design.")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(_scroll_page(labeled_row("Thrust from", self.source), controls, self.btn_size, (charts, 420),
+                                   self.info, note))
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(250)
+        self._timer.timeout.connect(self.refresh)
+        for w in (self.dia, self.cd, self.angle, self.turn):
+            w.valueChanged.connect(lambda _v: self._timer.start())
+        for w in (self.dry, self.prop_m):                      # the masses are the user's from now on
+            w.valueChanged.connect(lambda _v: (setattr(self, "_user_mass", True), self._timer.start()))
+        self.engines.valueChanged.connect(lambda _v: self._resize_or_run())
+        self.source.currentIndexChanged.connect(lambda _i: (self._sync(), self._resize_or_run()))
+        self._user_mass = False
+        self._setup = None
+        self._motor = None
+        self._sized_for = None
+        self.flight: Optional[tj.Flight] = None
+        self._sync()
+
+    def _sync(self) -> None:
+        motor = self.source.currentData() == "motor"
+        self.prop_m.setEnabled(not motor)
+
+    def _resize_or_run(self) -> None:
+        if not self._user_mass:
+            self.auto_size()
+        self._timer.start()
+
+    def set_setup(self, setup) -> None:
+        self._setup = setup
+        key = None if setup is None else (setup.geom, setup.gas, setup.pc)
+        if setup is not None and key != self._sized_for and not self._user_mass:
+            self.auto_size()                                     # a new engine: a rocket sized for it
+        self._sized_for = key
+        if self.isVisible():
+            self._timer.start()
+
+    def set_motor(self, motor) -> None:
+        self._motor = motor
+        if self.source.currentData() == "motor":
+            self._resize_or_run()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._timer.start()
+
+    def _thrust_source(self):
+        """(thrust_at(t, h), lift-off thrust per engine, propellant mass or None)."""
+        s = self._setup
+        if self.source.currentData() == "motor":
+            if self._motor is None:
+                return None
+            r, _grain = self._motor
+            ae = math.pi * s.geom.re ** 2
+            p0 = isa_atmosphere(0.0).pressure_pa
+            t_c, f_c, md_c = r.t, r.thrust, r.mdot
+
+            def thrust_at(t: float, h: float) -> tuple[float, float]:
+                if t > t_c[-1]:
+                    return 0.0, 0.0
+                f = float(np.interp(t, t_c, f_c))
+                if f <= 0.0:
+                    return 0.0, float(np.interp(t, t_c, md_c))
+                return f + (p0 - tj.atmosphere(h)[1]) * ae, float(np.interp(t, t_c, md_c))
+
+            return thrust_at, float(f_c.max()), r.propellant_mass
+
+        def theory(pa: float) -> tuple[float, float]:
+            th = nz.nozzle_theory(s.geom, s.gas, s.pc, pa, False)
+            return max(th.thrust, 0.0), th.mass_flow
+
+        f0 = theory(isa_atmosphere(0.0).pressure_pa)[0]
+        return tj.engine_thrust_table(theory), f0, None
+
+    def auto_size(self) -> None:
+        s = self._setup
+        if s is None or s.planar:
+            return
+        src = self._thrust_source()
+        if src is None:
+            return
+        _f, f0, m_prop = src
+        m0 = self.engines.value() * f0 / ((1.5 if m_prop is None else 5.0) * tj.G0)
+        self.dry.blockSignals(True)
+        self.prop_m.blockSignals(True)
+        if m_prop is None:
+            self.prop_m.setValue(0.9 * m0)
+            self.dry.setValue(0.1 * m0)
+        else:
+            self.dry.setValue(max(m0 - m_prop * self.engines.value(), 0.3 * m_prop * self.engines.value()))
+        self.dia.setValue(max(round(2.2 * s.geom.re * max(self.engines.value(), 1) ** 0.5, 3), 0.005))
+        self.dry.blockSignals(False)
+        self.prop_m.blockSignals(False)
+        self._timer.start()
+
+    def refresh(self) -> None:
+        s = self._setup
+        if s is None or not self.isVisible():
+            return
+        if s.planar:
+            self.info.setText("The flight model needs a round (axisymmetric) engine.")
+            return
+        src = self._thrust_source()
+        if src is None:
+            self.info.setText("Open the Motor tab first: it makes the solid motor's thrust curve.")
+            return
+        thrust_at, _f0, m_prop = src
+        n = self.engines.value()
+        prop = m_prop * n if m_prop is not None else self.prop_m.value()
+        v = tj.Vehicle(self.dry.value(), prop, self.dia.value(), self.cd.value(), n, self.angle.value(),
+                       turn_speed=self.turn.value())
+        fl = tj.fly(v, thrust_at)
+        self.flight = fl
+        self.c_h.setData(fl.t, fl.altitude / 1e3)
+        self.c_v.setData(fl.t, fl.speed)
+        self.c_q.setData(fl.t, fl.q / 1e3)
+        self.c_path.setData(fl.downrange / 1e3, fl.altitude / 1e3)
+        for ln in self.burn_lines:
+            ln.setPos(fl.burnout_time)
+        m0 = v.dry_mass + v.propellant_mass
+        lines = [fl.message,
+                 f"Lift-off mass {m0:,.1f} kg, thrust-to-weight {fl.liftoff_twr:.2f}",
+                 f"Burnout at {fl.burnout_time:.1f} s: {fl.burnout_altitude / 1e3:,.2f} km, {fl.burnout_speed:,.0f} m/s",
+                 f"Apogee {fl.apogee / 1e3:,.2f} km at {fl.apogee_time:.0f} s, {fl.downrange_at_apogee / 1e3:,.1f} km "
+                 "downrange",
+                 f"Max-Q {fl.max_q / 1e3:,.1f} kPa at {fl.max_q_altitude / 1e3:.1f} km; peak acceleration "
+                 f"{fl.max_accel_g:.1f} g",
+                 f"Δv: ideal {fl.dv_ideal:,.0f} m/s - gravity loss {fl.gravity_loss:,.0f} - drag loss "
+                 f"{fl.drag_loss:,.0f}"]
+        if fl.burnout_speed > 7600.0 and fl.burnout_altitude > 150e3:
+            lines.append("Fast enough for orbit at burnout (with the right steering).")
+        self.info.setText("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------

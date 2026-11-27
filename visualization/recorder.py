@@ -17,12 +17,13 @@ class FrameRecorder:
     """``capture()`` once per displayed frame; every ``skip``-th frame is encoded (60 FPS display -> 30 FPS
     video by default). The video keeps the size of the first frame (later frames are cropped / padded)."""
 
-    def __init__(self, widget: QWidget, path: str | Path, fps: int = 30, skip: int = 2) -> None:
+    def __init__(self, widget: QWidget, path: str | Path, fps: int = 30, skip: int = 2, source=None) -> None:
         try:
             import imageio.v2 as iio
         except ImportError as exc:
             raise RuntimeError("Video recording needs imageio and imageio-ffmpeg.") from exc
         self.widget = widget
+        self.source = source              # optional callable -> RGB frame (or None: grab the widget)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.skip = max(1, int(skip))
@@ -39,6 +40,10 @@ class FrameRecorder:
         self._write(first)
 
     def _grab(self) -> np.ndarray:
+        if self.source is not None:
+            frame = self.source()
+            if frame is not None:
+                return np.ascontiguousarray(np.asarray(frame)[..., :3], dtype=np.uint8)
         img = self.widget.grab().toImage().convertToFormat(QImage.Format.Format_RGB888)
         w, h, bpl = img.width(), img.height(), img.bytesPerLine()
         buf = np.frombuffer(img.constBits(), dtype=np.uint8, count=bpl * h).reshape(h, bpl)

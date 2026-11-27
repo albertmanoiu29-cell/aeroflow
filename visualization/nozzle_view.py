@@ -970,10 +970,10 @@ class NozzleView(QWidget):
     def recording(self) -> bool:
         return self._recorder is not None
 
-    def start_recording(self, path: str) -> None:
+    def start_recording(self, path: str, source=None) -> None:
         from visualization.recorder import FrameRecorder
 
-        self._recorder = FrameRecorder(self, path)
+        self._recorder = FrameRecorder(self, path, source=source)
         if not self.running:
             self.start()
 

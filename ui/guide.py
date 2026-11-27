@@ -61,6 +61,29 @@ A <b>regeneratively cooled</b> wall is held cool by propellant flowing behind it
 runs hot and glows, shedding heat as εσT⁴ - the 3-D view colours the wall by this temperature.</p>
 <p>The <b>Noise</b> tab estimates the sound power as ~0.5 % of the jet power (NASA SP-8072): about 140 dB at 100 m for
 a booster engine, loudest ~45° off the exhaust axis, with most energy at low frequencies.</p>""",
+    "Aerospike nozzles": """
+<h2>Aerospike nozzles</h2>
+<p>Pick <b>Aerospike (annular plug)</b> as the divergent section, or the aerospike preset. The gas leaves an
+annular chamber through a ring-shaped throat at the cowl lip and expands along the <b>plug</b> towards the axis.
+The outer edge of the flow is the surrounding air, not a wall.</p>
+<p>That is why an aerospike <b>compensates for altitude</b>. Low down, the air pushes the jet in, so the flow
+expands only to about the ambient pressure. This avoids the overexpansion loss and flow separation of a bell
+nozzle. The Altitude tab draws a bell of the same expansion ratio for comparison.</p>
+<p><b>Plug length</b> truncates the ideal (very long) spike to a flat base. The recirculating gas behind the base
+pushes on it and recovers most of the lost thrust: watch the base region in the Mach or Schlieren view. In
+<i>Planar</i> mode the same section is a <b>linear aerospike</b>.</p>
+<p>The throat gap is narrow, about r<sub>t</sub>² / (2 r<sub>e</sub>), so use the <b>Auto</b> or a fine grid.</p>""",
+    "Solid motors and flight": """
+<h2>Solid motors and flight</h2>
+<p>The <b>Motor</b> tab burns a <b>BATES grain</b> through the current nozzle. Set the propellant (burn-rate law
+r = a p<sup>n</sup>), the number of segments and their size. It shows the thrust curve, the chamber pressure, the
+total impulse and the motor class (e.g. <i>K1050</i>). <b>Size for the Lab's chamber pressure</b> proportions the
+grain for you. <b>Export .eng</b> writes a RASP file that OpenRocket and RockSim can fly.</p>
+<p>The <b>Flight</b> tab flies a single-stage rocket on the Lab's engine, or on the motor's thrust curve. It gives
+the burnout state, max-Q, apogee and the Δv budget with its gravity and drag losses. A low thrust-to-weight
+gravity turn is very sensitive: real boosters pitch over by only 1–2° once they are moving.</p>
+<p>The <b>Nozzle</b> tab exports the contour as CSV, as a DXF drawing, or as an <b>STL solid</b> (mm) ready for a
+3-D printer. <b>Record video</b> captures whichever view is showing, 2-D or 3-D.</p>""",
     "Reading the colours": """
 <h2>Reading the colours</h2>
 <ul>
