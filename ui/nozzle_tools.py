@@ -107,6 +107,12 @@ class HeatTab(QWidget):
         g.addWidget(labeled_row("Wall temperature", self.t_wall), 1, 0, 1, 2)
         g.addWidget(labeled_row("Emissivity", self.emis), 2, 0, 1, 2)
         g.addWidget(labeled_row("Extension from ε", self.ext), 3, 0, 1, 2)
+        self.film = _spin(0.0, 20.0, 0.0, 1, "%", 0.5, "Share of the propellant injected as a cooling film along the "
+                          "wall at the injector (0 = none; 1-5 % is typical)")
+        self.film_t = _spin(100.0, 1500.0, 400.0, 0, "K", 25.0, "Temperature of the film coolant (fuel near its "
+                            "boiling point: 300-500 K)")
+        g.addWidget(labeled_row("Film cooling", self.film), 4, 0, 1, 2)
+        g.addWidget(labeled_row("Film temperature", self.film_t), 5, 0, 1, 2)
         self.p_q = _plot("x / R_throat", "heat flux (MW/m²)", legend=False)
         self.c_q = self.p_q.plot(pen=pg.mkPen(PALETTE.danger, width=2))
         self.p_t = _plot("x / R_throat", "temperature (K)")
@@ -120,7 +126,7 @@ class HeatTab(QWidget):
         lay.addWidget(_card("Heat flux into the wall", self.p_q), 1)
         lay.addWidget(_card("Wall and gas recovery temperature", self.p_t), 1)
         lay.addWidget(self.info)
-        for w in (self.t_wall, self.emis, self.ext):
+        for w in (self.t_wall, self.emis, self.ext, self.film, self.film_t):
             w.valueChanged.connect(lambda _v: self.refresh())
         self.mode.currentIndexChanged.connect(lambda _i: (self._sync(), self.refresh()))
         self._setup = None
@@ -143,7 +149,8 @@ class HeatTab(QWidget):
             return
         key = self.mode.currentData()
         ht = nd.bartz_heat_transfer(s.geom, s.gas, s.pc, key, self.t_wall.value(), self.emis.value(), s.planar,
-                                    extension_ratio=self.ext.value())
+                                    extension_ratio=self.ext.value(), film_fraction=self.film.value() / 100.0,
+                                    film_temperature=self.film_t.value())
         self.result = ht
         xr = ht.x / s.geom.rt
         self.c_q.setData(xr, ht.q / 1e6)
@@ -153,7 +160,10 @@ class HeatTab(QWidget):
         self.info.setText(
             f"Peak heat flux {ht.q_peak / 1e6:.1f} MW/m² at x = {ht.x_peak * 1e3:.0f} mm (the throat); total heat into "
             f"the wall {ht.heat_load / 1e6:.2f} {unit}; hottest wall {float(ht.t_wall.max()):.0f} K. Bartz correlation "
-            "(gas side, ±30 %); the radiation-cooled wall is in radiative equilibrium, εσT⁴ = convective heating.")
+            "(gas side, ±30 %); the radiation-cooled wall is in radiative equilibrium, εσT⁴ = convective heating."
+            + (f" Film cooling ({self.film.value():.1f} %): wall protected to x ≈ "
+               f"{float(np.interp(0.37, ht.film_effectiveness[::-1], ht.x[::-1])) * 1e3:.0f} mm (η > 0.37); "
+               f"Isp penalty ≈ {ht.isp_loss * 100:.2f} %." if self.film.value() > 0 else ""))
         self.wall_profile_changed.emit((ht.x, ht.t_wall))
 
 

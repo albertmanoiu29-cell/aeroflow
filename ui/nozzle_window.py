@@ -95,6 +95,16 @@ PRESETS: dict[str, dict] = {
                   contour=C, divergent_angle=15.0, wall_thickness=0.004)),
 }
 DEFAULT_PRESET = "Sea-level booster · kerolox (Merlin class)"
+
+#: Throttle programmes: (fraction of the programme time, fraction of the full chamber pressure).
+THROTTLE_PROFILES: dict[str, list[tuple[float, float]]] = {
+    "Max-Q bucket (100 → 65 → 100 %)": [(0.0, 1.0), (0.25, 1.0), (0.4, 0.65), (0.65, 0.65), (0.8, 1.0), (1.0, 1.0)],
+    "Deep throttle to 40 %": [(0.0, 1.0), (0.2, 1.0), (0.5, 0.4), (0.8, 0.4), (1.0, 1.0)],
+    "Landing burn (100 → 40 %)": [(0.0, 1.0), (0.3, 1.0), (1.0, 0.4)],
+    "Pulses (100 / 60 %)": [(0.0, 1.0), (0.2, 1.0), (0.21, 0.6), (0.4, 0.6), (0.41, 1.0), (0.6, 1.0), (0.61, 0.6),
+                            (0.8, 0.6), (0.81, 1.0), (1.0, 1.0)],
+    "Ramp up from 50 %": [(0.0, 0.5), (1.0, 1.0)],
+}
 CUSTOM = "Custom"
 
 
@@ -358,7 +368,57 @@ class NozzleWindow(QMainWindow):
         card.add(self.btn_ascent)
         self._ascent: Optional[tuple[float, float, float, float]] = None
         self._ascent_pts: list[tuple[float, float]] = []
+        # throttle programme: the chamber pressure follows a profile over simulated time
+        self.thr_profile = QComboBox()
+        for name in THROTTLE_PROFILES:
+            self.thr_profile.addItem(name)
+        self.thr_time = _dspin(1.0, 500.0, 30.0, 1, "ms", 5.0, "Simulated duration of the throttle programme")
+        tgrid = QGridLayout()
+        tgrid.addWidget(labeled_row("Throttle", self.thr_profile), 0, 0, 1, 2)
+        tgrid.addWidget(labeled_row("over", self.thr_time), 1, 0)
+        card.add_layout(tgrid)
+        self.btn_throttle = button("Run the throttle programme", "ghost", "chart", "Vary the chamber pressure over "
+                                   "time along the chosen profile while the engine fires (watch the Live tab)")
+        self.btn_throttle.setCheckable(True)
+        self.btn_throttle.toggled.connect(self._toggle_throttle)
+        card.add(self.btn_throttle)
+        self._throttle: Optional[tuple[float, float, float, str]] = None
         return card
+
+    def _toggle_throttle(self, on: bool) -> None:
+        if not on:
+            if self._throttle is not None:
+                self.pc.setValue(self._throttle[2])           # back to the full-thrust chamber pressure
+            self._throttle = None
+            self.btn_throttle.setText("Run the throttle programme")
+            return
+        if self.view.engine_state() in ("READY", "SHUT DOWN"):
+            self._ignite()
+        elif not self.view.running:
+            self.view.start()
+        t_now = self.view.meas.get("time_s", 0.0) * 1e3
+        start_after = self.ramp.value() * 1.5 if self.view.engine_state() == "IGNITION" else 0.0
+        self._throttle = (t_now + start_after, self.thr_time.value(), self.pc.value(), self.thr_profile.currentText())
+        self.btn_throttle.setText("Stop the throttle programme")
+        self.status_label.setText(f"Throttle programme '{self.thr_profile.currentText()}' over "
+                                  f"{self.thr_time.value():g} ms (100 % = {self.pc.value():g} bar).")
+
+    def _advance_throttle(self, summ: dict) -> None:
+        if self._throttle is None:
+            return
+        t0, dur, pc_full, name = self._throttle
+        t = summ["meas"].get("time_s", 0.0) * 1e3
+        if t < t0:
+            return
+        frac = min((t - t0) / max(dur, 1e-9), 1.0)
+        pts = np.asarray(THROTTLE_PROFILES[name], float)
+        level = float(np.interp(frac, pts[:, 0], pts[:, 1]))
+        target = pc_full * level
+        if abs(target - self.pc.value()) > 0.002 * pc_full:
+            self.pc.setValue(target)
+        if frac >= 1.0:
+            self.btn_throttle.setChecked(False)
+            self.status_label.setText("Throttle programme complete: the thrust history is on the Live tab.")
 
     def _toggle_ascent(self, on: bool) -> None:
         if not on:
@@ -1244,6 +1304,7 @@ class NozzleWindow(QMainWindow):
                                  + ("  <span style='color:#10B981'>steady</span>" if summ["steady"] else ""))
         self._sync_run_button()
         self._advance_ascent(summ)
+        self._advance_throttle(summ)
         self._refresh()
 
     def _refresh(self, force: bool = False) -> None:

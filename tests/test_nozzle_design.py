@@ -82,3 +82,19 @@ def test_jet_noise() -> None:
     assert 30.0 < ns.peak_angle < 60.0                                       # loudest ~45° off the exhaust axis
     far = nd.jet_noise(th, 2.0 * GEOM.re, 340.0, 1000.0, 0.005)
     assert float(ns.oaspl.max() - far.oaspl.max()) == pytest.approx(20.0)    # inverse-square law
+
+
+def test_film_cooling_lowers_heating_at_an_isp_cost() -> None:
+    import math as _m
+
+    from core import nozzle as _nz
+    from core import nozzle_design as _nd
+
+    g = _nz.NozzleGeometry(throat_diameter=0.26, exit_diameter=1.04, chamber_diameter=0.42, chamber_length=0.15)
+    gas = _nz.Gas(1.22, 23.3, 3670.0)
+    base = _nd.bartz_heat_transfer(g, gas, 97e5, "regenerative")
+    film = _nd.bartz_heat_transfer(g, gas, 97e5, "regenerative", film_fraction=0.02, film_temperature=400.0)
+    assert 0.3 < 1.0 - film.q_peak / base.q_peak < 0.6          # 2 % film: a 30-60 % cut at the throat
+    assert film.isp_loss == pytest.approx(0.02 * (1 - _m.sqrt(400 / 3670)))
+    assert float(film.film_effectiveness[0]) == 1.0 and float(film.film_effectiveness[-1]) < 0.05
+    assert base.isp_loss == 0.0

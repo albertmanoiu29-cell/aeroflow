@@ -105,6 +105,8 @@ class HeatTransfer:
     x_peak: float
     heat_load: float           # total heat into the wall, W (per metre of width for a slot nozzle)
     cooling: str
+    film_effectiveness: np.ndarray = None   # 0 (no film) .. 1 (wall fully shielded)
+    isp_loss: float = 0.0                   # fraction of Isp given up to the film coolant
 
 
 def gas_transport(gas: nz.Gas) -> tuple[float, float, float]:
@@ -118,14 +120,21 @@ def gas_transport(gas: nz.Gas) -> tuple[float, float, float]:
 
 def bartz_heat_transfer(geom: nz.NozzleGeometry, gas: nz.Gas, pc: float, cooling: str = "regenerative",
                         wall_temperature: float = 800.0, emissivity: float = 0.85, planar: bool = False,
-                        n: int = 300, extension_ratio: float = 8.0) -> HeatTransfer:
+                        n: int = 300, extension_ratio: float = 8.0, film_fraction: float = 0.0,
+                        film_temperature: float = 400.0) -> HeatTransfer:
     """Convective heat transfer from the exhaust to the wall along the nozzle (Bartz 1957).
 
     ``cooling``: ``"regenerative"`` holds the gas-side wall at ``wall_temperature``; ``"radiation"`` finds the
     radiative-equilibrium wall temperature where the convective input equals ε σ T⁴ (a radiation-cooled
     nozzle extension); ``"mixed"`` is a regeneratively cooled chamber and nozzle up to the area ratio
     ``extension_ratio`` with a radiation-cooled extension beyond it (as on RL10, Merlin Vacuum or J-2X);
-    ``"adiabatic"`` gives the recovery temperature (no cooling at all)."""
+    ``"adiabatic"`` gives the recovery temperature (no cooling at all).
+
+    Film cooling: ``film_fraction`` of the propellant flow is injected along the wall at the injector face at
+    ``film_temperature``. The film lowers the temperature the wall sees, T_aw,f = T_aw − η (T_aw − T_film), with
+    an effectiveness η that decays downstream as the film mixes into the core: η = exp(−x / L) with
+    L ≈ 1.2 D_t × (film fraction / 2 %). The coolant leaves cooler than the core, costing roughly
+    film fraction × (1 − √(T_film / T_c)) of the Isp."""
     g = gas.gamma
     x_c, r_c = geom.inner_contour()
     k_t = int(np.argmin(r_c))
@@ -144,6 +153,13 @@ def bartz_heat_transfer(geom: nz.NozzleGeometry, gas: nz.Gas, pc: float, cooling
     t0 = gas.chamber_temperature
     k = 1.0 + 0.5 * (g - 1.0) * mach * mach
     t_aw = t0 * (1.0 + pr ** (1.0 / 3.0) * 0.5 * (g - 1.0) * mach * mach) / k
+    film = np.zeros_like(x)
+    isp_loss = 0.0
+    if film_fraction > 1e-6:
+        length = 1.2 * dt * film_fraction / 0.02
+        film = np.exp(-np.maximum(x - x_c[0], 0.0) / max(length, 1e-9))
+        t_aw = t_aw - film * (t_aw - min(film_temperature, float(t0)))
+        isp_loss = film_fraction * (1.0 - math.sqrt(min(film_temperature, t0) / t0))
 
     def h_of(tw: np.ndarray) -> np.ndarray:
         sigma = 1.0 / ((0.5 * tw / t0 * k + 0.5) ** 0.68 * k ** 0.12)
@@ -173,7 +189,7 @@ def bartz_heat_transfer(geom: nz.NozzleGeometry, gas: nz.Gas, pc: float, cooling
     circ = 2.0 * np.ones_like(r) if planar else 2.0 * math.pi * r       # two walls of a slot / the bore
     load = float(np.sum(0.5 * (q[1:] * circ[1:] + q[:-1] * circ[:-1]) * ds))
     kp = int(np.argmax(q))
-    return HeatTransfer(x, mach, h, t_aw, tw, q, float(q[kp]), float(x[kp]), load, cooling)
+    return HeatTransfer(x, mach, h, t_aw, tw, q, float(q[kp]), float(x[kp]), load, cooling, film, isp_loss)
 
 
 # ---------------------------------------------------------------------------
