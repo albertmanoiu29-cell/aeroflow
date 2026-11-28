@@ -208,6 +208,13 @@ class SupersonicWindow(QMainWindow):
         self.size.slider.valueChanged.connect(lambda _v: self._geometry_changed() if not self.size.slider.isSliderDown()
                                               else None)
         body.add(self.size)
+        self.ramp = ValueSlider("Centre-body position", -1.0, 1.0, 0.0, 0.05, "", 2,
+                                "Inlet: slide the ramp forward (the shock falls ahead of the cowl lip: spillage) or "
+                                "back (the shock is swallowed into the duct). 0 = shock on the lip at this Mach.")
+        self.ramp.slider.sliderReleased.connect(self._geometry_changed)
+        self.ramp.slider.valueChanged.connect(lambda _v: self._geometry_changed() if not self.ramp.slider.isSliderDown()
+                                              else None)
+        body.add(self.ramp)
         self.naca_row = QWidget()
         h = QHBoxLayout(self.naca_row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -359,8 +366,9 @@ class SupersonicWindow(QMainWindow):
 
     def _sync_body_ui(self) -> None:
         b = self._selected_body()
-        self.half.setEnabled(b in (SBody.WEDGE, SBody.DIAMOND, SBody.INLET))
+        self.half.setEnabled(b in (SBody.WEDGE, SBody.DIAMOND, SBody.INLET, SBody.BICONIC))
         self.aoa.setEnabled(b not in (SBody.CYLINDER, SBody.INLET))
+        self.ramp.setVisible(b is SBody.INLET)
         self.naca_row.setVisible(b is SBody.AIRFOIL)
         self.file_row.setVisible(b is SBody.AIRFOIL_FILE)
 
@@ -381,6 +389,7 @@ class SupersonicWindow(QMainWindow):
         self.view.half_angle = self.half.value()
         self.view.aoa = self.aoa.value()
         self.view.size = self.size.value()
+        self.view.ramp_shift = self.ramp.value()
         if naca is not None:
             self.view.naca = naca.code
 

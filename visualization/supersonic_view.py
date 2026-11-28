@@ -39,6 +39,8 @@ class SBody(str, Enum):
     AIRFOIL_FILE = "Airfoil from file (.dat)"
     CYLINDER = "Cylinder (bow shock)"
     CAPSULE = "Blunt capsule"
+    SPHERE_CONE = "Sphere-cone heat shield (70°)"
+    BICONIC = "Biconic entry body"
     INLET = "Supersonic inlet (ramp + cowl)"
     MODEL = "Section of the 3-D model"
 
@@ -65,8 +67,8 @@ SUPER_RESOLUTIONS: dict[str, tuple[int, int]] = {
 }
 DEFAULT_SUPER_RESOLUTION = "Balanced (320 × 190)"
 #: Bodies with a sharp nose whose attached shocks follow oblique-shock theory.
-SHARP_BODIES = {SBody.WEDGE, SBody.DIAMOND, SBody.PLATE, SBody.INLET}
-BLUNT_BODIES = {SBody.CYLINDER, SBody.CAPSULE}
+SHARP_BODIES = {SBody.WEDGE, SBody.DIAMOND, SBody.PLATE, SBody.INLET, SBody.BICONIC}
+BLUNT_BODIES = {SBody.CYLINDER, SBody.CAPSULE, SBody.SPHERE_CONE}
 
 
 @dataclass
@@ -112,6 +114,26 @@ def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[Geo
         back = np.array([[x_s + 0.55, -0.22], [x_s + 0.55, 0.22]])
         pts = np.vstack([cap, back])
         return polygon_segments(pts - np.array([0.0, 0.0])), (0.0, 0.0), True
+    if body is SBody.SPHERE_CONE:
+        # Viking / Mars-entry aeroshell: spherical nose (radius 0.25 D) blending into a 70° cone, then a short
+        # back-shell; unit diameter, the nose at the origin
+        rn, cone = 0.25, math.radians(70.0)               # nose radius = half the base radius (Viking)
+        a = np.linspace(math.pi, math.pi - (0.5 * math.pi - cone), 16)
+        cap = np.column_stack([rn + rn * np.cos(a), rn * np.sin(a)])
+        tx, ty = cap[-1]
+        run = (0.5 - ty) / math.sin(cone)
+        sx, sy = tx + run * math.cos(cone), 0.5
+        upper = np.vstack([cap, [[sx, sy], [sx + 0.05, sy - 0.02], [sx + 0.32, 0.22], [sx + 0.36, 0.0]]])
+        lower = upper[::-1] * np.array([1.0, -1.0])
+        pts = np.vstack([upper, lower[1:-1]])
+        return polygon_segments(pts), (0.0, 0.0), True
+    if body is SBody.BICONIC:
+        # sharp biconic: a fore-cone of the chosen half-angle, then a cone of half that angle, flat base
+        t2 = math.tan(math.radians(0.5 * half_angle))
+        x1 = 0.35
+        y1 = x1 * t
+        y2 = y1 + (1.0 - x1) * t2
+        return polygon_segments(np.array([[0.0, 0.0], [x1, y1], [1.0, y2], [1.0, -y2], [x1, -y1]])), (0.4, 0.0), False
     if body is SBody.MODEL and model is not None:
         sec = mesh_section(model.vertices, model.faces)
         if sec is not None:
@@ -119,11 +141,15 @@ def _unit_outline(body: SBody, half_angle: float, naca: str, model: Optional[Geo
     return None, (0.0, 0.0), False
 
 
-def _inlet(nx: int, ny: int, ramp_deg: float, size: float, design_mach: float) -> BodyGeometry:
+def _inlet(nx: int, ny: int, ramp_deg: float, size: float, design_mach: float,
+           ramp_shift: float = 0.0) -> BodyGeometry:
     """External-compression supersonic inlet: a ramp turns the flow by ``ramp_deg`` and a cowl lip is
-    placed where the ramp shock meets it at ``design_mach`` (shock-on-lip, the design condition)."""
+    placed where the ramp shock meets it at ``design_mach`` (shock-on-lip, the design condition).
+    ``ramp_shift`` (-1 .. 1) then slides the ramp (the centre-body) forward or back against the fixed cowl:
+    forward, the shock falls ahead of the lip and air spills around it; back, the shock is swallowed."""
     t = math.tan(math.radians(ramp_deg))
-    x0, y0 = 0.18 * nx, 0.22 * ny                       # ramp corner (bottom wall raised clear of the edge)
+    x_design = 0.18 * nx
+    x0, y0 = x_design, 0.22 * ny                         # ramp corner (bottom wall raised clear of the edge)
     run = 0.30 * nx * size
     y_top = y0 + run * t                                 # ramp crest, then a flat duct floor
     beta = gd.oblique_shock_beta(design_mach, ramp_deg) if design_mach > 1.0 else None
@@ -132,6 +158,7 @@ def _inlet(nx: int, ny: int, ramp_deg: float, size: float, design_mach: float) -
     y_lip = y_top + h_cap
     x_lip = x0 + (y_lip - y0) / math.tan(math.radians(beta))
     x_lip = max(x_lip, x0 + run + 4.0)                   # lip at or behind the ramp crest
+    x0 = x_design - float(np.clip(ramp_shift, -1.0, 1.0)) * 0.10 * nx   # the centre-body moves, the cowl stays
     lip_t = max(3.0, 0.012 * ny)
     end = nx + 2.0
     ramp = np.array([[x0, y0], [x0 + run, y_top], [end, y_top], [end, y0 - 3.0], [x0, y0 - 3.0]])
@@ -144,10 +171,10 @@ def _inlet(nx: int, ny: int, ramp_deg: float, size: float, design_mach: float) -
 
 def build_body(body: SBody, nx: int, ny: int, size: float, aoa: float, half_angle: float,
                naca: str = "0012", model: Optional[GeometryModel] = None, airfoil_file: str = "",
-               design_mach: float = 2.5) -> BodyGeometry:
+               design_mach: float = 2.5, ramp_shift: float = 0.0) -> BodyGeometry:
     """Place a body in the tunnel: nose at ~22 % of the length, centred vertically."""
     if body is SBody.INLET:
-        return _inlet(nx, ny, half_angle, size, design_mach)
+        return _inlet(nx, ny, half_angle, size, design_mach, ramp_shift)
     segs_u, pivot, blunt = _unit_outline(body, half_angle, naca, model, airfoil_file)
     if segs_u is None:
         return BodyGeometry(np.zeros((ny, nx), bool), None, 1.0, (0.0, 0.0), None, None)
@@ -163,7 +190,7 @@ def build_body(body: SBody, nx: int, ny: int, size: float, aoa: float, half_angl
     k = int(np.argmin(pts[:, 0]))
     nose = (float(pts[k, 0]), float(pts[k, 1]))
     up = lo = None
-    if body is SBody.WEDGE or body is SBody.DIAMOND:
+    if body in (SBody.WEDGE, SBody.DIAMOND, SBody.BICONIC):
         up, lo = half_angle - aoa, half_angle + aoa
     elif body is SBody.PLATE:
         up, lo = -aoa, aoa
@@ -272,6 +299,7 @@ class SupersonicView(QWidget):
         self.half_angle = 10.0
         self.aoa = 0.0
         self.size = 1.0
+        self.ramp_shift = 0.0
         self.naca = "0012"
         self.airfoil_file = ""
         self.field = SField.MACH
@@ -305,7 +333,10 @@ class SupersonicView(QWidget):
         self.rebuild_body(reset=True)
 
     def set_param(self, *, half_angle: Optional[float] = None, aoa: Optional[float] = None,
-                  size: Optional[float] = None, naca: Optional[str] = None) -> None:
+                  size: Optional[float] = None, naca: Optional[str] = None,
+                  ramp_shift: Optional[float] = None) -> None:
+        if ramp_shift is not None:
+            self.ramp_shift = float(ramp_shift)
         if half_angle is not None:
             self.half_angle = float(half_angle)
         if aoa is not None:
@@ -362,7 +393,7 @@ class SupersonicView(QWidget):
     def rebuild_body(self, reset: bool = False) -> None:
         s = self.solver
         g = build_body(self.body, s.nx, s.ny, self.size, self.aoa, self.half_angle, self.naca, self._model,
-                       self.airfoil_file, design_mach=max(s.mach, 1.2))
+                       self.airfoil_file, design_mach=max(s.mach, 1.2), ramp_shift=self.ramp_shift)
         if self.body is SBody.AIRFOIL_FILE and g.segments is None:
             self.status_message.emit("Load an airfoil coordinate file (.dat) for this body.")
         if self.body is SBody.MODEL and g.segments is None:
