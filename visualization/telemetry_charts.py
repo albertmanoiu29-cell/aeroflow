@@ -24,7 +24,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from config.theme import PALETTE, make_section_label, mono_font
+from config.theme import IS_LIGHT, PALETTE, make_section_label, mono_font, ui_font
 from core.results import ChordCp, PolarData
 
 log = logging.getLogger("aeroflow.viz.charts")
@@ -41,13 +41,14 @@ def _style_plot(pw: pg.PlotWidget, x_label: str = "", y_label: str = "") -> None
     """Apply the dark aerospace style to a plot widget."""
     pw.setBackground(PALETTE.surface)
     item = pw.getPlotItem()
-    item.showGrid(x=True, y=True, alpha=0.12)
-    font = mono_font(10)
+    item.showGrid(x=True, y=True, alpha=0.07 if not IS_LIGHT else 0.12)
+    font = ui_font(10)
     for name in ("left", "bottom"):
         ax = item.getAxis(name)
-        ax.setPen(pg.mkPen(PALETTE.border_strong))
-        ax.setTextPen(pg.mkPen(PALETTE.text_muted))
+        ax.setPen(pg.mkPen(PALETTE.border_strong, width=1))
+        ax.setTextPen(pg.mkPen(PALETTE.text_dim))
         ax.setTickFont(font)
+        ax.setStyle(tickLength=-4, tickTextOffset=6)
         ax.enableAutoSIPrefix(False)          # never rewrite labels as "α (deg) (x0.001)"
     style = {"color": PALETTE.text_muted, "font-size": "10px"}
     if x_label:

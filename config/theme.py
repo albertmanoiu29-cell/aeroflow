@@ -41,55 +41,93 @@ from config.settings import get_paths
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Palette:
-    """All colours used by the application (single source of truth)."""
+    """All colours used by the application (single source of truth).
 
-    bg: str = "#0B0F19"             # deep space background
-    bg_deep: str = "#080B13"        # inputs, console, status bar
-    surface: str = "#131A2A"        # elevated panel / card
-    surface_alt: str = "#0F1524"
-    surface_hover: str = "#1A2340"
-    border: str = "#1E293B"
-    border_strong: str = "#334155"
-    text: str = "#E2E8F0"
-    text_muted: str = "#94A3B8"
-    text_dim: str = "#64748B"
-    on_accent: str = "#04121A"      # text on top of cyan buttons
-    cyan: str = "#00E5FF"           # primary accent
-    cyan_hi: str = "#5CF2FF"
-    sky: str = "#38BDF8"
-    indigo: str = "#6366F1"         # secondary accent
-    success: str = "#10B981"
-    warning: str = "#F59E0B"
-    danger: str = "#EF4444"
-    viewport_bottom: str = "#0D1321"
-    viewport_top: str = "#1B263B"
+    ``cyan`` is the *accent* (the name is historical: every view refers to it); ``sky`` is its partner in
+    gradients and ``indigo`` the secondary accent used for second data series."""
+
+    bg: str = "#101216"             # window background (graphite)
+    bg_deep: str = "#0B0D10"        # inputs, rail, status bar
+    surface: str = "#16191E"        # cards and panels
+    surface_alt: str = "#13161A"
+    surface_hover: str = "#1E2229"
+    border: str = "#252A31"
+    border_strong: str = "#343A44"
+    text: str = "#E8EAED"
+    text_muted: str = "#A3AAB5"
+    text_dim: str = "#6F7682"
+    on_accent: str = "#FFFFFF"      # text on accent-coloured buttons
+    cyan: str = "#4D8EFF"           # accent
+    cyan_hi: str = "#6FA4FF"
+    sky: str = "#3A7BF0"
+    indigo: str = "#A08BFA"         # secondary accent / second data series
+    success: str = "#3DBE84"
+    warning: str = "#E8A33D"
+    danger: str = "#EF5D5D"
+    viewport_bottom: str = "#0E1115"
+    viewport_top: str = "#222833"
 
 
 #: The light theme (Appearance setting; the flow views keep their dark scientific backgrounds).
 LIGHT_PALETTE: Final[Palette] = Palette(
-    bg="#F4F6FA", bg_deep="#FFFFFF", surface="#FFFFFF", surface_alt="#EEF2F7", surface_hover="#E2E8F0",
-    border="#D7DEE8", border_strong="#B6C2D2", text="#0F172A", text_muted="#475569", text_dim="#64748B",
-    on_accent="#FFFFFF", cyan="#0891B2", cyan_hi="#06B6D4", sky="#0284C7", indigo="#4F46E5", success="#059669",
-    warning="#D97706", danger="#DC2626", viewport_bottom="#C9D3E0", viewport_top="#F1F5F9")
+    bg="#F4F5F7", bg_deep="#FFFFFF", surface="#FFFFFF", surface_alt="#F7F8FA", surface_hover="#ECEEF2",
+    border="#E1E4EA", border_strong="#C9CED7", text="#1B1F24", text_muted="#555E6B", text_dim="#7D8592",
+    on_accent="#FFFFFF", cyan="#2F6FEB", cyan_hi="#4A84F2", sky="#2560D6", indigo="#6E59E0", success="#1E9E63",
+    warning="#C47A12", danger="#D93F3F", viewport_bottom="#C9D1DC", viewport_top="#F3F5F8")
+
+#: Accent colours the user can choose (Preferences): (dark-theme shade, light-theme shade).
+ACCENTS: Final[dict[str, tuple[str, str]]] = {
+    "Blue": ("#4D8EFF", "#2F6FEB"),
+    "Teal": ("#2EC4B0", "#0E9584"),
+    "Violet": ("#9A86FA", "#6A53DE"),
+    "Amber": ("#F2A541", "#C27612"),
+    "Cyan": ("#22C7E8", "#0A8FB0"),
+}
 
 
-def appearance() -> tuple[str, float]:
-    """The saved theme ("dark" / "light") and interface scale (1.0 = 100 %); read before the UI is built."""
+def _settings_value(key: str, default):
     try:
         from PySide6.QtCore import QSettings
 
         from config.settings import APP_NAME, ORG_NAME
 
-        st = QSettings(ORG_NAME, APP_NAME)
-        theme = str(st.value("ui/theme", "dark") or "dark").lower()
-        scale = float(st.value("ui/scale", 1.0) or 1.0)
-        return ("light" if theme == "light" else "dark"), min(max(scale, 0.75), 2.0)
+        return QSettings(ORG_NAME, APP_NAME).value(key, default)
     except Exception:  # noqa: BLE001 - settings unreadable: defaults
+        return default
+
+
+def appearance() -> tuple[str, float]:
+    """The saved theme ("dark" / "light") and interface scale (1.0 = 100 %); read before the UI is built."""
+    try:
+        theme = str(_settings_value("ui/theme", "dark") or "dark").lower()
+        scale = float(_settings_value("ui/scale", 1.0) or 1.0)
+        return ("light" if theme == "light" else "dark"), min(max(scale, 0.75), 2.0)
+    except Exception:  # noqa: BLE001
         return "dark", 1.0
 
 
+def accent_name() -> str:
+    """The saved accent colour (a key of :data:`ACCENTS`)."""
+    name = str(_settings_value("ui/accent", "Blue") or "Blue")
+    return name if name in ACCENTS else "Blue"
+
+
+def _with_accent(base: Palette, light: bool, name: str) -> Palette:
+    from dataclasses import replace as _replace
+
+    a = ACCENTS.get(name, ACCENTS["Blue"])[1 if light else 0]
+
+    def mix(c1: str, c2: str, t: float) -> str:
+        x, y = c1.lstrip("#"), c2.lstrip("#")
+        v = [int(x[i:i + 2], 16) + (int(y[i:i + 2], 16) - int(x[i:i + 2], 16)) * t for i in (0, 2, 4)]
+        return "#{:02X}{:02X}{:02X}".format(*(int(round(k)) for k in v))
+
+    return _replace(base, cyan=a, cyan_hi=mix(a, "#FFFFFF", 0.22), sky=mix(a, "#000000", 0.12))
+
+
 IS_LIGHT: Final[bool] = appearance()[0] == "light"
-PALETTE: Final[Palette] = LIGHT_PALETTE if IS_LIGHT else Palette()
+ACCENT: Final[str] = accent_name()
+PALETTE: Final[Palette] = _with_accent(LIGHT_PALETTE if IS_LIGHT else Palette(), IS_LIGHT, ACCENT)
 
 # --- Viewport / scene colours ---------------------------------------------
 CFD_BACKGROUND_BOTTOM: Final[str] = PALETTE.viewport_bottom
@@ -155,7 +193,7 @@ def status_color(level: str) -> str:
 # Fonts
 # ---------------------------------------------------------------------------
 UI_FONT_CANDIDATES: Final[tuple[str, ...]] = (
-    "Inter", "Segoe UI", "SF Pro Display", ".AppleSystemUIFont", "Helvetica Neue",
+    "Inter", "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "SF Pro Display", ".AppleSystemUIFont", "Helvetica Neue",
     "Roboto", "Ubuntu", "Arial",
 )
 MONO_FONT_CANDIDATES: Final[tuple[str, ...]] = (
@@ -250,22 +288,19 @@ def generate_assets() -> dict[str, str]:
 
     def toggle(on: bool) -> Callable[[QPainter], None]:
         def draw(painter: QPainter) -> None:
-            w, h = 38.0, 22.0
+            w, h = 34.0, 20.0
             track = QRectF(1, 1, w - 2, h - 2)
             if on:
-                grad = QLinearGradient(0, 0, w, 0)
-                grad.setColorAt(0.0, qcolor(p.cyan))
-                grad.setColorAt(1.0, qcolor(p.sky))
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(grad)
+                painter.setBrush(qcolor(p.cyan))
             else:
                 painter.setPen(QPen(qcolor(p.border_strong), 1.2))
-                painter.setBrush(qcolor(p.bg_deep))
+                painter.setBrush(qcolor(p.surface_hover))
             painter.drawRoundedRect(track, (h - 2) / 2, (h - 2) / 2)
             d = h - 8.0
             x = w - 4.0 - d if on else 4.0
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(qcolor("#FFFFFF") if on else qcolor(p.text_dim))
+            painter.setBrush(qcolor("#FFFFFF") if on else qcolor(p.text_muted))
             painter.drawEllipse(QRectF(x, 4.0, d, d))
         return draw
 
@@ -309,8 +344,8 @@ def generate_assets() -> dict[str, str]:
             painter.drawPolyline(QPolygonF([QPointF(x, y) for x, y in pts]))
         return draw
 
-    assets["toggle_off"] = _save_asset(directory, "toggle_off", 38, 22, toggle(False))
-    assets["toggle_on"] = _save_asset(directory, "toggle_on", 38, 22, toggle(True))
+    assets["toggle_off"] = _save_asset(directory, "toggle_off", 34, 20, toggle(False))
+    assets["toggle_on"] = _save_asset(directory, "toggle_on", 34, 20, toggle(True))
     assets["check_off"] = _save_asset(directory, "check_off", 16, 16, checkbox(False))
     assets["check_on"] = _save_asset(directory, "check_on", 16, 16, checkbox(True))
     assets["radio_off"] = _save_asset(directory, "radio_off", 16, 16, radio(False))
@@ -327,25 +362,31 @@ _QSS_TEMPLATE: Final[str] = """
 * { outline: none; }
 QWidget { color: $text; font-family: $ui_font; font-size: 13px; }
 QMainWindow, QDialog, QMessageBox { background: $bg; }
+QMainWindow::separator { background: $border; width: 1px; height: 1px; }
+QMainWindow::separator:hover { background: $cyan_a60; }
 QWidget#Root { background: $bg; }
 QScrollArea { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }
 
-QToolTip { background: $surface; color: $text; border: 1px solid $cyan_a60;
-           padding: 6px 8px; border-radius: 6px; }
+QToolTip { background: $surface_hover; color: $text; border: 1px solid $border_strong;
+           padding: 6px 9px; border-radius: 6px; font-size: 12px; }
 
 /* ---------- Labels ---------- */
 QLabel { background: transparent; }
-QLabel[role="title"] { font-size: 15px; font-weight: 700; color: $text; }
+QLabel[role="title"] { font-size: 15px; font-weight: 600; color: $text; }
+QLabel[role="display"] { font-size: 26px; font-weight: 600; color: $text; }
+QLabel[role="headline"] { font-size: 17px; font-weight: 600; color: $text; }
 QLabel[role="subtitle"], QLabel[role="muted"] { color: $text_muted; font-size: 12px; }
+QLabel[role="dim"] { color: $text_dim; font-size: 11px; }
 QLabel[role="section"] { color: $text_dim; font-size: 10px; font-weight: 700; }
 QLabel[role="mono"] { font-family: $mono_font; }
-QLabel[role="metric"] { font-family: $mono_font; font-size: 16px; font-weight: 700; color: $text; }
+QLabel[role="metric"] { font-family: $mono_font; font-size: 16px; font-weight: 600; color: $text; }
 QLabel[role="metric-caption"] { color: $text_dim; font-size: 9px; font-weight: 700; }
-QLabel[role="unit"] { background: $bg_deep; border: 1px solid $border; border-radius: 4px;
-                      padding: 1px 6px; color: $text_muted; font-size: 10px; font-family: $mono_font; }
-QLabel[role="badge"] { border-radius: 9px; padding: 2px 10px; font-size: 11px; font-weight: 700;
+QLabel[role="unit"] { background: transparent; border: 1px solid $border; border-radius: 4px;
+                      padding: 0px 5px; color: $text_dim; font-size: 10px; }
+QLabel[role="badge"] { border-radius: 9px; padding: 2px 9px; font-size: 11px; font-weight: 600;
                        background: $cyan_a15; color: $cyan; }
+QLabel[role="link"] { color: $cyan; }
 QLabel[level="success"] { color: $success; }
 QLabel[level="warning"] { color: $warning; }
 QLabel[level="danger"] { color: $danger; }
@@ -353,162 +394,207 @@ QLabel[level="info"] { color: $cyan; }
 QLabel[role="badge"][level="success"] { background: $success_a15; color: $success; }
 QLabel[role="badge"][level="warning"] { background: $warning_a15; color: $warning; }
 QLabel[role="badge"][level="danger"] { background: $danger_a15; color: $danger; }
-QLabel#AppTitle { font-size: 15px; font-weight: 700; color: $text; }
+QLabel#AppTitle { font-size: 14px; font-weight: 600; color: $text; }
 
 /* ---------- Frames / cards ---------- */
-QFrame#TopBar { background: $bg; border: none; border-bottom: 1px solid $border; }
-QFrame#Card { background: $surface; border: 1px solid $border; border-radius: 8px; }
+QFrame#TopBar { background: $bg_deep; border: none; border-bottom: 1px solid $border; }
+QFrame#Card { background: $surface; border: 1px solid $border; border-radius: 10px; }
 QFrame#GlassCard { background: $glass; border: 1px solid $glass_border; border-radius: 10px; }
-QFrame#FloatingBar { background: $glass; border: 1px solid $glass_border; border-radius: 20px; }
-QFrame#Segmented { background: $surface; border: 1px solid $border; border-radius: 12px; }
+QFrame#FloatingBar { background: $glass; border: 1px solid $glass_border; border-radius: 12px; }
+QFrame#Segmented { background: $bg_deep; border: 1px solid $border; border-radius: 9px; }
 QFrame#DropOverlay { border: 2px dashed $cyan; border-radius: 12px; background: $cyan_a10; }
 QFrame[role="divider"] { background: $border; border: none; max-height: 1px; min-height: 1px; }
+QFrame#HomeCard { background: $surface; border: 1px solid $border; border-radius: 12px; }
+QFrame#HomeCard:hover { border-color: $cyan_a60; background: $surface_hover; }
+QFrame#Hero { border: 1px solid $border; border-radius: 14px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 $cyan_a18, stop:0.55 $surface, stop:1 $surface); }
+QFrame#SearchBox { background: $surface; border: 1px solid $border; border-radius: 8px; }
+QFrame#SearchBox:hover { border-color: $border_strong; }
+QFrame#Palette { background: $surface; border: 1px solid $border_strong; border-radius: 12px; }
 
 /* ---------- Buttons ---------- */
-QPushButton { background: $surface; border: 1px solid $border_strong; border-radius: 6px;
-              padding: 7px 14px; color: $text; font-weight: 600; }
-QPushButton:hover { background: $surface_hover; border-color: $cyan_a60; }
-QPushButton:pressed { background: $cyan_a15; }
-QPushButton:focus { border-color: $cyan; }
+QPushButton { background: $surface_hover; border: 1px solid $border_strong; border-radius: 7px;
+              padding: 6px 13px; color: $text; font-weight: 500; min-height: 18px; }
+QPushButton:hover { background: $raised; border-color: $text_dim; }
+QPushButton:pressed { background: $surface; }
+QPushButton:focus { border-color: $cyan_a60; }
+QPushButton:checked { background: $cyan_a15; border-color: $cyan_a60; color: $cyan; }
 QPushButton:disabled { color: $text_dim; background: $surface_alt; border-color: $border; }
-QPushButton[role="primary"] { color: $on_accent; border: none; font-weight: 700; padding: 9px 18px;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $cyan, stop:1 $sky); }
-QPushButton[role="primary"]:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $cyan_hi, stop:1 $sky); }
-QPushButton[role="primary"]:pressed { background: $cyan; }
-QPushButton[role="primary"]:disabled { background: $surface_hover; color: $text_dim; }
-QPushButton[role="danger"] { background: $danger_a15; border: 1px solid $danger_a60; color: $danger; }
+QPushButton[role="primary"] { color: $on_accent; border: 1px solid $cyan; font-weight: 600; background: $cyan; }
+QPushButton[role="primary"]:hover { background: $cyan_hi; border-color: $cyan_hi; }
+QPushButton[role="primary"]:pressed { background: $sky; border-color: $sky; }
+QPushButton[role="primary"]:disabled { background: $surface_hover; border-color: $border; color: $text_dim; }
+QPushButton[role="danger"] { background: $danger_a15; border: 1px solid $danger_a40; color: $danger; }
 QPushButton[role="danger"]:hover { background: $danger_a25; border-color: $danger; }
 QPushButton[role="ghost"] { background: transparent; border: 1px solid transparent; color: $text_muted; }
 QPushButton[role="ghost"]:hover { background: $white_a06; color: $text; }
-QPushButton[role="segment"] { background: transparent; border: none; border-radius: 9px;
-    padding: 8px 18px; color: $text_muted; font-weight: 700; font-size: 12px; }
-QPushButton[role="segment"]:hover { color: $text; background: $white_a06; }
-QPushButton[role="segment"]:checked { color: $on_accent;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $cyan, stop:1 $sky); }
-QPushButton#EnginePill { border-radius: 15px; padding: 6px 14px; font-size: 11px; font-weight: 700;
-                         background: $surface; border: 1px solid $border_strong; color: $text_muted; }
-QPushButton#EnginePill[state="instant"] { color: $cyan; border-color: $cyan_a60; background: $cyan_a10; }
-QPushButton#EnginePill[state="openfoam"] { color: $success; border-color: $success_a60; background: $success_a15; }
-QPushButton#EnginePill[state="unavailable"] { color: $warning; border-color: $warning_a60; background: $warning_a15; }
+QPushButton[role="ghost"]:checked { background: $cyan_a15; color: $cyan; }
+QPushButton[role="link"] { background: transparent; border: none; color: $cyan; padding: 2px 4px; }
+QPushButton[role="link"]:hover { color: $cyan_hi; text-decoration: underline; }
+QPushButton[role="segment"] { background: transparent; border: 1px solid transparent; border-radius: 7px;
+    padding: 5px 16px; color: $text_muted; font-weight: 600; font-size: 12px; }
+QPushButton[role="segment"]:hover { color: $text; }
+QPushButton[role="segment"]:checked { color: $text; background: $raised; border-color: $border_strong; }
+QPushButton#EnginePill { border-radius: 13px; padding: 4px 12px; font-size: 11px; font-weight: 600;
+                         background: transparent; border: 1px solid $border_strong; color: $text_muted; }
+QPushButton#EnginePill[state="instant"] { color: $cyan; border-color: $cyan_a40; background: $cyan_a10; }
+QPushButton#EnginePill[state="openfoam"] { color: $success; border-color: $success_a40; background: $success_a15; }
+QPushButton#EnginePill[state="unavailable"] { color: $warning; border-color: $warning_a40; background: $warning_a15; }
+QPushButton#SearchButton { background: $surface; border: 1px solid $border; border-radius: 8px; color: $text_dim;
+                           text-align: left; padding: 5px 10px; font-weight: 400; }
+QPushButton#SearchButton:hover { border-color: $border_strong; color: $text_muted; background: $surface_hover; }
 
-QToolButton { background: transparent; border: 1px solid transparent; border-radius: 6px;
+QToolButton { background: transparent; border: 1px solid transparent; border-radius: 7px;
               padding: 5px; color: $text_muted; }
 QToolButton:hover { background: $white_a06; color: $text; }
 QToolButton:checked { background: $cyan_a15; border-color: $cyan_a40; color: $cyan; }
 QToolButton:pressed { background: $cyan_a25; }
 QToolButton::menu-indicator { image: none; }
-QToolButton[role="camera"] { padding: 6px 10px; border-radius: 14px; font-size: 11px; font-weight: 600; }
-QToolButton#CardToggle { text-align: left; font-size: 11px; font-weight: 700; color: $text_dim;
-                         padding: 8px 10px; border-radius: 8px; }
-QToolButton#CardToggle:hover { color: $text; background: $white_a06; }
+QToolButton[role="camera"] { padding: 6px 10px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+QToolButton#CardToggle { text-align: left; font-size: 11px; font-weight: 700; color: $text_muted;
+                         padding: 9px 8px 7px 8px; border-radius: 8px; border: none; background: transparent; }
+QToolButton#CardToggle:hover { color: $text; background: $white_a04; }
+QToolButton#CardToggle:checked { color: $text; background: transparent; border: none; }
+QToolButton#CardToggle:checked:hover { background: $white_a04; }
+
+/* ---------- Navigation rail ---------- */
+QToolBar#NavRail { background: $bg_deep; border: none; border-right: 1px solid $border; spacing: 2px;
+                   padding: 8px 6px; }
+QToolBar#NavRail QToolButton { color: $text_dim; border-radius: 9px; padding: 7px 2px 6px 2px; font-size: 10px;
+                               font-weight: 600; min-width: 60px; max-width: 60px; border: 1px solid transparent; }
+QToolBar#NavRail QToolButton:hover { color: $text; background: $white_a06; }
+QToolBar#NavRail QToolButton:checked { color: $text; background: $cyan_a15; border-color: $cyan_a25; }
+QToolBar#NavRail QFrame[role="divider"] { margin: 6px 10px; }
 
 /* ---------- Inputs ---------- */
-QLineEdit { background: $bg_deep; border: 1px solid $border; border-radius: 6px; padding: 6px 10px;
+QLineEdit { background: $input; border: 1px solid $border; border-radius: 7px; padding: 5px 9px;
             selection-background-color: $cyan_a40; }
 QLineEdit:hover { border-color: $border_strong; }
 QLineEdit:focus { border-color: $cyan; }
-QLineEdit:disabled { color: $text_dim; }
-QSpinBox, QDoubleSpinBox { background: $bg_deep; border: 1px solid $border; border-radius: 6px;
-    padding: 4px 22px 4px 8px; font-family: $mono_font; font-size: 12px; min-height: 20px;
-    selection-background-color: $cyan_a40; }
+QLineEdit:disabled { color: $text_dim; background: $surface_alt; }
+QLineEdit#PaletteInput { background: transparent; border: none; border-bottom: 1px solid $border; border-radius: 0;
+                         padding: 12px 14px; font-size: 15px; }
+QSpinBox, QDoubleSpinBox { background: $input; border: 1px solid $border; border-radius: 7px;
+    padding: 4px 22px 4px 8px; font-size: 13px; min-height: 20px; selection-background-color: $cyan_a40; }
 QSpinBox:hover, QDoubleSpinBox:hover { border-color: $border_strong; }
 QSpinBox:focus, QDoubleSpinBox:focus { border-color: $cyan; }
+QSpinBox:disabled, QDoubleSpinBox:disabled { color: $text_dim; background: $surface_alt; }
 QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right;
-    width: 18px; border: none; background: transparent; }
+    width: 18px; border: none; background: transparent; margin-top: 2px; margin-right: 2px; }
 QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border;
-    subcontrol-position: bottom right; width: 18px; border: none; background: transparent; }
+    subcontrol-position: bottom right; width: 18px; border: none; background: transparent; margin-bottom: 2px;
+    margin-right: 2px; }
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover { background: $white_a06; border-radius: 4px; }
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url("$asset_arrow_up"); width: 8px; height: 8px; }
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url("$asset_arrow_down"); width: 8px; height: 8px; }
-QComboBox { background: $bg_deep; border: 1px solid $border; border-radius: 6px;
-            padding: 6px 28px 6px 10px; min-height: 20px; }
-QComboBox:hover { border-color: $cyan_a60; }
+QComboBox { background: $input; border: 1px solid $border; border-radius: 7px;
+            padding: 5px 28px 5px 9px; min-height: 20px; }
+QComboBox:hover { border-color: $border_strong; }
 QComboBox:focus, QComboBox:on { border-color: $cyan; }
+QComboBox:disabled { color: $text_dim; background: $surface_alt; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; }
 QComboBox::down-arrow { image: url("$asset_arrow_down"); width: 10px; height: 10px; }
-QComboBox QAbstractItemView { background: $surface; border: 1px solid $border_strong; border-radius: 6px;
-    selection-background-color: $cyan_a25; selection-color: $text; outline: none; padding: 4px; }
+QComboBox QAbstractItemView { background: $surface; border: 1px solid $border_strong; border-radius: 8px;
+    selection-background-color: $cyan_a18; selection-color: $text; outline: none; padding: 4px; }
 
 /* ---------- Sliders ---------- */
 QSlider::groove:horizontal { height: 4px; background: $border; border-radius: 2px; }
-QSlider::sub-page:horizontal { border-radius: 2px;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $indigo, stop:1 $cyan); }
+QSlider::sub-page:horizontal { border-radius: 2px; background: $cyan; }
 QSlider::add-page:horizontal { background: $border; border-radius: 2px; }
-QSlider::handle:horizontal { background: $cyan; border: 3px solid $cyan_a40; background-clip: padding;
-    width: 10px; height: 10px; margin: -6px 0; border-radius: 8px; }
-QSlider::handle:horizontal:hover { background: $cyan_hi; border-color: $cyan_a60; }
-QSlider::handle:horizontal:disabled { background: $text_dim; border-color: $border; }
+QSlider::handle:horizontal { background: $handle; border: 2px solid $cyan; width: 10px; height: 10px;
+    margin: -6px 0; border-radius: 7px; }
+QSlider::handle:horizontal:hover { border-color: $cyan_hi; background: $handle_hover; }
+QSlider::sub-page:horizontal:disabled { background: $border_strong; }
+QSlider::handle:horizontal:disabled { background: $surface_hover; border-color: $border_strong; }
 
 /* ---------- Check / radio / toggle ---------- */
 QCheckBox, QRadioButton { spacing: 8px; color: $text; }
 QCheckBox:disabled, QRadioButton:disabled { color: $text_dim; }
 QCheckBox::indicator { width: 16px; height: 16px; image: url("$asset_check_off"); }
 QCheckBox::indicator:checked { image: url("$asset_check_on"); }
-QCheckBox[toggle="true"]::indicator { width: 38px; height: 22px; image: url("$asset_toggle_off"); }
+QCheckBox[toggle="true"]::indicator { width: 34px; height: 20px; image: url("$asset_toggle_off"); }
 QCheckBox[toggle="true"]::indicator:checked { image: url("$asset_toggle_on"); }
 QRadioButton::indicator { width: 16px; height: 16px; image: url("$asset_radio_off"); }
 QRadioButton::indicator:checked { image: url("$asset_radio_on"); }
 
 /* ---------- Progress ---------- */
-QProgressBar { background: $bg; border: 1px solid $border; border-radius: 5px; text-align: center;
-               color: $text; font-size: 10px; font-family: $mono_font; min-height: 10px; max-height: 14px; }
-QProgressBar::chunk { border-radius: 4px;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 $indigo, stop:1 $cyan); }
+QProgressBar { background: $border; border: none; border-radius: 3px; text-align: center;
+               color: $text; font-size: 10px; min-height: 6px; max-height: 14px; }
+QProgressBar::chunk { border-radius: 3px; background: $cyan; }
 
 /* ---------- Scrollbars ---------- */
-QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-QScrollBar::handle:vertical { background: $border_strong; border-radius: 3px; min-height: 28px; }
+QScrollBar:vertical { background: transparent; width: 9px; margin: 2px 1px; }
+QScrollBar::handle:vertical { background: $scroll; border-radius: 3px; min-height: 30px; }
 QScrollBar::handle:vertical:hover { background: $text_dim; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; background: none; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
-QScrollBar::handle:horizontal { background: $border_strong; border-radius: 3px; min-width: 28px; }
+QScrollBar:horizontal { background: transparent; height: 9px; margin: 1px 2px; }
+QScrollBar::handle:horizontal { background: $scroll; border-radius: 3px; min-width: 30px; }
 QScrollBar::handle:horizontal:hover { background: $text_dim; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; background: none; }
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
 
 /* ---------- Tabs ---------- */
-QTabWidget::pane { border: 1px solid $border; border-radius: 8px; background: $surface; top: -1px; }
-QTabBar { background: transparent; }
-QTabBar::tab { background: transparent; color: $text_muted; padding: 8px 14px; border: none;
-               border-bottom: 2px solid transparent; font-weight: 600; margin-right: 2px; }
-QTabBar::tab:selected { color: $cyan; border-bottom: 2px solid $cyan; }
-QTabBar::tab:hover:!selected { color: $text; }
+QTabWidget::pane { border: none; border-top: 1px solid $border; background: transparent; top: -1px; }
+QTabBar { background: transparent; qproperty-drawBase: 0; }
+QTabBar::tab { background: transparent; color: $text_muted; padding: 8px 12px 7px 12px; border: none;
+               border-bottom: 2px solid transparent; font-weight: 500; margin-right: 1px; }
+QTabBar::tab:selected { color: $text; border-bottom: 2px solid $cyan; font-weight: 600; }
+QTabBar::tab:hover:!selected { color: $text; border-bottom: 2px solid $border_strong; }
+QTabBar::tab:disabled { color: $text_dim; }
+QTabBar QToolButton { background: $bg; border: 1px solid $border; border-radius: 5px; margin: 3px 1px; }
+QTabBar QToolButton:hover { background: $surface_hover; }
 
 /* ---------- Docks / splitters / status bar ---------- */
 QDockWidget { color: $text; }
 QDockWidget::title { background: $bg; padding: 8px 12px; border-bottom: 1px solid $border;
-                     text-align: left; font-weight: 700; }
+                     text-align: left; font-weight: 600; }
 QSplitter::handle { background: $border; }
 QSplitter::handle:hover { background: $cyan_a60; }
 QStatusBar { background: $bg_deep; border-top: 1px solid $border; color: $text_muted;
-             font-family: $mono_font; font-size: 11px; min-height: 28px; }
+             font-size: 11px; min-height: 26px; }
+QStatusBar QLabel { color: $text_muted; font-size: 11px; padding: 0 4px; }
 QStatusBar::item { border: none; }
 
 /* ---------- Console / text ---------- */
-QTextEdit#Console, QPlainTextEdit#Console, QTextEdit, QPlainTextEdit {
-    background: $bg_deep; border: 1px solid $border; border-radius: 8px; padding: 6px;
+QTextEdit#Console, QPlainTextEdit#Console, QTextEdit, QPlainTextEdit, QTextBrowser {
+    background: $input; border: 1px solid $border; border-radius: 8px; padding: 6px;
     selection-background-color: $cyan_a40; }
 QTextEdit#Console, QPlainTextEdit#Console { font-family: $mono_font; font-size: 11px; }
 
 /* ---------- Menus ---------- */
-QMenu { background: $surface; border: 1px solid $border_strong; border-radius: 8px; padding: 6px; }
-QMenu::item { padding: 7px 22px 7px 14px; border-radius: 6px; }
-QMenu::item:selected { background: $cyan_a15; color: $cyan; }
+QMenuBar { background: transparent; border: none; spacing: 1px; }
+QMenuBar::item { background: transparent; color: $text_muted; padding: 5px 9px; border-radius: 6px; }
+QMenuBar::item:selected { background: $white_a06; color: $text; }
+QMenuBar::item:pressed { background: $cyan_a15; color: $text; }
+QMenu { background: $surface; border: 1px solid $border_strong; border-radius: 9px; padding: 5px; }
+QMenu::item { padding: 6px 26px 6px 12px; border-radius: 6px; }
+QMenu::item:selected { background: $cyan_a18; color: $text; }
 QMenu::item:disabled { color: $text_dim; }
 QMenu::separator { height: 1px; background: $border; margin: 5px 8px; }
+QMenu::indicator { width: 14px; height: 14px; left: 6px; }
 
 /* ---------- Tables / lists ---------- */
-QTableWidget, QTableView, QListWidget, QListView { background: $surface;
-    alternate-background-color: $surface_alt; border: 1px solid $border; border-radius: 8px;
+QTableWidget, QTableView, QListWidget, QListView, QTreeView, QTreeWidget { background: $surface;
+    alternate-background-color: $surface_alt; border: 1px solid $border; border-radius: 9px;
     gridline-color: $border; selection-background-color: $cyan_a18; selection-color: $text; }
 QTableWidget::item, QListWidget::item { padding: 4px 6px; }
-QHeaderView::section { background: $bg_deep; color: $text_dim; border: none;
+QListWidget#PaletteList { background: transparent; border: none; border-radius: 0; padding: 6px; }
+QListWidget#PaletteList::item { padding: 8px 10px; border-radius: 7px; }
+QListWidget#PaletteList::item:selected { background: $cyan_a18; }
+QListWidget#NavList { background: transparent; border: none; padding: 4px; }
+QListWidget#NavList::item { padding: 8px 10px; border-radius: 7px; color: $text_muted; }
+QListWidget#NavList::item:selected { background: $cyan_a15; color: $text; }
+QListWidget#NavList::item:hover:!selected { background: $white_a04; color: $text; }
+QHeaderView::section { background: $surface_alt; color: $text_dim; border: none;
     border-bottom: 1px solid $border; padding: 6px 8px; font-size: 10px; font-weight: 700; }
-QGroupBox { border: 1px solid $border; border-radius: 8px; margin-top: 14px; padding: 12px 8px 8px 8px; }
+QTableCornerButton::section { background: $surface_alt; border: none; }
+QGroupBox { border: 1px solid $border; border-radius: 10px; margin-top: 14px; padding: 12px 8px 8px 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: $text_dim;
                    font-size: 10px; font-weight: 700; }
 QMessageBox QPushButton { min-width: 80px; }
+QDialogButtonBox QPushButton { min-width: 84px; }
 """
 
 
@@ -525,8 +611,14 @@ def build_stylesheet(assets: Optional[dict[str, str]] = None) -> str:
     tokens["ui_font"] = _font_stack(UI_FONT_CANDIDATES, "sans-serif")
     tokens["mono_font"] = _font_stack(MONO_FONT_CANDIDATES, "monospace")
     for name in ("cyan", "indigo", "success", "warning", "danger", "white"):
-        for pct in (6, 10, 15, 18, 25, 40, 60):
+        for pct in (4, 6, 10, 15, 18, 25, 40, 60):
             tokens[f"{name}_a{pct:02d}"] = rgba(tokens[name], pct / 100.0)
+    # derived surfaces
+    tokens["raised"] = lerp_color(PALETTE.surface_hover, "#000000" if IS_LIGHT else "#FFFFFF", 0.05)
+    tokens["input"] = PALETTE.bg_deep if IS_LIGHT else lerp_color(PALETTE.bg_deep, PALETTE.surface, 0.35)
+    tokens["handle"] = "#FFFFFF" if IS_LIGHT else "#F3F5F8"
+    tokens["handle_hover"] = "#FFFFFF"
+    tokens["scroll"] = PALETTE.border_strong
     tokens["glass"] = rgba(PALETTE.surface, 0.72)
     tokens["glass_border"] = rgba("#0F172A" if IS_LIGHT else "#FFFFFF", 0.10)
     for key, path in assets.items():
@@ -760,6 +852,187 @@ def _d_grid(p: QPainter, c: QColor) -> None:
         p.drawLine(QPointF(4, v), QPointF(20, v))
 
 
+def _d_home(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolyline(_poly([(3.5, 11.5), (12, 4), (20.5, 11.5)]))
+    p.drawPolyline(_poly([(6, 9.5), (6, 20), (18, 20), (18, 9.5)]))
+    p.drawPolyline(_poly([(10, 20), (10, 14.5), (14, 14.5), (14, 20)]))
+
+
+def _d_search(p: QPainter, c: QColor) -> None:
+    _stroke(p, c, 2.0)
+    p.drawEllipse(QPointF(10.5, 10.5), 6.0, 6.0)
+    p.drawLine(QPointF(15, 15), QPointF(20, 20))
+
+
+def _d_rocket(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    body = QPainterPath()
+    body.moveTo(12, 2.5)
+    body.cubicTo(15.5, 5.5, 16, 10, 15.2, 15.5)
+    body.lineTo(8.8, 15.5)
+    body.cubicTo(8, 10, 8.5, 5.5, 12, 2.5)
+    p.drawPath(body)
+    p.drawEllipse(QPointF(12, 9), 1.6, 1.6)
+    p.drawPolyline(_poly([(8.9, 12), (5.5, 15), (5.5, 18), (8.8, 15.5)]))
+    p.drawPolyline(_poly([(15.1, 12), (18.5, 15), (18.5, 18), (15.2, 15.5)]))
+    p.drawLine(QPointF(10.5, 18), QPointF(10, 21))
+    p.drawLine(QPointF(13.5, 18), QPointF(14, 21))
+
+
+def _d_flame(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    path = QPainterPath()
+    path.moveTo(12, 21)
+    path.cubicTo(6.5, 21, 5, 16.5, 7, 12.5)
+    path.cubicTo(8, 14.5, 9.5, 15, 10, 14)
+    path.cubicTo(9, 10, 11, 5.5, 14, 3)
+    path.cubicTo(14, 7, 19, 10, 18.5, 15)
+    path.cubicTo(18.3, 18.8, 15.5, 21, 12, 21)
+    p.drawPath(path)
+
+
+def _d_shock(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolygon(_poly([(8, 12), (19, 9), (19, 15)]))
+    p.drawLine(QPointF(8, 12), QPointF(19, 3.5))
+    p.drawLine(QPointF(8, 12), QPointF(19, 20.5))
+    p.drawLine(QPointF(2.5, 12), QPointF(6, 12))
+
+
+def _d_waves(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    for y in (7.0, 12.0, 17.0):
+        path = QPainterPath()
+        path.moveTo(3, y)
+        path.cubicTo(6, y - 3, 9, y + 3, 12, y)
+        path.cubicTo(15, y - 3, 18, y + 3, 21, y)
+        p.drawPath(path)
+
+
+def _d_airfoil(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    path = QPainterPath()
+    path.moveTo(3, 13)
+    path.cubicTo(5, 7.5, 13, 7, 21, 12.5)
+    path.cubicTo(14, 14.5, 7, 15.5, 3, 13)
+    p.drawPath(path)
+    pen = QPen(c, 1.2)
+    pen.setStyle(Qt.PenStyle.DashLine)
+    p.setPen(pen)
+    p.drawLine(QPointF(3, 18.5), QPointF(21, 18.5))
+
+
+def _d_wing(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolygon(_poly([(12, 5), (21, 15), (21, 17.5), (12, 13), (3, 17.5), (3, 15)]))
+    p.drawLine(QPointF(12, 5), QPointF(12, 20))
+
+
+def _d_calculator(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawRoundedRect(QRectF(5, 3, 14, 18), 2.5, 2.5)
+    p.drawRoundedRect(QRectF(8, 6, 8, 3.5), 1, 1)
+    _fill(p, c)
+    for x in (9, 12, 15):
+        for y in (13, 16.5):
+            p.drawEllipse(QPointF(x, y), 0.95, 0.95)
+
+
+def _d_book(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolyline(_poly([(12, 6.5), (12, 20)]))
+    p.drawPolyline(_poly([(12, 6.5), (8.5, 5), (3, 5), (3, 18.5), (8.5, 18.5), (12, 20), (15.5, 18.5), (21, 18.5),
+                          (21, 5), (15.5, 5), (12, 6.5)]))
+
+
+def _d_history(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawArc(QRectF(4, 4, 16, 16), 120 * 16, 300 * 16)
+    p.drawPolyline(_poly([(4.2, 6.5), (5.3, 10.2), (9, 9.3)]))
+    p.drawPolyline(_poly([(12, 8), (12, 12.5), (15, 14.5)]))
+
+
+def _d_sun(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawEllipse(QPointF(12, 12), 4.0, 4.0)
+    for i in range(8):
+        ang = i * math.pi / 4
+        p.drawLine(QPointF(12 + 6.6 * math.cos(ang), 12 + 6.6 * math.sin(ang)),
+                   QPointF(12 + 9.0 * math.cos(ang), 12 + 9.0 * math.sin(ang)))
+
+
+def _d_moon(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    path = QPainterPath()
+    path.moveTo(15, 4)
+    path.cubicTo(8, 4.5, 5, 10.5, 7, 15.5)
+    path.cubicTo(9, 20.5, 16, 21.5, 20, 17)
+    path.cubicTo(13.5, 17.5, 10.5, 9.5, 15, 4)
+    p.drawPath(path)
+
+
+def _d_sparkle(p: QPainter, c: QColor) -> None:
+    _fill(p, c)
+    path = QPainterPath()
+    path.moveTo(11, 3)
+    path.cubicTo(11.6, 8.4, 12.6, 9.4, 18, 10)
+    path.cubicTo(12.6, 10.6, 11.6, 11.6, 11, 17)
+    path.cubicTo(10.4, 11.6, 9.4, 10.6, 4, 10)
+    path.cubicTo(9.4, 9.4, 10.4, 8.4, 11, 3)
+    p.drawPath(path)
+    p.drawEllipse(QPointF(18, 18), 1.7, 1.7)
+
+
+def _d_propeller(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawEllipse(QPointF(12, 12), 2.0, 2.0)
+    for ang in (90.0, 210.0, 330.0):
+        a = math.radians(ang)
+        path = QPainterPath()
+        tip = QPointF(12 + 9 * math.cos(a), 12 - 9 * math.sin(a))
+        s1 = QPointF(12 + 2.2 * math.cos(a + 1.1), 12 - 2.2 * math.sin(a + 1.1))
+        s2 = QPointF(12 + 2.2 * math.cos(a - 0.6), 12 - 2.2 * math.sin(a - 0.6))
+        path.moveTo(s1)
+        path.quadTo(QPointF(12 + 8 * math.cos(a + 0.35), 12 - 8 * math.sin(a + 0.35)), tip)
+        path.quadTo(QPointF(12 + 5 * math.cos(a - 0.25), 12 - 5 * math.sin(a - 0.25)), s2)
+        p.drawPath(path)
+
+
+def _d_bolt(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolygon(_poly([(13, 2.5), (5, 13.5), (11.5, 13.5), (10.5, 21.5), (19, 10), (12.5, 10)]))
+
+
+def _d_external(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolyline(_poly([(10, 5), (5, 5), (5, 19), (19, 19), (19, 14)]))
+    p.drawPolyline(_poly([(14, 5), (19, 5), (19, 10)]))
+    p.drawLine(QPointF(19, 5), QPointF(11, 13))
+
+
+def _d_layers(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawPolygon(_poly([(12, 4), (21, 9), (12, 14), (3, 9)]))
+    p.drawPolyline(_poly([(3, 13), (12, 18), (21, 13)]))
+
+
+def _d_keyboard(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawRoundedRect(QRectF(2.5, 6, 19, 12), 2, 2)
+    _fill(p, c)
+    for x in (6, 9, 12, 15, 18):
+        p.drawEllipse(QPointF(x, 10), 0.8, 0.8)
+    p.drawRoundedRect(QRectF(7, 13.5, 10, 1.6), 0.8, 0.8)
+
+
+def _d_command(p: QPainter, c: QColor) -> None:
+    _stroke(p, c)
+    p.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 3, 3)
+    p.drawPolyline(_poly([(7.5, 9.5), (10.5, 12), (7.5, 14.5)]))
+    p.drawLine(QPointF(12, 15), QPointF(16.5, 15))
+
+
 def _d_fallback(p: QPainter, c: QColor) -> None:
     _stroke(p, c)
     p.drawEllipse(QPointF(12, 12), 8, 8)
@@ -771,6 +1044,11 @@ _ICON_DRAWERS: Final[dict[str, Drawer]] = {
     "front": _d_front, "top": _d_top, "side": _d_side, "chevron_down": _d_chevron_down,
     "chevron_right": _d_chevron_right, "wind": _d_wind, "plane": _d_plane, "chart": _d_chart,
     "check": _d_check, "warning": _d_warning, "close": _d_close, "info": _d_info, "grid": _d_grid,
+    "home": _d_home, "search": _d_search, "rocket": _d_rocket, "flame": _d_flame, "shock": _d_shock,
+    "waves": _d_waves, "airfoil": _d_airfoil, "wing": _d_wing, "calculator": _d_calculator, "book": _d_book,
+    "history": _d_history, "sun": _d_sun, "moon": _d_moon, "sparkle": _d_sparkle, "propeller": _d_propeller,
+    "bolt": _d_bolt, "external": _d_external, "layers": _d_layers, "keyboard": _d_keyboard,
+    "command": _d_command,
 }
 
 
@@ -818,7 +1096,7 @@ def make_icon(name: str, size: int = 20, color: Optional[str] = None,
 # Logo
 # ---------------------------------------------------------------------------
 def make_logo_pixmap(size: int = 32) -> QPixmap:
-    """Draw the AeroFlow logo: a gradient tile with an airfoil and streamlines."""
+    """Draw the AeroFlow mark: a deep accent tile with a white airfoil riding three streamlines."""
     scale = 2.0
     pix = QPixmap(int(size * scale), int(size * scale))
     pix.setDevicePixelRatio(scale)
@@ -828,33 +1106,37 @@ def make_logo_pixmap(size: int = 32) -> QPixmap:
     painter.scale(size / 32.0, size / 32.0)
 
     grad = QLinearGradient(0, 0, 32, 32)
-    grad.setColorAt(0.0, qcolor(PALETTE.indigo))
-    grad.setColorAt(1.0, qcolor(PALETTE.cyan))
+    grad.setColorAt(0.0, qcolor(lerp_color(PALETTE.cyan, "#FFFFFF", 0.12)))
+    grad.setColorAt(1.0, qcolor(lerp_color(PALETTE.cyan, "#0A0F2C", 0.55)))
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(grad)
-    painter.drawRoundedRect(QRectF(1, 1, 30, 30), 8, 8)
+    painter.drawRoundedRect(QRectF(1, 1, 30, 30), 8.5, 8.5)
+    # soft top highlight
+    hi = QLinearGradient(0, 1, 0, 16)
+    hi.setColorAt(0.0, QColor(255, 255, 255, 46))
+    hi.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.setBrush(hi)
+    painter.drawRoundedRect(QRectF(1, 1, 30, 15), 8.5, 8.5)
 
-    pen = QPen(QColor(255, 255, 255, 175), 1.5)
+    pen = QPen(QColor(255, 255, 255, 150), 1.4)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     for start, c1, c2, end in (
-        ((3.5, 9.0), (10.0, 8.0), (18.0, 5.5), (28.5, 9.5)),
-        ((3.5, 13.0), (9.0, 12.5), (15.0, 9.5), (28.5, 13.0)),
-        ((3.5, 22.0), (12.0, 23.5), (20.0, 23.0), (28.5, 21.0)),
-        ((3.5, 26.0), (12.0, 27.0), (20.0, 26.5), (28.5, 25.5)),
+        ((5.0, 11.0), (11.0, 10.0), (17.0, 6.5), (27.0, 9.0)),
+        ((5.0, 21.5), (12.0, 23.0), (19.0, 22.5), (27.0, 20.0)),
+        ((5.0, 25.5), (12.0, 26.5), (19.0, 26.0), (27.0, 24.5)),
     ):
         path = QPainterPath()
         path.moveTo(*start)
         path.cubicTo(QPointF(*c1), QPointF(*c2), QPointF(*end))
         painter.drawPath(path)
-
     wing = QPainterPath()
-    wing.moveTo(8, 17)
-    wing.cubicTo(10, 11, 20, 11, 25, 16)
-    wing.cubicTo(20, 18.5, 12, 19.5, 8, 17)
+    wing.moveTo(6.5, 17.5)
+    wing.cubicTo(8.5, 11.5, 19.5, 11.0, 26.0, 16.0)
+    wing.cubicTo(19.5, 18.6, 11.5, 19.8, 6.5, 17.5)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(qcolor("#06101C"))
+    painter.setBrush(QColor(255, 255, 255, 245))
     painter.drawPath(wing)
     painter.end()
     return pix

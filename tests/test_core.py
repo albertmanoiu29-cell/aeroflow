@@ -284,7 +284,8 @@ def test_main_window_imports() -> None:
     for mod in ("ui.main_window", "ui.cfd_panel", "ui.param_study", "ui.section_cp", "ui.probe_dialog", "ui.compare", "ui.transient_player",
                 "ui.updates_ui", "ui.dialogs", "ui.supersonic_window", "ui.flowlab_panel", "ui.nozzle_window",
                 "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance", "ui.propeller_dialog", "ui.flight_dialog",
-                "ui.airfoil_dialog", "ui.aero_calc_dialog", "ui.wing_dialog"):
+                "ui.airfoil_dialog", "ui.aero_calc_dialog", "ui.wing_dialog",
+                "ui.shell", "ui.preferences"):
         importlib.import_module(mod)
 
 
@@ -522,3 +523,20 @@ def test_flight_dynamics_light_aircraft() -> None:
     aft = FlightModel(polar, Aircraft(1100.0, 1.3, cg_shift=0.10, cm_delta_e=-0.015, cm_q=-12.0))
     aft_sp = {m.name: m for m in aft.modes(aft.trim(55.0))}["Short period"]
     assert aft_sp.omega_n < modes["Short period"].omega_n                            # less static stability
+
+
+def test_command_palette_search_and_theme_accents() -> None:
+    from config import theme
+    from ui.shell import fuzzy_score
+
+    assert fuzzy_score("rep", "Export report") is not None
+    assert fuzzy_score("xyz", "Export report") is None
+    assert fuzzy_score("noz", "Rocket Nozzle Lab") > fuzzy_score("noz", "no zone")       # substring beats scatter
+    assert fuzzy_score("", "anything") == 0.0
+    assert set(theme.ACCENTS) >= {"Blue", "Teal", "Violet", "Amber", "Cyan"}
+    for dark, light in theme.ACCENTS.values():
+        assert theme.hex_to_rgb(dark) and theme.hex_to_rgb(light)
+    for name in ("home", "search", "rocket", "airfoil", "wing", "calculator", "command"):
+        assert name in theme.available_icons()
+    qss = theme.build_stylesheet()
+    assert "$" not in qss and "NavRail" in qss

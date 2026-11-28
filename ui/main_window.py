@@ -25,8 +25,8 @@ from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, 
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow,
-    QMenuBar, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
-    QToolButton, QVBoxLayout, QWidget,
+    QMenu, QMenuBar, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from config.settings import (
@@ -75,7 +75,7 @@ MODES: tuple[AppMode, ...] = (AppMode.CFD, AppMode.POLAR, AppMode.LIVE)
 _ABORTABLE = (InstantSolveWorker, PolarSweepWorker, OpenFOAMWorker, OpenFOAMPolarWorker, GridCheckWorker,
               LoadGeometryWorker, RepairWorker)
 
-_SETTINGS_VERSION = 4         # bump when the dock layout changes so stale layouts are ignored
+_SETTINGS_VERSION = 5         # bump when the dock layout changes so stale layouts are ignored
 
 
 class MainWindow(QMainWindow):
@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(16, 0, 12, 0)
         lay.setSpacing(10)
         logo = QLabel()
-        logo.setPixmap(make_logo_pixmap(30))
+        logo.setPixmap(make_logo_pixmap(26))
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
         ver = QLabel(f"v{APP_VERSION}")
@@ -151,27 +151,40 @@ class MainWindow(QMainWindow):
         lay.addSpacing(8)
         lay.addWidget(self.menu_bar, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addStretch(1)
-        self.mode_switch = SegmentedControl([m.value for m in MODES],
-                                            ["3-D streamlines, pressure and forces (Ctrl+1)",
-                                             "CL / CD / L/D across angles of attack (Ctrl+2)",
-                                             "Real-time 2-D wind tunnel: watch vortices, wakes and stall live (Ctrl+3)"])
-        for b in self.mode_switch.buttons:
-            b.setMinimumWidth(140)
-        lay.addWidget(self.mode_switch)
+        # The workspace switch lives in the navigation rail now; the segmented control stays (hidden) as the
+        # single source of the mode index used across the window.
+        self.mode_switch = SegmentedControl([m.value for m in MODES])
+        self.mode_switch.hide()
+        self.btn_search = QPushButton("Search commands, workspaces and tools…")
+        self.btn_search.setObjectName("SearchButton")
+        self.btn_search.setIcon(make_icon("search", 15, PALETTE.text_dim))
+        self.btn_search.setMinimumWidth(300)
+        self.btn_search.setMaximumWidth(440)
+        self.btn_search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_search.setToolTip("Command palette (Ctrl+K)")
+        self.btn_search.clicked.connect(self.open_command_palette)
+        kbd = QLabel("Ctrl K")
+        kbd.setProperty("role", "unit")
+        sb_lay = QHBoxLayout(self.btn_search)
+        sb_lay.setContentsMargins(0, 0, 8, 0)
+        sb_lay.addStretch(1)
+        sb_lay.addWidget(kbd)
+        lay.addWidget(self.btn_search, 2)
         lay.addStretch(1)
         self.btn_super = QPushButton("Supersonic Lab")
         self.btn_super.setIcon(make_icon("wind", 16))
         self.btn_super.setToolTip("Open the Supersonic Lab in its own window (Ctrl+4): shock waves above Mach 1")
         self.btn_super.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_super.clicked.connect(lambda: self.open_supersonic())
-        lay.addWidget(self.btn_super)
+        self.btn_super.hide()                 # in the navigation rail
         self.btn_nozzle = QPushButton("Nozzle Lab")
         self.btn_nozzle.setIcon(make_icon("play", 16))
         self.btn_nozzle.setToolTip("Open the Rocket Nozzle Lab (Ctrl+5): rocket engine nozzles, exhaust plumes, "
                                    "shock diamonds and thrust, live from ignition")
         self.btn_nozzle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_nozzle.clicked.connect(lambda: self.open_nozzle())
-        lay.addWidget(self.btn_nozzle)
+        self.btn_nozzle.hide()
         self.engine_pill = QPushButton("Instant Aero Engine")
         self.engine_pill.setObjectName("EnginePill")
         self.engine_pill.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -186,8 +199,14 @@ class MainWindow(QMainWindow):
         self.btn_help.setIcon(make_icon("help", 20))
         self.btn_help.setIconSize(QSize(20, 20))
         self.btn_help.setToolTip("Help, shortcuts and about (F1)")
+        self.btn_prefs = QToolButton()
+        self.btn_prefs.setIcon(make_icon("settings", 20))
+        self.btn_prefs.setIconSize(QSize(20, 20))
+        self.btn_prefs.setToolTip("Preferences (Ctrl+,)")
+        self.btn_prefs.clicked.connect(self.open_preferences)
         lay.addWidget(self.btn_export)
         lay.addWidget(self.btn_help)
+        lay.addWidget(self.btn_prefs)
         self.setMenuWidget(bar)
 
     def _build_central(self) -> None:
@@ -230,7 +249,30 @@ class MainWindow(QMainWindow):
         # Live Flow Lab page
         self.lab_view = FlowLabView()
         self.stack.addWidget(self.lab_view)
+        # Home screen
+        from ui.shell import HomePage, NavItem, NavRail
+
+        self.home = HomePage()
+        self.home.activated.connect(self._on_nav)
+        self.home.open_recent.connect(self._open_recent_path)
+        self.stack.addWidget(self.home)
+        self._home_visible = False
+        self._docks_before_home: tuple[bool, bool] = (True, True)
         self.setCentralWidget(self.stack)
+        self.rail = NavRail(
+            [[NavItem("home", "Home", "home", "Home: workspaces, recent projects, what's new (Alt+Home)")],
+             [NavItem("cfd", "Tunnel", "wind", "Wind tunnel: 3-D streamlines, pressure and forces (Ctrl+1)"),
+              NavItem("polar", "Polar", "chart", "Polar analysis: CL, CD and L/D across angles of attack (Ctrl+2)"),
+              NavItem("live", "Live", "waves", "Live Flow Lab: a real-time 2-D wind tunnel (Ctrl+3)")],
+             [NavItem("supersonic", "Mach", "shock", "Supersonic Lab: shock waves above Mach 1 (Ctrl+4)", False),
+              NavItem("nozzle", "Nozzle", "rocket", "Rocket Nozzle Lab: engines, plumes, thrust (Ctrl+5)", False)],
+             [NavItem("airfoil", "Airfoil", "airfoil", "Airfoil analysis: panel method (Ctrl+Shift+A)", False),
+              NavItem("wing", "Wing", "wing", "Wing analysis: lifting line (Ctrl+Shift+W)", False),
+              NavItem("calc", "Calc", "calculator", "Aero calculator (Ctrl+Shift+U)", False)]],
+            bottom=[NavItem("guide", "Guide", "book", "Guide: what everything means (Shift+F1)", False),
+                    NavItem("settings", "Settings", "settings", "Preferences (Ctrl+,)", False)])
+        self.rail.activated.connect(self._on_nav)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.rail)
 
     def _build_left_dock(self) -> None:
         self.left_dock = QDockWidget("Controls", self)
@@ -438,8 +480,10 @@ class MainWindow(QMainWindow):
         a(m_view, "Rocket Nozzle Lab (separate window)…", self.open_nozzle, "Ctrl+5",
           "Rocket engine nozzle and exhaust plume: ignition, shock diamonds, thrust and Isp vs 1-D theory")
         m_view.addSeparator()
-        a(m_view, "Appearance (theme, interface size)…", self.open_appearance, "",
-          "Light or dark theme and a larger or smaller interface")
+        a(m_view, "Home", self.show_home, "Alt+Home", "The start screen: workspaces, recent projects, what's new")
+        a(m_view, "Command palette…", self.open_command_palette, "Ctrl+K", "Search and run any command")
+        a(m_view, "Preferences (theme, accent, interface size)…", self.open_preferences, "Ctrl+,",
+          "Light or dark theme, accent colour, interface size, start-up and compute device")
         m_view.addSeparator()
         for key, label in (("iso", "Isometric view"), ("front", "Front view"), ("top", "Top view"),
                            ("side", "Side view"), ("reset", "Reset camera")):
@@ -608,6 +652,10 @@ class MainWindow(QMainWindow):
                          Qt.Orientation.Horizontal)
 
     def _save_layout(self) -> None:
+        if getattr(self, "_home_visible", False):           # save the workspace layout, not the Home view
+            left, right = self._docks_before_home
+            self.left_dock.setVisible(left)
+            self.right_dock.setVisible(right)
         try:
             s = self._settings()
             s.setValue("window/geometry", self.saveGeometry())
@@ -663,12 +711,18 @@ class MainWindow(QMainWindow):
             log.warning("numba is not installed: the CPU solvers run 10-20x slower. Run setup_windows.bat "
                         "(or: pip install numba) to enable the compiled kernels.")
         QTimer.singleShot(4000, self._maybe_auto_check_updates)    # after start-up work has settled
+        v = self._settings().value("ui/show_home", True)
+        if (v if isinstance(v, bool) else str(v).lower() not in ("false", "0")) and \
+                not os.environ.get("AEROFLOW_NO_HOME"):
+            self.show_home()
 
     def _set_mode(self, mode: AppMode) -> None:
         if self._closing or self._recording:
             return
+        self._leave_home()
         previous = self.mode
         self.mode = mode
+        self.rail.set_current({AppMode.CFD: "cfd", AppMode.POLAR: "polar", AppMode.LIVE: "live"}[mode])
         self.mode_switch.set_index(MODES.index(mode))
         self.stack.setCurrentIndex(MODES.index(mode))
         live = mode == AppMode.LIVE
@@ -689,6 +743,96 @@ class MainWindow(QMainWindow):
             if self.polar is None and self.geometry_mgr.has_model and not self._sweep_running():
                 self._status("Tip: press 'Run polar sweep' to compute the polar.")
         self.sb_fps.setText("— FPS")
+
+    # -- Home, navigation, command palette, preferences ----------------------------------------------
+    def show_home(self) -> None:
+        """The start screen: the side panels step aside while it is shown."""
+        if self._closing or self._recording:
+            return
+        if not self._home_visible:
+            self._docks_before_home = (self.left_dock.isVisible(), self.right_dock.isVisible())
+        self._home_visible = True
+        self.home.set_recent(self._recent_files())
+        self.left_dock.hide()
+        self.right_dock.hide()
+        self.stack.setCurrentWidget(self.home)
+        self.rail.set_current("home")
+        if self.mode == AppMode.LIVE:
+            self._lab_user_paused = not self.lab_view.running
+            self.lab_view.stop()
+        self.cfd_view.set_animation_paused(True)
+        self._status("Home: pick a workspace, a lab or a tool.")
+
+    def _leave_home(self) -> None:
+        if not self._home_visible:
+            return
+        self._home_visible = False
+        left, right = self._docks_before_home
+        self.left_dock.setVisible(left)
+        self.right_dock.setVisible(right)
+
+    def _on_nav(self, key: str) -> None:
+        """A navigation rail, Home-screen or palette target."""
+        modes = {"cfd": AppMode.CFD, "polar": AppMode.POLAR, "live": AppMode.LIVE}
+        if key == "home":
+            self.show_home()
+        elif key in modes:
+            if self._home_visible and modes[key] == self.mode:
+                self._leave_home()
+                self.stack.setCurrentIndex(MODES.index(self.mode))
+                self.rail.set_current(key)
+                self.cfd_view.set_animation_paused(self.mode != AppMode.CFD)
+                if self.mode == AppMode.LIVE and not self._lab_user_paused:
+                    self.lab_view.start()
+            else:
+                self._set_mode(modes[key])
+        else:
+            actions = {"supersonic": self.open_supersonic, "nozzle": self.open_nozzle,
+                       "airfoil": self.open_airfoil_tool, "wing": self.open_wing_tool, "calc": self.open_aero_calc,
+                       "propeller": self.open_propeller_tool, "flight": self.open_flight_dynamics,
+                       "settings": self.open_preferences, "palette": self.open_command_palette,
+                       "import": self.import_dialog, "open": self.open_project_dialog,
+                       "shortcuts": lambda: self.show_help(tab="Shortcuts"),
+                       "guide": lambda: __import__("ui.guide", fromlist=["show_guide"]).show_guide(self)}
+            fn = actions.get(key)
+            if fn is not None:
+                fn()
+
+    def _open_recent_path(self, path: str) -> None:
+        if path.lower().endswith(".aeroflow"):
+            self.open_project(path)
+        else:
+            self._set_mode(AppMode.CFD)
+            self.load_file(path)
+
+    def open_command_palette(self) -> None:
+        from ui.shell import Command, CommandPalette, commands_from_actions
+
+        menu_of: dict[int, str] = {}
+        for m in self.menu_bar.findChildren(QMenu):
+            title = m.title().replace("&", "")
+            for act in m.actions():
+                menu_of.setdefault(id(act), title)
+        cmds = [Command(t, "Go to", (lambda k=k: self._on_nav(k)), sc, kw) for t, k, sc, kw in (
+            ("Home", "home", "Alt+Home", "start welcome recent"),
+            ("Wind tunnel", "cfd", "Ctrl+1", "cfd 3d streamlines"),
+            ("Polar analysis", "polar", "Ctrl+2", "sweep lift drag"),
+            ("Live Flow Lab", "live", "Ctrl+3", "lbm vortex"),
+            ("Supersonic Lab", "supersonic", "Ctrl+4", "shock mach"),
+            ("Rocket Nozzle Lab", "nozzle", "Ctrl+5", "engine thrust aerospike motor"),
+            ("Preferences", "settings", "Ctrl+,", "settings theme accent dark light size"))]
+        cmds += commands_from_actions([a for a in self.actions() if a.text()],
+                                      lambda a: menu_of.get(id(a), "Command"))
+        self._palette = CommandPalette(cmds, self)
+        self._palette.popup()
+
+    def open_preferences(self) -> None:
+        from ui.appearance import restart_application
+        from ui.preferences import PreferencesDialog
+
+        dlg = PreferencesDialog(self)
+        if dlg.exec() and dlg.restart_requested:
+            restart_application(self)
 
     def _update_chart_visibility(self) -> None:
         """Right-dock charts that make sense for the current mode (live forces only in the Flow Lab)."""
@@ -1110,13 +1254,7 @@ class MainWindow(QMainWindow):
             win.toggle_run()
 
     def open_appearance(self) -> None:
-        from ui.appearance import AppearanceDialog, restart_application
-
-        dlg = AppearanceDialog(self)
-        if dlg.exec() and dlg.restart_requested:
-            restart_application(self)
-        elif dlg.result():
-            self.notify("Appearance saved: it applies the next time the program starts.")
+        self.open_preferences()
 
     def open_nozzle(self) -> None:
         """Show the Rocket Nozzle Lab window (created on first use, then kept with its state)."""
