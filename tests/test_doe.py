@@ -75,3 +75,19 @@ def test_combined_report_html(tmp_path) -> None:
     assert "Wing &lt;study&gt;" in h and "<h2>Contents</h2>" in h and "1. A" in h and "2. B" in h
     assert h.count("data:image/png;base64,") == 2                 # the logo and the figure, embedded
     assert "kv two" in h and "k13" in h
+
+
+def test_polar_comparison() -> None:
+    from core import polar_compare as pc
+    from core.results import PolarData
+
+    al = np.arange(-6.0, 15.0, 1.0)
+    a = PolarData(al, 0.1 * (al + 2.0), 0.01 + 0.01 * (0.1 * (al + 2.0)) ** 2, -0.05 + 0 * al)
+    b = PolarData(al, 0.1 * (al + 4.0), 0.012 + 0.01 * (0.1 * (al + 4.0)) ** 2, -0.1 + 0 * al)
+    ma = dict((n, v) for n, v, _ in pc.metrics(a))
+    mb = dict((n, v) for n, v, _ in pc.metrics(b))
+    assert ma["Zero-lift angle α0 (°)"] == pytest.approx(-2.0) and mb["Zero-lift angle α0 (°)"] == pytest.approx(-4.0)
+    assert ma["Lift slope CLα (/°)"] == pytest.approx(0.1)
+    assert mb["CD min"] == pytest.approx(0.012)
+    d = pc.difference(a, b)
+    assert np.allclose(d.d_cl, 0.2) and np.allclose(d.d_cm, -0.05)

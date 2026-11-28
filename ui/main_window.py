@@ -538,9 +538,10 @@ class MainWindow(QMainWindow):
           "Vary several conditions together (full factorial, Latin hypercube, central composite): main effects, "
           "a response map, a fitted response surface and its optimum")
         a(m_sim, "Pin result for comparison", self.pin_result, "",
-          "Remember the current result as 'A' to compare later results against")
+          "Remember the current result and polar as 'A' to compare later designs against")
         a(m_sim, "Compare with pinned result…", self.compare_results, "Ctrl+Shift+K",
-          "Side-by-side 3-D views (linked cameras), coefficient differences and a ΔCp surface")
+          "Side-by-side 3-D views (linked cameras), coefficient differences, a ΔCp surface, and the polars "
+          "overlaid with their differences")
         a(m_sim, "Play transient result…", self.play_transient, "",
           "Step through the frames of a transient OpenFOAM run, with CL / CD against time")
         a(m_sim, "Grid convergence check…", self.grid_check, "",
@@ -1644,26 +1645,34 @@ class MainWindow(QMainWindow):
         dlg.show()
 
     _pinned_result: Optional[tuple[GeometryModel, SolverResult]] = None
+    _pinned_polar: Optional[Any] = None
 
     def pin_result(self) -> None:
         model = self.geometry_mgr.model
-        if self.result is None or model is None:
-            self._status("Run a simulation first - there is no result to pin.")
+        if (self.result is None or model is None) and self.polar is None:
+            self._status("Run a simulation or a polar first - there is nothing to pin.")
             return
-        self._pinned_result = (model, self.result)
-        self.notify("Result pinned as A - change something, solve, then Simulation ▸ Compare.", "info")
+        self._pinned_result = (model, self.result) if self.result is not None and model is not None else None
+        self._pinned_polar = self.polar
+        what = " and ".join(x for x, ok in (("the result", self._pinned_result), ("the polar", self.polar)) if ok)
+        self.notify(f"Pinned {what} as A - change the design, solve again, then Simulation ▸ Compare.", "info")
 
     def compare_results(self) -> None:
         model = self.geometry_mgr.model
-        if self._pinned_result is None:
+        if self._pinned_result is None and self._pinned_polar is None:
             self._status("Pin a result first (Simulation ▸ Pin result for comparison).")
             return
-        if self.result is None or model is None:
-            self._status("Run a simulation to compare against the pinned result.")
+        flow = self._pinned_result is not None and self.result is not None and model is not None
+        polars = (self._pinned_polar, self.polar) if self._pinned_polar is not None and self.polar is not None else None
+        if polars is not None and polars[0] is polars[1]:
+            polars = None
+        if not flow and polars is None:
+            self._status("Run a simulation (or a polar) on the changed design to compare it with the pinned one.")
             return
         from ui.compare import CompareWindow
 
-        win = CompareWindow(self._pinned_result[0], self._pinned_result[1], model, self.result, self)
+        a = self._pinned_result if flow else (None, None)
+        win = CompareWindow(a[0], a[1], model if flow else None, self.result if flow else None, self, polars=polars)
         win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         win.show()
 

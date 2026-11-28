@@ -1,4 +1,5 @@
-"""Side-by-side comparison of two results: linked 3-D views, a coefficient table and a ΔCp surface."""
+"""Side-by-side comparison of two configurations: linked 3-D views, a coefficient table and a ΔCp surface;
+and their polars overlaid, with the differences B − A and a table of key figures."""
 
 from __future__ import annotations
 
@@ -6,17 +7,19 @@ from dataclasses import replace
 from typing import Optional
 
 import numpy as np
+import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QSplitter, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QCheckBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QSplitter, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from config.settings import APP_NAME
-from config.theme import mono_font
+from config.theme import PALETTE, mono_font
+from core import polar_compare as pc
 from core.geometry_manager import GeometryModel
-from core.results import SolverResult
-from visualization.cfd_viewport import CFDViewport
+from core.results import PolarData, SolverResult
+from visualization.telemetry_charts import _style_plot
 
 
 def _label(r: SolverResult) -> str:
@@ -27,17 +30,28 @@ def _label(r: SolverResult) -> str:
 class CompareWindow(QMainWindow):
     """A (pinned) vs B (current): both views follow one camera."""
 
-    def __init__(self, model_a: GeometryModel, a: SolverResult, model_b: GeometryModel, b: SolverResult,
-                 parent: Optional[QWidget] = None) -> None:
+    def __init__(self, model_a: Optional[GeometryModel], a: Optional[SolverResult], model_b: Optional[GeometryModel],
+                 b: Optional[SolverResult], parent: Optional[QWidget] = None,
+                 polars: Optional[tuple[PolarData, PolarData]] = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"Compare results — {APP_NAME}")
+        self.setWindowTitle(f"Compare A and B — {APP_NAME}")
         self.resize(1600, 900)
         self.a, self.b = a, b
+        self.views: list = []
+        tabs = QTabWidget()
+        if a is not None and b is not None:
+            tabs.addTab(self._flow_tab(model_a, a, model_b, b), "3-D flow and coefficients")
+        if polars is not None:
+            tabs.addTab(PolarCompare(*polars), "Polars")
+        self.setCentralWidget(tabs)
+
+    def _flow_tab(self, model_a: GeometryModel, a: SolverResult, model_b: GeometryModel, b: SolverResult) -> QWidget:
+        from visualization.cfd_viewport import CFDViewport
+
         root = QWidget()
         lay = QVBoxLayout(root)
         lay.setContentsMargins(8, 8, 8, 8)
         split = QSplitter(Qt.Orientation.Horizontal)
-        self.views: list[CFDViewport] = []
         for title, model, res in (("A (pinned)", model_a, a), ("B (current)", model_b, b)):
             box = QWidget()
             bl = QVBoxLayout(box)
@@ -72,9 +86,9 @@ class CompareWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setMaximumHeight(230)
         lay.addWidget(self.table)
-        self.setCentralWidget(root)
         self._fill_table()
         self._link_cameras()
+        return root
 
     def _fill_table(self) -> None:
         ka, kb = self.a.kpis, self.b.kpis
@@ -93,7 +107,7 @@ class CompareWindow(QMainWindow):
         """Copy A's camera to B whenever A's view changes (and B's to A), without feedback loops."""
         self._syncing = False
 
-        def sync(src: CFDViewport, dst: CFDViewport) -> None:
+        def sync(src, dst) -> None:
             if self._syncing:
                 return
             self._syncing = True
@@ -135,3 +149,66 @@ class CompareWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         super().closeEvent(event)
+
+
+class PolarCompare(QWidget):
+    """Polars A and B overlaid, the differences B − A, and their key figures."""
+
+    def __init__(self, a: PolarData, b: PolarData, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        ca = pg.mkPen("#9AA3AF", width=2, style=Qt.PenStyle.DashLine)
+        cb = pg.mkPen(PALETTE.cyan, width=2)
+        la = a.geometry_name or "pinned"
+        lb = b.geometry_name or "current"
+        grid = QGridLayout()
+        lda, ldb = pc._ld(a), pc._ld(b)
+        charts = (("Lift curve", "α (°)", "CL", (a.alpha_deg, a.cl), (b.alpha_deg, b.cl)),
+                  ("Drag polar", "CD", "CL", (a.cd, a.cl), (b.cd, b.cl)),
+                  ("Efficiency", "α (°)", "L/D", (a.alpha_deg, lda), (b.alpha_deg, ldb)),
+                  ("Pitching moment", "α (°)", "CM", (a.alpha_deg, a.cm), (b.alpha_deg, b.cm)))
+        for k, (title, xl, yl, da, db) in enumerate(charts):
+            pw = pg.PlotWidget(title=title)
+            _style_plot(pw, xl, yl)
+            pw.addLegend(offset=(8, 8))
+            pw.plot(*da, pen=ca, name="A")
+            pw.plot(*db, pen=cb, name="B")
+            grid.addWidget(pw, 0, k)
+        d = pc.difference(a, b)
+        for k, (title, y) in enumerate((("ΔCL = B − A", d.d_cl), ("ΔCD = B − A", d.d_cd), ("ΔCM = B − A", d.d_cm),
+                                        ("Δ(L/D) = B − A", d.d_ld))):
+            pw = pg.PlotWidget(title=title)
+            _style_plot(pw, "α (°)", title.split(" =")[0])
+            pw.addLine(y=0, pen=pg.mkPen("#6F7682", width=1))
+            pw.plot(d.alpha, np.where(y >= 0, y, 0.0), pen=None, fillLevel=0, brush=pg.mkBrush(52, 211, 153, 70))
+            pw.plot(d.alpha, np.where(y < 0, y, 0.0), pen=None, fillLevel=0, brush=pg.mkBrush(248, 113, 113, 70))
+            pw.plot(d.alpha, y, pen=pg.mkPen(PALETTE.cyan, width=2))
+            grid.addWidget(pw, 1, k)
+        ma, mb = pc.metrics(a), pc.metrics(b)
+        table = QTableWidget(len(ma), 4)
+        table.setHorizontalHeaderLabels(["Key figure", "A", "B", "B − A"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setFont(mono_font(10))
+        for i, ((name, va, dec), (_, vb, _)) in enumerate(zip(ma, mb)):
+            for j, text in enumerate((name, f"{va:.{dec}f}", f"{vb:.{dec}f}", f"{vb - va:+.{dec}f}")):
+                it = QTableWidgetItem(text)
+                if j:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                table.setItem(i, j, it)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.setMinimumWidth(520)
+        table.setMaximumWidth(600)
+        cap = QLabel(f"<b>A</b> (dashed): {la} · {a.engine} · Re {a.reynolds:.3g} &nbsp;&nbsp; "
+                     f"<b>B</b>: {lb} · {b.engine} · Re {b.reynolds:.3g}. In the difference charts, green "
+                     "shading is where B is higher.")
+        cap.setTextFormat(Qt.TextFormat.RichText)
+        cap.setWordWrap(True)
+        top = QWidget()
+        top.setLayout(grid)
+        body = QHBoxLayout()
+        body.addWidget(top, 1)
+        body.addWidget(table)
+        lay = QVBoxLayout(self)
+        lay.addWidget(cap)
+        lay.addLayout(body, 1)
