@@ -252,10 +252,11 @@ HELP_SHORTCUTS = """\
 FILE & EDIT
   Ctrl+O        Import geometry          Ctrl+E      Export report
   Ctrl+S        Save 4K screenshot       Ctrl+Z      Undo geometry change
-  Ctrl+Q        Quit
+  Ctrl+Shift+R  Combined report (PDF)    Ctrl+Q      Quit
 
 SIMULATION
   Ctrl+R        Run simulation           Esc         Abort running task
+  Ctrl+Shift+E  Design of experiments    Ctrl+Shift+K  Compare with pinned
 
 VIEW & NAVIGATION
   Ctrl+K        Command palette          Alt+Home    Home screen
@@ -268,6 +269,8 @@ VIEW & NAVIGATION
 TOOLS
   Ctrl+Shift+A  Airfoil analysis         Ctrl+Shift+W  Wing analysis
   Ctrl+Shift+U  Aero calculator          Ctrl+Shift+P  Parametric study
+  Ctrl+Shift+D  Aircraft design          Ctrl+Shift+M  Mission planner
+  In any tool window: Ctrl+Z undo and Ctrl+Y (or Ctrl+Shift+Z) redo the inputs
 
 3-D VIEW (mouse)
   Left drag     Rotate                   Wheel       Zoom

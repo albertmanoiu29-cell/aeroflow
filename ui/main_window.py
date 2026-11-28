@@ -1718,6 +1718,7 @@ class MainWindow(QMainWindow):
 
         dlg = FlightDialog(polar, self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._install_undo(dlg)
         dlg.show()
 
     def open_airfoil_tool(self) -> None:
@@ -1755,8 +1756,18 @@ class MainWindow(QMainWindow):
             self._apply_tool_state(dlg, st)
         self._tools[key] = dlg
         dlg.finished.connect(lambda _r, k=key, d=dlg: self._tool_closed(k, d))
+        self._install_undo(dlg)
         dlg.show()
         return dlg
+
+    def _install_undo(self, dlg: Any) -> None:
+        """Ctrl+Z / Ctrl+Y in the tool window step through its input history."""
+        from ui.tool_undo import install
+
+        try:
+            install(dlg, lambda d=dlg: self._tool_state(d), lambda st, d=dlg: self._apply_tool_state(d, st))
+        except Exception as exc:  # noqa: BLE001 - undo is a convenience; never block the tool
+            log.debug("Undo not available for %s: %s", type(dlg).__name__, exc)
 
     @staticmethod
     def _tool_state(dlg: Any) -> dict:
