@@ -176,10 +176,10 @@ class HomePage(QWidget):
         HomeEntry("flight", "Flight dynamics", "Trim, short period and phugoid", "plane"),
     )
     WHATS_NEW = (
-        ("Aircraft and missions", "Size a whole aircraft, or stack rocket stages and fly them to orbit."),
-        ("Spinning propeller", "See the propeller turn and the slipstream it drives, in 3-D."),
-        ("Real airfoil drag", "Boundary layer, transition, stall, Mach effects, flaps and slats."),
-        ("AMD and Intel GPUs", "The live labs now run on any modern graphics card, not just NVIDIA."),
+        ("Batch runs", "Design of experiments: vary several conditions together and find the optimum."),
+        ("Compare and report", "Polars side by side with differences; one PDF report with your logo."),
+        ("Undo everywhere", "Ctrl+Z in every tool window; labs inside the main window; saved layouts."),
+        ("One-click updates", "Update now installs the new version and restarts by itself."),
     )
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:

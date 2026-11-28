@@ -25,7 +25,7 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
-## Coming in the next release
+## What's new in 2.2
 
 - **Design of experiments** (Ctrl+Shift+E): several conditions varied together, main effects, response surface and optimum.
 - **Comparison mode** with polars overlaid and difference charts; **combined PDF reports** with your logo.

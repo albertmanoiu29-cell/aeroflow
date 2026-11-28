@@ -3,7 +3,7 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
-## [Unreleased]
+## [2.2.0] - 2026-11-28
 
 Faster ways to work: batch runs, comparisons, combined reports, undo everywhere, labs inside the main window, saved layouts, a guided tour and one-click updates.
 
