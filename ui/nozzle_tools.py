@@ -390,9 +390,35 @@ class MotorTab(QWidget):
         bl.setContentsMargins(0, 0, 0, 0)
         bl.addWidget(self.btn_size)
         bl.addWidget(self.btn_eng)
+        from core.grain_geometry import SHAPES
+
+        self.shape = QComboBox()
+        for name in SHAPES:
+            self.shape.addItem(name)
+        self.points = QSpinBox()
+        self.points.setRange(3, 12)
+        self.points.setValue(6)
+        self.points.setToolTip("Star points / fins")
+        self.depth = _spin(5.0, 95.0, 50.0, 0, "%", 5.0, "Star point / fin depth, as a share of the web")
+        self.finw = _spin(1.0, 30.0, 8.0, 0, "% Ø", 1.0, "Fin / slot width")
+        self.offset = _spin(0.0, 95.0, 75.0, 0, "%", 5.0, "Moon burner: core offset, as a share of the web")
         controls = _grid([("Propellant", self.prop), ("Burn rate a", self.a), ("Exponent n", self.n),
-                          ("Density", self.rho), ("Segments", self.segs), ("Grain Ø", self.od), ("Core Ø", self.core),
-                          ("Segment length", self.seg_len), ("c* efficiency", self.eff)])
+                          ("Density", self.rho), ("Grain shape", self.shape), ("Segments", self.segs),
+                          ("Grain Ø", self.od), ("Core Ø", self.core), ("Segment length", self.seg_len),
+                          ("Points / fins", self.points), ("Point / fin depth", self.depth), ("Fin / slot width", self.finw),
+                          ("Core offset", self.offset), ("c* efficiency", self.eff)])
+        self.p_sec = pg.PlotWidget()
+        _style_plot(self.p_sec, "", "")
+        self.p_sec.setAspectLocked(True)
+        self.p_sec.hideAxis("left")
+        self.p_sec.hideAxis("bottom")
+        self.p_sec.setMinimumHeight(150)
+        self.p_sec.setMaximumHeight(200)
+        self.img_sec = pg.ImageItem(axisOrder="row-major")
+        self.p_sec.addItem(self.img_sec)
+        lut = np.array([[0, 0, 0, 0], [208, 140, 80, 255], [24, 28, 34, 255]], dtype=np.ubyte)
+        self.img_sec.setLookupTable(lut)
+        self.img_sec.setLevels((0, 2))
         self.p_f = _plot("time (s)", "thrust (kN)", legend=False)
         self.c_f = self.p_f.plot(pen=pg.mkPen(PALETTE.warning, width=2), fillLevel=0.0,
                                  brush=pg.mkBrush(PALETTE.warning + "30"))
@@ -409,7 +435,10 @@ class MotorTab(QWidget):
                            "No erosive burning, throat erosion or ignition / tail-off transients.")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(_scroll_page(controls, self.inhibit, btns, (_card("Thrust curve", self.p_f), 200),
+        sec_card = _card("Grain cross-section", self.p_sec)
+        sec_card.setMaximumHeight(250)
+        lay.addWidget(_scroll_page(controls, self.inhibit, btns, sec_card,
+                                   (_card("Thrust curve", self.p_f), 200),
                                    (_card("Chamber pressure and Kn", self.p_p), 200), self.info, self.note))
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -418,6 +447,11 @@ class MotorTab(QWidget):
         for w in (self.a, self.n, self.rho, self.od, self.core, self.seg_len, self.eff):
             w.valueChanged.connect(lambda _v: self._edited())
         self.segs.valueChanged.connect(lambda _v: self._edited())
+        self.shape.currentIndexChanged.connect(lambda _i: (self._sync_shape(), self._edited()))
+        self.points.valueChanged.connect(lambda _v: self._edited())
+        for w in (self.depth, self.finw, self.offset):
+            w.valueChanged.connect(lambda _v: self._edited())
+        self._grain_cache: dict = {}
         self.inhibit.toggled.connect(lambda _v: self._edited())
         self.prop.currentTextChanged.connect(self._prop_changed)
         self._setup = None
@@ -448,10 +482,30 @@ class MotorTab(QWidget):
         return sm.SolidPropellant(base.name, self.a.value(), self.n.value(), self.rho.value(), base.gamma,
                                   base.molar_mass, base.chamber_temperature, base.note)
 
-    def grain(self) -> sm.BatesGrain:
+    def _sync_shape(self) -> None:
+        sh = self.shape.currentText()
+        self.points.setEnabled(sh.startswith(("Star", "Finocyl")))
+        self.depth.setEnabled(sh.startswith(("Star", "Finocyl")))
+        self.finw.setEnabled(sh.startswith(("Finocyl", "C-slot")))
+        self.offset.setEnabled(sh.startswith("Moon"))
+
+    def grain(self):
         od = self.od.value() * 1e-3
-        return sm.BatesGrain(od, min(self.core.value() * 1e-3, 0.95 * od), self.seg_len.value() * 1e-3,
-                             self.segs.value(), self.inhibit.isChecked())
+        core = min(self.core.value() * 1e-3, 0.95 * od)
+        sh = self.shape.currentText()
+        if sh.startswith("BATES"):
+            return sm.BatesGrain(od, core, self.seg_len.value() * 1e-3, self.segs.value(), self.inhibit.isChecked())
+        from core.grain_geometry import CrossSectionGrain
+
+        key = (sh, od, core, self.seg_len.value(), self.segs.value(), self.inhibit.isChecked(), self.points.value(),
+               self.depth.value(), self.finw.value(), self.offset.value())
+        g = self._grain_cache.get(key)
+        if g is None:
+            g = CrossSectionGrain(sh, od, core, self.seg_len.value() * 1e-3, self.segs.value(), self.inhibit.isChecked(),
+                                  self.points.value(), self.depth.value() / 100.0, self.finw.value() / 100.0,
+                                  self.offset.value() / 100.0)
+            self._grain_cache = {key: g}
+        return g
 
     def set_setup(self, setup) -> None:
         self._setup = setup
@@ -497,6 +551,14 @@ class MotorTab(QWidget):
             return
         grain, prop = self.grain(), self.propellant()
         r = sm.simulate(grain, prop, s.geom, None, s.pa, self.eff.value() / 100.0)
+        if hasattr(grain, "section_image"):
+            img = grain.section_image(160)
+        else:
+            from core.grain_geometry import CrossSectionGrain
+
+            img = CrossSectionGrain("BATES (round core)", grain.outer_diameter, grain.core_diameter,
+                                    grain.segment_length, resolution=80).section_image(160)
+        self.img_sec.setImage(img, autoLevels=False)
         self.result = r
         self.c_f.setData(r.t, r.thrust / 1e3)
         self.c_p.setData(r.t, r.pc / 1e5)

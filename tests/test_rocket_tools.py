@@ -132,3 +132,22 @@ def test_two_stage_rocket_reaches_orbit() -> None:
     assert fl.orbit is not None and fl.orbit[0] > 100e3 and "In orbit" in fl.message
     single = tj.fly(v, booster)                                              # no upper stage: suborbital
     assert single.orbit is None                                              # a high arc, not an orbit
+
+
+def test_cross_section_grains() -> None:
+    from core import grain_geometry as gg
+
+    exact = sm.BatesGrain(0.1, 0.03, 0.15, 2)
+    raster = gg.CrossSectionGrain("BATES (round core)", 0.1, 0.03, 0.15, 2)
+    for w in (0.0, 0.01, 0.02, 0.03):
+        assert raster.burning_area(w) == pytest.approx(exact.burning_area(w), rel=0.03)
+        assert raster.volume(w) == pytest.approx(exact.volume(w), rel=0.02, abs=1e-6)
+    assert raster.web == pytest.approx(exact.web, rel=0.02)
+    star = gg.CrossSectionGrain("Star", 0.1, 0.03, 0.15, 1, inhibit_ends=True)
+    bates = gg.CrossSectionGrain("BATES (round core)", 0.1, 0.03, 0.15, 1, inhibit_ends=True)
+    assert star.burning_area(0.0) > 2.0 * bates.burning_area(0.0)      # a star starts with much more surface
+    assert star.web < bates.web                                       # and burns out sooner
+    nozzle = nz.NozzleGeometry(throat_diameter=0.015, exit_diameter=0.04, chamber_diameter=0.1,
+                               contour=nz.Contour.CONICAL)
+    r = sm.simulate(gg.CrossSectionGrain("Finocyl (core + fins)", 0.1, 0.03, 0.3, 1), APCP, nozzle)
+    assert r.total_impulse > 0 and r.burn_time > 0
