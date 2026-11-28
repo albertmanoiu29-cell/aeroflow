@@ -65,6 +65,8 @@ class AirfoilDialog(QDialog):
         self.panels.setValue(160)
         self.panels.setSingleStep(20)
         self.re = _spin(1e4, 1e9, 3e6, 0, "", 1e5, "Chord Reynolds number (boundary layer, drag and stall)")
+        self.mach = _spin(0.0, 0.95, 0.0, 2, "", 0.05, "Free-stream Mach number: Kármán-Tsien pressures, "
+                          "Prandtl-Glauert lift, wave drag past the critical Mach number")
         self.trip_u = _spin(0.0, 1.0, 0.0, 2, "x/c", 0.05, "Transition strip on the upper surface (0 = free "
                             "transition, Michel's criterion)")
         self.trip_l = _spin(0.0, 1.0, 0.0, 2, "x/c", 0.05, "Transition strip on the lower surface (0 = free)")
@@ -81,6 +83,7 @@ class AirfoilDialog(QDialog):
         form.addRow("Airfoil", rw)
         form.addRow("Panels", self.panels)
         form.addRow("Reynolds number", self.re)
+        form.addRow("Mach number", self.mach)
         form.addRow("Trip, upper", self.trip_u)
         form.addRow("Trip, lower", self.trip_l)
         form.addRow("α from", self.a_lo)
@@ -110,6 +113,9 @@ class AirfoilDialog(QDialog):
         self.p_cp.getPlotItem().invertY(True)
         self.c_up = self.p_cp.plot(name="upper", pen=pg.mkPen(PALETTE.cyan, width=2))
         self.c_lo = self.p_cp.plot(name="lower", pen=pg.mkPen(PALETTE.warning, width=2))
+        self.l_sonic = pg.InfiniteLine(angle=0, pen=pg.mkPen(PALETTE.danger, width=1, style=Qt.PenStyle.DashLine),
+                                       label="Cp*  (sonic)", labelOpts={"color": PALETTE.danger, "position": 0.08})
+        self.p_cp.addItem(self.l_sonic, ignoreBounds=True)
         self.p_shape = _plot("x / c", "y / c")
         self.p_shape.setAspectLocked(True)
         self.c_shape = self.p_shape.plot(pen=pg.mkPen(PALETTE.text, width=1.5), fillLevel=None)
@@ -148,7 +154,7 @@ class AirfoilDialog(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self.recompute)
-        for w in (self.re, self.a_lo, self.a_hi, self.a_step, self.trip_u, self.trip_l):
+        for w in (self.re, self.a_lo, self.a_hi, self.a_step, self.trip_u, self.trip_l, self.mach):
             w.valueChanged.connect(lambda _v: self._timer.start())
         self.panels.valueChanged.connect(lambda _v: (self._prepare(), self._timer.start()))
         self.alpha.valueChanged.connect(lambda _v: self._show_alpha())
@@ -197,7 +203,8 @@ class AirfoilDialog(QDialog):
         alphas = np.arange(lo, hi + 1e-9, max(self.a_step.value(), 0.1))
         if len(alphas) < 3:
             return
-        p = pm.polar(self.nodes, alphas, self.re.value(), True, self._trip(self.trip_u), self._trip(self.trip_l))
+        p = pm.polar(self.nodes, alphas, self.re.value(), True, self._trip(self.trip_u), self._trip(self.trip_l),
+                     self.mach.value())
         self.polar = p
         self.c_cli.setData(p.alpha, p.cl_inviscid)
         self.c_cm.setData(p.alpha, p.cm)
@@ -214,7 +221,10 @@ class AirfoilDialog(QDialog):
         ld = p.cl[attached] / np.maximum(p.cd[attached], 1e-9)
         k = int(np.argmax(ld)) if ld.size else 0
         cm0 = float(np.interp(p.alpha_zero_lift, p.alpha, p.cm))
-        lines = [f"{self.name}: t/c {p.t_c * 100:.1f} %, Re {self.re.value():,.0f}",
+        mc0 = float(np.interp(0.0, p.alpha, p.m_crit))
+        lines = [f"{self.name}: t/c {p.t_c * 100:.1f} %, Re {self.re.value():,.0f}"
+                 + (f", M {self.mach.value():.2f}" if self.mach.value() > 1e-3 else ""),
+                 f"Critical Mach (α = 0°) {mc0:.3f}",
                  f"CLα {p.cl_alpha * math.pi / 180:.4f} /° ({p.cl_alpha:.2f} /rad; thin-airfoil 2π = 6.28 inviscid)",
                  f"Zero-lift α {p.alpha_zero_lift:+.2f}°, Cm0 {cm0:+.4f}"]
         if math.isfinite(p.stall_alpha):
@@ -241,8 +251,13 @@ class AirfoilDialog(QDialog):
             return
         s = pm.solve(self.nodes, a)
         up, lo = s.upper, ~s.upper
-        self.c_up.setData(s.x[up], s.cp[up])
-        self.c_lo.setData(s.x[lo][::-1], s.cp[lo][::-1])
+        m = self.mach.value()
+        cp = pm.karman_tsien(s.cp, m) if m > 1e-3 else s.cp
+        self.c_up.setData(s.x[up], cp[up])
+        self.c_lo.setData(s.x[lo][::-1], cp[lo][::-1])
+        self.l_sonic.setVisible(m > 1e-3)
+        if m > 1e-3:
+            self.l_sonic.setPos(pm.sonic_cp(m))
         from core import boundary_layer as bl
 
         b = bl.analyse(s, self.re.value(), self._trip(self.trip_u), self._trip(self.trip_l))
@@ -270,7 +285,9 @@ class AirfoilDialog(QDialog):
                            f" · Cd {b.cd:.5f}", color=PALETTE.text_muted, size="9pt")
         cl_v = (float(np.interp(a, self.polar.alpha, self.polar.cl)) if self.polar is not None
                 else pm.VISCOUS_LIFT_FACTOR * s.cl)
-        self.p_cp.setTitle(f"CL {cl_v:.3f} (inviscid {s.cl:.3f}) · Cm {s.cm_quarter:+.4f}",
+        mc = pm.critical_mach(float(s.cp.min()))
+        self.p_cp.setTitle(f"CL {cl_v:.3f} (inviscid {s.cl:.3f}) · Cm {s.cm_quarter:+.4f} · M_crit {mc:.2f}"
+                           + (" · SUPERCRITICAL (shock)" if m > mc else ""),
                            color=PALETTE.text_muted, size="9pt")
 
     def _export(self) -> None:

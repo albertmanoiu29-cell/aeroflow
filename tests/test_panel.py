@@ -119,3 +119,16 @@ def test_viscous_polar_stall_from_separation() -> None:
     assert sep[0] > 0.98 and min(sep) < 0.9                         # separation creeps forward toward stall
     thin = pm.polar(_nodes("0006"), np.arange(0.0, 16.01, 0.5), 3e6)
     assert thin.cl_max < 1.0                                        # thin sections: leading-edge stall, low CL,max
+
+
+def test_compressibility() -> None:
+    s = pm.solve(_nodes("0012"), 0.0)
+    assert pm.critical_mach(float(s.cp.min())) == pytest.approx(0.73, abs=0.02)   # textbook ≈ 0.74 (K-T)
+    assert pm.sonic_cp(1.0) == pytest.approx(0.0, abs=1e-9)
+    assert pm.karman_tsien(-0.5, 0.5) < -0.5 / math.sqrt(1 - 0.25) < -0.5           # K-T beyond Prandtl-Glauert
+    n = _nodes("2412")
+    lo = pm.polar(n, np.array([0.0, 2.0]), 6e6, mach=0.0)
+    hi = pm.polar(n, np.array([0.0, 2.0]), 6e6, mach=0.6)
+    assert hi.cl[1] == pytest.approx(lo.cl[1] / math.sqrt(1 - 0.36), rel=1e-6)
+    sup = pm.polar(n, np.array([0.0, 2.0]), 6e6, mach=0.8)
+    assert sup.cd[1] > 2.0 * lo.cd[1]                                               # wave drag

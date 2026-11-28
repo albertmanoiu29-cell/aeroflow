@@ -160,6 +160,43 @@ class Polar:
     cl_max: float            # viscous estimate; nan if not reached
     stall_negative: float    # degrees, the negative-α stall (nan if not reached)
     layers: list = None      # boundary layers per angle (viscous polar)
+    m_crit: np.ndarray = None  # critical Mach number per angle
+    mach: float = 0.0
+
+
+def karman_tsien(cp0: np.ndarray | float, mach: float) -> np.ndarray | float:
+    """Kármán-Tsien: incompressible Cp -> Cp at free-stream Mach ``mach`` (subcritical)."""
+    if mach <= 1e-6:
+        return cp0
+    b = math.sqrt(max(1.0 - mach * mach, 1e-6))
+    return cp0 / (b + mach * mach / (1.0 + b) * np.asarray(cp0) / 2.0)
+
+
+def sonic_cp(mach: float, gamma: float = 1.4) -> float:
+    """Cp where the local flow reaches Mach 1."""
+    if mach <= 1e-6:
+        return -math.inf
+    return 2.0 / (gamma * mach * mach) * (((2.0 + (gamma - 1.0) * mach * mach) / (gamma + 1.0))
+                                          ** (gamma / (gamma - 1.0)) - 1.0)
+
+
+def critical_mach(cp_min0: float) -> float:
+    """Free-stream Mach number at which the suction peak ``cp_min0`` (incompressible) first turns sonic."""
+    if cp_min0 >= 0.0:
+        return 1.0
+    lo, hi = 0.01, 0.999
+    for _ in range(80):
+        m = 0.5 * (lo + hi)
+        if karman_tsien(cp_min0, m) > sonic_cp(m):
+            lo = m
+        else:
+            hi = m
+    return 0.5 * (lo + hi)
+
+
+def wave_drag(mach: float, m_crit: float) -> float:
+    """Lock's empirical wave drag beyond the critical Mach number: 20 (M − M_crit)⁴."""
+    return 20.0 * max(mach - m_crit, 0.0) ** 4
 
 
 def kirchhoff_factor(f: float) -> float:
@@ -169,7 +206,7 @@ def kirchhoff_factor(f: float) -> float:
 
 
 def polar(nodes: np.ndarray, alphas: np.ndarray, reynolds: float, viscous: bool = True,
-          trip_upper: float | None = None, trip_lower: float | None = None) -> Polar:
+          trip_upper: float | None = None, trip_lower: float | None = None, mach: float = 0.0) -> Polar:
     """Lift, drag and moment across ``alphas``. With ``viscous`` (the default) an integral boundary layer
     (:mod:`core.boundary_layer`) gives the profile drag (Squire-Young), transition and turbulent separation;
     separation reduces the lift through the Kirchhoff relation (trailing-edge stall), and the Valarezo-Chin
@@ -226,10 +263,19 @@ def polar(nodes: np.ndarray, alphas: np.ndarray, reynolds: float, viscous: bool 
                 f = (lim - dcp[i]) / (dcp[i - 1] - dcp[i])
                 neg = float(alphas[i] + f * (alphas[i - 1] - alphas[i]))
                 break
-    out = Polar(alphas, cl, cl_inv, cd, cm, dcp, tc, slope, a0, st, clm, neg)
+    m_crit = np.array([critical_mach(float(sv.cp.min())) for sv in sols])
+    if mach > 1e-3:                               # subsonic compressibility (Prandtl-Glauert on the loads)
+        beta = math.sqrt(max(1.0 - mach * mach, 0.04))
+        cl, cl_inv, cm = cl / beta, cl_inv / beta, cm / beta
+        cd = cd + np.array([wave_drag(mach, mc) for mc in m_crit])
+        slope /= beta
+    out = Polar(alphas, cl, cl_inv, cd, cm, dcp, tc, slope, a0, st, clm / math.sqrt(max(1.0 - mach * mach, 0.04))
+                if mach > 1e-3 and clm == clm else clm, neg)
     out.layers = layers
+    out.m_crit = m_crit
+    out.mach = mach
     return out
 
 
 __all__ = ["prepare", "solve", "PanelSolution", "thickness", "profile_drag", "polar", "Polar", "stall_delta_cp",
-           "kirchhoff_factor"]
+           "kirchhoff_factor", "karman_tsien", "sonic_cp", "critical_mach", "wave_drag"]

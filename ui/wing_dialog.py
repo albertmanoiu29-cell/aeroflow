@@ -56,13 +56,15 @@ class WingDialog(QDialog):
         self.code.setToolTip("NACA 4-digit section (its lift slope, zero-lift angle, CL,max and drag come from the "
                              "panel method)")
         self.re = _spin(1e4, 1e9, 3e6, 0, "", 1e5, "Chord Reynolds number for the section data")
+        self.mach = _spin(0.0, 0.9, 0.0, 2, "", 0.05, "Flight Mach number (compressible section data)")
         self.alpha = QSlider(Qt.Orientation.Horizontal)
         self.alpha.setRange(-50, 200)
         self.alpha.setValue(60)
         self.alpha_lbl = QLabel("α = 6.0°")
         form = QFormLayout()
         for text, w in (("Span", self.span), ("Root chord", self.root), ("Taper ratio", self.taper),
-                        ("Washout", self.washout), ("Section (NACA)", self.code), ("Reynolds number", self.re)):
+                        ("Washout", self.washout), ("Section (NACA)", self.code), ("Reynolds number", self.re),
+                        ("Mach number", self.mach)):
             form.addRow(text, w)
         form.addRow(self.alpha_lbl, self.alpha)
         self.info = QLabel("")
@@ -114,7 +116,7 @@ class WingDialog(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(200)
         self._timer.timeout.connect(self.recompute)
-        for w in (self.span, self.root, self.taper, self.washout, self.re):
+        for w in (self.span, self.root, self.taper, self.washout, self.re, self.mach):
             w.valueChanged.connect(lambda _v: self._timer.start())
         self.code.editingFinished.connect(self._timer.start)
         self.alpha.valueChanged.connect(lambda _v: self._show_alpha())
@@ -124,14 +126,14 @@ class WingDialog(QDialog):
         self.recompute()
 
     def _section(self) -> Optional[pm.Polar]:
-        key = (self.code.text().strip(), self.re.value())
+        key = (self.code.text().strip(), self.re.value(), self.mach.value())
         if key != self._section_key:
             try:
                 nodes = pm.prepare(naca_outline(key[0], 200), 140)
             except Exception as exc:  # noqa: BLE001 - a malformed code
                 self.info.setText(f"Not a NACA 4-digit code: {exc}")
                 return None
-            self.section = pm.polar(nodes, np.arange(-8.0, 24.01, 0.5), key[1])
+            self.section = pm.polar(nodes, np.arange(-8.0, 24.01, 0.5), key[1], mach=key[2])
             self._section_key = key
         return self.section
 
