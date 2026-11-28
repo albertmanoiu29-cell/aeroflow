@@ -86,6 +86,18 @@ class AirfoilDialog(QDialog):
         form.addRow("Mach number", self.mach)
         form.addRow("Trip, upper", self.trip_u)
         form.addRow("Trip, lower", self.trip_l)
+        self.flap_c = _spin(0.0, 45.0, 0.0, 0, "% c", 5.0, "Slotted flap chord (0 = no flap; 25-35 % is typical)")
+        self.flap_c.setSpecialValueText("none")
+        self.flap_d = _spin(0.0, 50.0, 25.0, 1, "°", 2.5, "Flap deflection, trailing edge down")
+        self.flap_gap = _spin(0.2, 5.0, 1.5, 1, "% c", 0.25, "Slot gap between the main trailing edge and the flap")
+        self.slat_c = _spin(0.0, 25.0, 0.0, 0, "% c", 5.0, "Leading-edge slat chord (0 = no slat; 12-18 % is typical)")
+        self.slat_c.setSpecialValueText("none")
+        self.slat_d = _spin(0.0, 60.0, 40.0, 1, "°", 2.5, "Slat deflection, leading edge down")
+        form.addRow("Flap chord", self.flap_c)
+        form.addRow("Flap deflection", self.flap_d)
+        form.addRow("Flap gap", self.flap_gap)
+        form.addRow("Slat chord", self.slat_c)
+        form.addRow("Slat deflection", self.slat_d)
         form.addRow("α from", self.a_lo)
         form.addRow("α to", self.a_hi)
         form.addRow("α step", self.a_step)
@@ -113,6 +125,8 @@ class AirfoilDialog(QDialog):
         self.p_cp.getPlotItem().invertY(True)
         self.c_up = self.p_cp.plot(name="upper", pen=pg.mkPen(PALETTE.cyan, width=2))
         self.c_lo = self.p_cp.plot(name="lower", pen=pg.mkPen(PALETTE.warning, width=2))
+        self.c_slat = self.p_cp.plot(name="slat", pen=pg.mkPen(PALETTE.success, width=2))
+        self.c_flap = self.p_cp.plot(name="flap", pen=pg.mkPen(PALETTE.indigo, width=2))
         self.l_sonic = pg.InfiniteLine(angle=0, pen=pg.mkPen(PALETTE.danger, width=1, style=Qt.PenStyle.DashLine),
                                        label="Cp*  (sonic)", labelOpts={"color": PALETTE.danger, "position": 0.08})
         self.p_cp.addItem(self.l_sonic, ignoreBounds=True)
@@ -154,7 +168,8 @@ class AirfoilDialog(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self.recompute)
-        for w in (self.re, self.a_lo, self.a_hi, self.a_step, self.trip_u, self.trip_l, self.mach):
+        for w in (self.re, self.a_lo, self.a_hi, self.a_step, self.trip_u, self.trip_l, self.mach, self.flap_c,
+                  self.flap_d, self.flap_gap, self.slat_c, self.slat_d):
             w.valueChanged.connect(lambda _v: self._timer.start())
         self.panels.valueChanged.connect(lambda _v: (self._prepare(), self._timer.start()))
         self.alpha.valueChanged.connect(lambda _v: self._show_alpha())
@@ -203,6 +218,16 @@ class AirfoilDialog(QDialog):
         alphas = np.arange(lo, hi + 1e-9, max(self.a_step.value(), 0.1))
         if len(alphas) < 3:
             return
+        hl = self._hl()
+        for w in (self.flap_d, self.flap_gap):
+            w.setEnabled(self.flap_c.value() > 0)
+        self.slat_d.setEnabled(self.slat_c.value() > 0)
+        if hl is not None:
+            self._recompute_multi(alphas, hl)
+            return
+        self.c_slat.setData([], [])
+        self.c_flap.setData([], [])
+        self.c_shape.setData(self.nodes[:, 0], self.nodes[:, 1])
         p = pm.polar(self.nodes, alphas, self.re.value(), True, self._trip(self.trip_u), self._trip(self.trip_l),
                      self.mach.value())
         self.polar = p
@@ -238,6 +263,79 @@ class AirfoilDialog(QDialog):
         self.info.setText("\n".join(lines))
         self._show_alpha()
 
+    def _hl(self):
+        from core import multi_element as me
+
+        if self.flap_c.value() <= 0 and self.slat_c.value() <= 0:
+            return None
+        return me.HighLift(flap_chord=self.flap_c.value() / 100.0, flap_deflection=self.flap_d.value(),
+                           flap_gap=self.flap_gap.value() / 100.0, slat_chord=self.slat_c.value() / 100.0,
+                           slat_deflection=self.slat_d.value())
+
+    def _recompute_multi(self, alphas: np.ndarray, hl) -> None:
+        """Slat / flap configuration: coupled multi-element panel solution."""
+        from core import multi_element as me
+
+        self._elements = me.build_elements(self.outline, hl, max(self.panels.value(), 100))
+        xs, ys = [], []
+        for _n, nodes in self._elements:
+            xs += list(nodes[:, 0]) + [np.nan]
+            ys += list(nodes[:, 1]) + [np.nan]
+        self.c_shape.setData(np.asarray(xs), np.asarray(ys), connect="finite")
+        al = alphas if len(alphas) <= 40 else np.linspace(alphas[0], alphas[-1], 40)
+        mp = me.polar(self._elements, al, self.re.value())
+        clean = pm.polar(self.nodes, al, self.re.value())
+        self.polar = None
+        self._mpolar = mp
+        self.c_cli.setData(mp.alpha, mp.cl_inviscid)
+        self.c_cm.setData(mp.alpha, mp.cm)
+        att = mp.alpha <= (mp.stall_alpha if math.isfinite(mp.stall_alpha) else mp.alpha[-1])
+        self.c_cl.setData(mp.alpha[att], mp.cl[att])
+        pos = att & (mp.alpha >= 0.0)                       # high-lift settings are used at positive α
+        self.c_polar.setData(mp.cd[pos], mp.cl[pos])
+        if math.isfinite(mp.stall_alpha):
+            self.c_stall.setData([mp.stall_alpha], [mp.cl_max])
+        else:
+            self.c_stall.setData([], [])
+        clm0 = clean.cl_max if math.isfinite(clean.cl_max) else float(clean.cl.max())
+        parts = ", ".join(n for n, _ in self._elements)
+        lines = [f"{self.name} with {parts} (Re {self.re.value():,.0f})"]
+        if math.isfinite(mp.stall_alpha):
+            lines.append(f"Stall ≈ {mp.stall_alpha:.1f}°, CL,max ≈ {mp.cl_max:.2f}  (clean {clm0:.2f}: ΔCL,max "
+                         f"{mp.cl_max - clm0:+.2f}); set by the {mp.critical_element}")
+        else:
+            lines.append("No stall within the α range (extend it).")
+        lines.append(f"CL at 0°: {float(np.interp(0.0, mp.alpha, mp.cl)):.2f} (clean "
+                     f"{float(np.interp(0.0, clean.alpha, clean.cl)):.2f})")
+        lines.append("Multi-element panel method; stall from the Valarezo-Chin limit on each element's suction peak. "
+                     "Drag: each element's boundary layer (no confluent-wake model).")
+        self.info.setText("\n".join(lines))
+        self._show_alpha()
+
+    def _show_multi(self, a: float) -> None:
+        from core import multi_element as me
+
+        ms = me.solve(self._elements, a)
+        curves = {"main": None, "slat": self.c_slat, "flap": self.c_flap}
+        self.c_slat.setData([], [])
+        self.c_flap.setData([], [])
+        for name, el in zip(ms.names, ms.elements):
+            if name == "main":
+                up, lo = el.upper, ~el.upper
+                self.c_up.setData(el.x[up], el.cp[up])
+                self.c_lo.setData(el.x[lo][::-1], el.cp[lo][::-1])
+            else:
+                order = np.concatenate([np.arange(len(el.x)), [0]])
+                curves[name].setData(el.x[order], el.cp[order])
+        self.c_cfu.setData([], [])
+        self.c_cfl.setData([], [])
+        self.c_marks.setData([], [])
+        self.c_cp_marks.setData([], [])
+        self.p_bl.setTitle("Boundary-layer chart: clean airfoil only", color=PALETTE.text_muted, size="9pt")
+        self.p_cp.setTitle(f"CL {ms.cl:.3f} (inviscid) · " + " · ".join(f"{n} {c:.2f}" for n, c in
+                                                                         zip(ms.names, ms.cl_parts)),
+                           color=PALETTE.text_muted, size="9pt")
+
     @staticmethod
     def _trip(sp) -> float | None:
         return sp.value() if sp.value() > 0.0 else None
@@ -248,6 +346,9 @@ class AirfoilDialog(QDialog):
         for ln in self.now:
             ln.setPos(a)
         if self.nodes is None:
+            return
+        if self._hl() is not None and getattr(self, "_elements", None):
+            self._show_multi(a)
             return
         s = pm.solve(self.nodes, a)
         up, lo = s.upper, ~s.upper

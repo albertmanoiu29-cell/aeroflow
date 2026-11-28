@@ -132,3 +132,25 @@ def test_compressibility() -> None:
     assert hi.cl[1] == pytest.approx(lo.cl[1] / math.sqrt(1 - 0.36), rel=1e-6)
     sup = pm.polar(n, np.array([0.0, 2.0]), 6e6, mach=0.8)
     assert sup.cd[1] > 2.0 * lo.cd[1]                                               # wave drag
+
+
+def test_multi_element_high_lift() -> None:
+    from core import multi_element as me
+    from core.shapes2d import naca_outline
+
+    o = naca_outline("2412", 200)
+    clean = me.build_elements(o, me.HighLift())
+    assert me.solve(clean, 5.0).cl == pytest.approx(pm.solve(clean[0][1], 5.0).cl, rel=0.02)   # one element
+    flap = me.build_elements(o, me.HighLift(flap_chord=0.3, flap_deflection=25.0))
+    s = me.solve(flap, 0.0)
+    assert s.names == ["main", "flap"] and s.cl > 1.2                   # a slotted flap adds ~1.0-1.5 at 0°
+    assert s.cl_parts[0] > me.solve(clean, 0.0).cl                      # the flap's circulation lifts the main too
+    slat = me.build_elements(o, me.HighLift(slat_chord=0.15))
+    for a in (15.0,):
+        main_clean = me.solve(clean, a).elements[0]
+        main_slat = me.solve(slat, a).elements[1]
+        assert main_slat.cp[main_slat.upper].min() > 0.7 * main_clean.cp[main_clean.upper].min()   # slat effect
+    al = np.arange(-2.0, 30.01, 1.0)
+    p0, p1 = me.polar(clean, al, 3e6), me.polar(me.build_elements(o, me.HighLift(0.3, 25.0, slat_chord=0.15)), al,
+                                                 3e6)
+    assert p1.cl_max > p0.cl_max + 0.8                                   # slat + flap: a large ΔCL,max
