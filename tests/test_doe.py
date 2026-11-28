@@ -91,3 +91,13 @@ def test_polar_comparison() -> None:
     assert mb["CD min"] == pytest.approx(0.012)
     d = pc.difference(a, b)
     assert np.allclose(d.d_cl, 0.2) and np.allclose(d.d_cm, -0.05)
+
+
+def test_update_checksum_parsing() -> None:
+    from core import updates
+
+    h = "ab" * 32
+    assert updates._sha256_of({"digest": f"sha256:{h.upper()}"}) == h
+    assert updates._sha256_of({"digest": "md5:abc"}) == ""
+    assert updates._sha256_of({"digest": "sha256:xyz"}) == ""
+    assert updates._sha256_of(None) == ""

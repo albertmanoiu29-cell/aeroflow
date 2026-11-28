@@ -97,7 +97,9 @@ class UpdateDialog(QDialog):
         root.addWidget(self.status)
         buttons = QDialogButtonBox()
         can_install = sys.platform == "win32" and bool(info.installer_url)
-        self.btn_install = QPushButton("Download and install")
+        self.btn_install = QPushButton("Update now")
+        self.btn_install.setToolTip("Downloads the new version, checks it, installs it in the background and "
+                                    "restarts AeroFlow Studio - no questions asked")
         self.btn_install.setProperty("role", "primary")
         self.btn_install.setVisible(can_install)
         self.btn_page = QPushButton("Open release page")
@@ -156,14 +158,17 @@ class UpdateDialog(QDialog):
             self.status.setText(error)
             return
         self.bar.setValue(1000)
-        self.status.setText("Starting the installer — AeroFlow Studio closes so it can be updated…")
+        self.status.setText("Installing - AeroFlow Studio closes now and restarts by itself when the update is "
+                            "done (a progress window shows the installation).")
         try:
             flags = 0
             if sys.platform == "win32":
                 flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-            # /CLOSEAPPLICATIONS lets the installer close anything still holding files of the old version.
-            subprocess.Popen([path, "/CLOSEAPPLICATIONS"], creationflags=flags, close_fds=True,  # noqa: S603
-                             cwd=os.path.dirname(path))
+            # One click: /SILENT installs into the same folder with only a progress window, /SUPPRESSMSGBOXES
+            # answers prompts with their defaults, /CLOSEAPPLICATIONS closes anything still holding the old
+            # files; the installer starts the new version itself when it is run silently.
+            subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NOCANCEL", "/CLOSEAPPLICATIONS"],  # noqa: S603
+                             creationflags=flags, close_fds=True, cwd=os.path.dirname(path))
         except OSError as exc:
             self.btn_install.setEnabled(True)
             self.status.setText(f"Could not start the installer: {exc}. It was saved to {path}.")

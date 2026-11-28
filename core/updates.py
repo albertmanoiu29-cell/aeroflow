@@ -11,6 +11,7 @@ No Qt here: the GUI runs these on a worker thread.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -41,6 +42,7 @@ class ReleaseInfo:
     installer_url: str = ""   # browser_download_url of the Windows setup, if attached
     installer_name: str = ""
     installer_size: int = 0
+    installer_sha256: str = ""  # from GitHub's asset digest ("sha256:…"), when GitHub provides it
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -85,7 +87,14 @@ def latest_release(timeout: float = 8.0) -> ReleaseInfo:
         installer_url=str(setup.get("browser_download_url", "")) if setup else "",
         installer_name=str(setup.get("name", "")) if setup else "",
         installer_size=int(setup.get("size", 0)) if setup else 0,
+        installer_sha256=_sha256_of(setup),
     )
+
+
+def _sha256_of(asset: Optional[dict]) -> str:
+    digest = str((asset or {}).get("digest") or "")
+    algo, _, value = digest.partition(":")
+    return value.lower() if algo.lower() == "sha256" and re.fullmatch(r"[0-9a-fA-F]{64}", value) else ""
 
 
 def download(info: ReleaseInfo, dest_dir: Path, progress: Optional[Callable[[int, int], None]] = None,
@@ -101,6 +110,7 @@ def download(info: ReleaseInfo, dest_dir: Path, progress: Optional[Callable[[int
     part = out.with_suffix(out.suffix + ".part")
     req = urllib.request.Request(info.installer_url, headers={"User-Agent": _HEADERS["User-Agent"]})
     done = 0
+    sha = hashlib.sha256()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp, part.open("wb") as fh:  # noqa: S310
             total = int(resp.headers.get("Content-Length") or info.installer_size or 0)
@@ -111,6 +121,7 @@ def download(info: ReleaseInfo, dest_dir: Path, progress: Optional[Callable[[int
                 if not chunk:
                     break
                 fh.write(chunk)
+                sha.update(chunk)
                 done += len(chunk)
                 if progress is not None:
                     progress(done, total)
@@ -123,6 +134,10 @@ def download(info: ReleaseInfo, dest_dir: Path, progress: Optional[Callable[[int
     if info.installer_size and done != info.installer_size:
         part.unlink(missing_ok=True)
         raise UpdateError(f"The download is incomplete ({done:,} of {info.installer_size:,} bytes).")
+    if info.installer_sha256 and sha.hexdigest() != info.installer_sha256:
+        part.unlink(missing_ok=True)
+        raise UpdateError("The download does not match the checksum GitHub published for it; it was deleted. "
+                          "Try again, or download the installer from the release page.")
     part.replace(out)
     log.info("Downloaded %s (%d bytes)", out, done)
     return out

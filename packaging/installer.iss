@@ -101,6 +101,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; WorkingDir: "{app
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent; Check: SetupSucceeded
+; One-click updates from inside the app run this installer with /SILENT: start the new version afterwards.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: WizardSilent and SetupSucceeded
 
 [UninstallDelete]
 ; Everything the setup created inside the program folder (user data lives in %APPDATA%\aeroflow_studio)
