@@ -43,6 +43,7 @@ class ProjectState:
     polar: Optional[PolarData] = None
     openfoam_case: str = ""
     notes: str = ""
+    workspaces: dict = field(default_factory=dict)   # labs and tools: {"nozzle": ..., "tools": {...}}
 
 
 def _polar_to_json(p: PolarData) -> dict[str, Any]:
@@ -80,6 +81,7 @@ def save_project(path: str | Path, model: GeometryModel, state: ProjectState) ->
             "conditions": asdict(state.conditions), "quality": state.quality, "engine": state.engine,
             "camera": state.camera, "openfoam_case": state.openfoam_case, "notes": state.notes,
             "polar": _polar_to_json(state.polar) if state.polar is not None else None,
+            "workspaces": state.workspaces or {},
         }
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("project.json", json.dumps(doc, indent=2))
@@ -114,7 +116,8 @@ def load_project(path: str | Path, scratch_dir: Path) -> tuple[GeometryModel, Pr
     polar = _polar_from_json(doc["polar"]) if doc.get("polar") else None
     state = ProjectState(conditions=cond, quality=str(doc.get("quality", "Medium")), engine=str(doc.get("engine", "instant")),
                          reference_mode=str(geo.get("reference_mode", "")), camera=doc.get("camera"), polar=polar,
-                         openfoam_case=str(doc.get("openfoam_case", "")), notes=str(doc.get("notes", "")))
+                         openfoam_case=str(doc.get("openfoam_case", "")), notes=str(doc.get("notes", "")),
+                         workspaces=dict(doc.get("workspaces") or {}))
     return model, state
 
 

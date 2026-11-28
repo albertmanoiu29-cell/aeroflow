@@ -160,6 +160,29 @@ class MissionDialog(QDialog):
         self.table.setVerticalHeaderItem(r, None)
         self.recompute()
 
+    def get_state(self) -> dict:
+        rows = []
+        for r in range(self.table.rowCount()):
+            cb, n, p, d = (self.table.cellWidget(r, c) for c in range(4))
+            rows.append({"engine": cb.currentText(), "engines": n.value(), "propellant_t": p.value(), "dry_t": d.value()})
+        return {"rows": rows, "payload": self.payload.value(), "orbit": self.orbit.value(),
+                "losses": self.losses.value(), "diameter": self.diam.value()}
+
+    def set_state(self, st: dict) -> None:
+        if not isinstance(st, dict) or not st.get("rows"):
+            return
+        while self.table.rowCount():
+            self.table.removeRow(0)
+        names = [e.name for e in self.engines]
+        for row in st["rows"]:
+            k = names.index(row["engine"]) if row.get("engine") in names else 0
+            self._add_row(k, int(row.get("engines", 1)), float(row.get("propellant_t", 50.0)),
+                          float(row.get("dry_t", 4.0)))
+        for w, key in ((self.payload, "payload"), (self.orbit, "orbit"), (self.losses, "losses"), (self.diam, "diameter")):
+            if key in st:
+                w.setValue(float(st[key]))
+        self.recompute()
+
     def _remove_row(self) -> None:
         if self.table.rowCount() > 1:
             self.table.removeRow(self.table.rowCount() - 1)

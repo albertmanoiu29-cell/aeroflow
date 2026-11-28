@@ -89,7 +89,9 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.geometry_mgr = GeometryManager()
-        self.solver = InstantSolver()
+        # no background kernel warm-up yet: compiling (LLVM) while the 3-D view creates its OpenGL context
+        # crashed start-up on some systems; _startup starts it once the window is up and drawn
+        self.solver = InstantSolver(warmup=False)
         self.tasks = TaskManager(self)
         self.of_env = OpenFOAMEnvironment(detail="Detecting OpenFOAM…")
         self.engine = SolverEngine.INSTANT
@@ -108,6 +110,9 @@ class MainWindow(QMainWindow):
         self._pinned: list[tuple[str, PolarData]] = []     # reference polars shown dashed
         self._supersonic: Optional[Any] = None              # the Supersonic Lab window (created on demand)
         self._nozzle: Optional[Any] = None                  # the Rocket Nozzle Lab window (created on demand)
+        self._tools: dict[str, Any] = {}                    # open tool windows by key
+        self._tool_states: dict[str, dict] = {}             # their last inputs (saved in projects)
+        self._pending_labs: dict[str, dict] = {}            # lab states from a project, applied when opened
         self.toasts = ToastManager(self, bottom_margin=STATUS_BAR_HEIGHT + 14)
         self._restore_compute_device()
         self._update_checker = UpdateChecker(self)
@@ -644,16 +649,25 @@ class MainWindow(QMainWindow):
                 self.restoreState(state, _SETTINGS_VERSION)
         except Exception as exc:  # noqa: BLE001 - a corrupt settings file must never block start-up
             log.debug("Ignoring saved window layout: %s", exc)
-        # A dock that was closed last session would otherwise be invisible with no hint how to get it back.
-        if not self.left_dock.isVisible() and not self.right_dock.isVisible():
+        # Both docks closed last session would leave no hint how to get them back. (isHidden, not isVisible:
+        # before the window is shown nothing is "visible", which reset - and discarded - every saved layout,
+        # and resizing docks on a not-yet-shown maximised window crashed start-up.)
+        if self.left_dock.isHidden() and self.right_dock.isHidden():
             self._reset_layout()
 
     def _reset_layout(self) -> None:
         self.restoreState(self._default_state, _SETTINGS_VERSION)
         self.left_dock.show()
         self.right_dock.show()
-        self.resizeDocks([self.left_dock, self.right_dock], [LEFT_DOCK_WIDTH, RIGHT_DOCK_WIDTH],
-                         Qt.Orientation.Horizontal)
+
+        def size_docks() -> None:
+            self.resizeDocks([self.left_dock, self.right_dock], [LEFT_DOCK_WIDTH, RIGHT_DOCK_WIDTH],
+                             Qt.Orientation.Horizontal)
+
+        if self.isVisible():
+            size_docks()
+        else:                                   # resizing docks before the first show is unsafe: do it after
+            QTimer.singleShot(0, size_docks)
 
     def _save_layout(self) -> None:
         if getattr(self, "_home_visible", False):           # save the workspace layout, not the Home view
@@ -708,7 +722,9 @@ class MainWindow(QMainWindow):
         log.info("%s %s ready. Generating the default NACA 2412 wing…", APP_NAME, APP_VERSION)
         self._on_preset(GeometryPreset.NACA_2412, "2412", 6.0, 1.0, 0.0)
         self.detect_openfoam()
-        compute.warmup_async()                 # probe CUDA + pre-compile the Lab GPU kernels in the background
+        # Background warm-ups (kernel compilation, CUDA probe) only after the window has painted its first
+        # frames: running them while the 3-D view's OpenGL context was being created crashed start-up.
+        QTimer.singleShot(2500, self._start_warmups)
         from core import accel
 
         if not accel.HAVE_NUMBA:
@@ -719,6 +735,14 @@ class MainWindow(QMainWindow):
         if (v if isinstance(v, bool) else str(v).lower() not in ("false", "0")) and \
                 not os.environ.get("AEROFLOW_NO_HOME"):
             self.show_home()
+
+    def _start_warmups(self) -> None:
+        if self._closing:
+            return
+        from core import accel
+
+        accel.warmup_async()
+        compute.warmup_async()                 # probe CUDA + pre-compile the Lab GPU kernels in the background
 
     def _set_mode(self, mode: AppMode) -> None:
         if self._closing or self._recording:
@@ -1251,6 +1275,8 @@ class MainWindow(QMainWindow):
 
             self._supersonic = SupersonicWindow(self)
             self._supersonic.set_model(self.geometry_mgr.model)
+            if "supersonic" in self._pending_labs:
+                self._apply_lab_state("supersonic", self._supersonic, self._pending_labs.pop("supersonic"))
         win = self._supersonic
         win.show()
         win.raise_()
@@ -1267,6 +1293,8 @@ class MainWindow(QMainWindow):
             from ui.nozzle_window import NozzleWindow
 
             self._nozzle = NozzleWindow(self)
+            if "nozzle" in self._pending_labs:
+                self._apply_lab_state("nozzle", self._nozzle, self._pending_labs.pop("nozzle"))
         win = self._nozzle
         win.show()
         win.raise_()
@@ -1497,7 +1525,8 @@ class MainWindow(QMainWindow):
         state = ProjectState(conditions=self.cfd_panel.conditions(), quality=self.cfd_panel.quality_value().value,
                              engine="openfoam" if self.engine == SolverEngine.OPENFOAM else "instant",
                              reference_mode=model.reference_mode.value, camera=self.cfd_view.camera_state(),
-                             polar=self.polar if self._polar_model is model else None, openfoam_case=case)
+                             polar=self.polar if self._polar_model is model else None, openfoam_case=case,
+                             workspaces=self._collect_workspaces())
         try:
             out = save_project(path, model, state)
         except OSError as exc:
@@ -1545,6 +1574,7 @@ class MainWindow(QMainWindow):
             self._on_polar(state.polar, model)
         if state.camera:
             QTimer.singleShot(250, lambda c=state.camera: self.cfd_view.set_camera_state(c))
+        self._restore_workspaces(state.workspaces)
         self._project_path = Path(path)
         self._add_recent(path)
         self.setWindowTitle(f"{Path(path).stem} — {APP_NAME}")
@@ -1679,37 +1709,116 @@ class MainWindow(QMainWindow):
     def open_airfoil_tool(self) -> None:
         from ui.airfoil_dialog import AirfoilDialog
 
-        dlg = AirfoilDialog(self)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.show()
+        self._show_tool("airfoil", AirfoilDialog)
 
     def open_aircraft_tool(self) -> None:
         from ui.aircraft_dialog import AircraftDialog
 
-        dlg = AircraftDialog(self)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.show()
+        self._show_tool("aircraft", AircraftDialog)
 
     def open_mission_tool(self) -> None:
         from ui.mission_dialog import MissionDialog
 
-        dlg = MissionDialog(self)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.show()
+        self._show_tool("mission", MissionDialog)
 
     def open_wing_tool(self) -> None:
         from ui.wing_dialog import WingDialog
 
-        dlg = WingDialog(self)
+        self._show_tool("wing", WingDialog)
+
+    # -- tool windows: one per kind, inputs remembered and saved in projects ------------------------
+    def _show_tool(self, key: str, cls: Any, *args: Any) -> Any:
+        dlg = self._tools.get(key)
+        if dlg is not None:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return dlg
+        dlg = cls(*args, self) if args else cls(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        st = self._tool_states.get(key)
+        if st:
+            self._apply_tool_state(dlg, st)
+        self._tools[key] = dlg
+        dlg.finished.connect(lambda _r, k=key, d=dlg: self._tool_closed(k, d))
         dlg.show()
+        return dlg
+
+    @staticmethod
+    def _tool_state(dlg: Any) -> dict:
+        from ui.state_io import widget_state
+
+        return dlg.get_state() if hasattr(dlg, "get_state") else widget_state(dlg)
+
+    @staticmethod
+    def _apply_tool_state(dlg: Any, st: dict) -> None:
+        from ui.state_io import apply_widget_state
+
+        try:
+            if hasattr(dlg, "set_state"):
+                dlg.set_state(st)
+            else:
+                apply_widget_state(dlg, st, "recompute")
+        except Exception as exc:  # noqa: BLE001 - an old or foreign state must never block a tool
+            log.warning("Could not restore the tool's inputs: %s", exc)
+
+    def _tool_closed(self, key: str, dlg: Any) -> None:
+        try:
+            self._tool_states[key] = self._tool_state(dlg)
+        except RuntimeError:
+            pass
+        self._tools.pop(key, None)
+
+    def _collect_workspaces(self) -> dict:
+        tools = dict(self._tool_states)
+        for key, dlg in list(self._tools.items()):
+            try:
+                tools[key] = self._tool_state(dlg)
+            except RuntimeError:
+                self._tools.pop(key, None)
+        ws: dict = {"tools": tools}
+        if self._nozzle is not None:
+            ws["nozzle"] = self._nozzle._state()
+        elif "nozzle" in self._pending_labs:
+            ws["nozzle"] = self._pending_labs["nozzle"]
+        if self._supersonic is not None:
+            from ui.state_io import widget_state
+
+            ws["supersonic"] = widget_state(self._supersonic)
+        elif "supersonic" in self._pending_labs:
+            ws["supersonic"] = self._pending_labs["supersonic"]
+        return ws
+
+    def _restore_workspaces(self, ws: dict) -> None:
+        if not isinstance(ws, dict):
+            return
+        self._tool_states = dict(ws.get("tools") or {})
+        for key, dlg in list(self._tools.items()):
+            if key in self._tool_states:
+                self._apply_tool_state(dlg, self._tool_states[key])
+        for lab in ("nozzle", "supersonic"):
+            st = ws.get(lab)
+            if not st:
+                continue
+            win = self._nozzle if lab == "nozzle" else self._supersonic
+            if win is None:
+                self._pending_labs[lab] = st
+            else:
+                self._apply_lab_state(lab, win, st)
+
+    def _apply_lab_state(self, lab: str, win: Any, st: dict) -> None:
+        try:
+            if lab == "nozzle":
+                win._set_state(st)
+            else:
+                win.restore_state(st)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not restore the %s lab: %s", lab, exc)
 
     def open_aero_calc(self) -> None:
         from ui.aero_calc_dialog import AeroCalculator
 
-        dlg = AeroCalculator(self)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.show()
+        self._show_tool("calc", AeroCalculator)
 
     def open_propeller_tool(self) -> None:
         from ui.propeller_dialog import PropellerDialog
@@ -1721,9 +1830,7 @@ class MainWindow(QMainWindow):
             self._model_changed(reset_camera=True)
             self.notify(f"Propeller D {d:g} m, {blades} blades, P/D {pd:g} loaded into the wind tunnel.")
 
-        dlg = PropellerDialog(build, self)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.show()
+        self._show_tool("propeller", PropellerDialog, build)
 
     def open_param_study(self) -> None:
         model = self.geometry_mgr.model

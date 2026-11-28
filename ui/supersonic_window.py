@@ -393,6 +393,14 @@ class SupersonicWindow(QMainWindow):
         if naca is not None:
             self.view.naca = naca.code
 
+    def restore_state(self, st: dict) -> None:
+        from ui.state_io import apply_widget_state
+
+        apply_widget_state(self, st, "_sync_body_ui")
+        self.view.set_body(self._selected_body())
+        self._geometry_changed()
+        self._mach_changed()
+
     def _geometry_changed(self) -> None:
         self._apply_params()
         self.view.rebuild_body()
