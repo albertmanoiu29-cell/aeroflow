@@ -532,6 +532,9 @@ class MainWindow(QMainWindow):
           "Fast propeller thrust, torque, power and efficiency curves by blade-element momentum theory")
         a(m_sim, "Parametric study…", self.open_param_study, "Ctrl+Shift+P",
           "Sweep sideslip, speed (Reynolds / Mach), altitude or angle of attack and plot CL, CD, CM, L/D")
+        a(m_sim, "Design of experiments (batch runs)…", self.open_doe, "Ctrl+Shift+E",
+          "Vary several conditions together (full factorial, Latin hypercube, central composite): main effects, "
+          "a response map, a fitted response surface and its optimum")
         a(m_sim, "Pin result for comparison", self.pin_result, "",
           "Remember the current result as 'A' to compare later results against")
         a(m_sim, "Compare with pinned result…", self.compare_results, "Ctrl+Shift+K",
@@ -1840,6 +1843,21 @@ class MainWindow(QMainWindow):
         from ui.param_study import ParamStudyDialog
 
         dlg = ParamStudyDialog(self.solver, model, self.cfd_panel.conditions(), self.cfd_panel.quality_value(), self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+
+    def open_doe(self) -> None:
+        model = self.geometry_mgr.model
+        if model is None:
+            self._status("Load or generate a geometry first.")
+            return
+        from ui.doe_dialog import DOEDialog
+
+        def apply(cond) -> None:
+            self.cfd_panel.set_conditions(cond, commit=True)
+            self.notify("Optimum conditions set in the wind tunnel.")
+
+        dlg = DOEDialog(self.solver, model, self.cfd_panel.conditions(), self.cfd_panel.quality_value(), apply, self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.show()
 
