@@ -1,4 +1,4 @@
-"""Design of experiments: run matrices, batch evaluation, main effects and the response surface."""
+"""Workflow features: design of experiments, combined reports, polar comparison, update checksums."""
 
 from __future__ import annotations
 

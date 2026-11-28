@@ -23,7 +23,21 @@ angle, press <b>Run</b>), a <b>polar analysis</b> that sweeps the angle of attac
 <li><b>Rocket Nozzle Lab</b> (Ctrl+5): a rocket engine firing - shock diamonds, thrust, Isp, heat, noise.</li>
 </ul>
 <p>Two solver engines: the <b>Instant Aero Engine</b> (built in, seconds) and <b>OpenFOAM</b> (optional, minutes,
-full Navier-Stokes). Results always come with the theory to compare against.</p>""",
+full Navier-Stokes). Results always come with the theory to compare against.</p>
+<h3>Working faster</h3>
+<ul>
+<li><b>Design of experiments</b> (Simulation menu, Ctrl+Shift+E): vary several conditions together (full factorial,
+Latin hypercube or central composite); read the main effects, a response map and a fitted response surface with its
+optimum, and send the optimum to the wind tunnel.</li>
+<li><b>Compare</b>: Simulation ▸ Pin result keeps the current result and polar as A; change the design, solve again and
+press Ctrl+Shift+K for the 3-D views side by side and the polars overlaid with their differences.</li>
+<li><b>Combined report</b> (File menu, Ctrl+Shift+R): one PDF with a title page, your logo and notes, and any open
+workspace, lab or tool.</li>
+<li><b>Undo in every tool</b>: Ctrl+Z / Ctrl+Y step through a tool's inputs.</li>
+<li><b>Layouts</b> (View ▸ Layouts): each workspace remembers its panel arrangement; save your own named layouts.</li>
+<li>The labs open as pages of the main window (Preferences ▸ Start-up switches back to separate windows). Help ▸
+Take the tour shows you around again.</li>
+</ul>""",
     "Rocket Nozzle Lab: first run": """
 <h2>Rocket Nozzle Lab: first run</h2>
 <ol>

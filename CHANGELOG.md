@@ -3,6 +3,37 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [Unreleased]
+
+Faster ways to work: batch runs, comparisons, combined reports, undo everywhere, labs inside the main window, saved layouts, a guided tour and one-click updates.
+
+### Batch runs and comparisons
+- **Design of experiments (Ctrl+Shift+E):** vary angle of attack, speed, sideslip and altitude together as a full factorial, a Latin hypercube or a central composite design. The results include:
+  - main-effects charts;
+  - a response map;
+  - a fitted quadratic response surface with its R² and its optimum, which one click sends to the wind tunnel.
+
+  Hundreds of runs take seconds, and the runs export to CSV.
+- **Comparison mode:** *Pin result* now keeps the polar as well. The compare window (Ctrl+Shift+K) gains a **Polars** tab: A and B overlaid, difference charts (ΔCL, ΔCD, ΔCM, Δ(L/D)) and a table of key figures (CLmax, lift slope, zero-lift angle, minimum drag, best L/D, moment).
+
+### Reports
+- **Combined report (Ctrl+Shift+R):** one HTML and PDF document with a title page (your logo, author, organisation and notes) and a contents page. It has one section per workspace, lab or open tool:
+  - the wind-tunnel result with its 3-D view;
+  - the polar charts;
+  - the labs and tool windows exactly as shown.
+
+### Interface
+- **Undo and redo in every tool window** (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z), including added and removed table rows.
+- **Labs inside the main window:** the Supersonic and Nozzle Labs open as pages beside the wind tunnel and are switched with the rail. A lab pauses when you leave it. Preferences ▸ Start-up switches back to separate windows.
+- **Layouts (View ▸ Layouts):**
+  - each workspace remembers its own panel arrangement;
+  - built-in layouts: Default, Focus on the 3-D view, Wide analysis panel;
+  - save and delete your own named layouts.
+- **Guided tour:** a two-minute walk through the window at first start, and again from Help ▸ Take the tour.
+
+### Updates
+- **One-click updates:** *Update now* downloads the new installer, checks it against the SHA-256 checksum GitHub publishes, installs it silently into the same folder and restarts the program.
+
 ## [2.1.0] - 2026-11-28
 
 New design tools, a much stronger airfoil analysis, a 3-D propeller view, and GPU acceleration on AMD and Intel graphics cards.

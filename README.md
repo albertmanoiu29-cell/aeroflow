@@ -25,6 +25,12 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## Coming in the next release
+
+- **Design of experiments** (Ctrl+Shift+E): several conditions varied together, main effects, response surface and optimum.
+- **Comparison mode** with polars overlaid and difference charts; **combined PDF reports** with your logo.
+- **Undo in every tool**, **labs inside the main window**, **saved layouts**, a **guided tour** and **one-click updates**.
+
 ## What's new in 2.1
 
 - **AMD and Intel GPU acceleration:** the Supersonic, Live Flow and Nozzle Labs run on any modern graphics card through OpenCL; NVIDIA cards keep using CUDA.
