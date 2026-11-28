@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -50,6 +51,17 @@ class FlightDialog(QDialog):
                         "(+ aft: less stable)")
         self.cmd = _spin(-0.2, -0.001, -0.02, 3, "/°", 0.002, "Elevator effectiveness Cm per degree")
         self.cmq = _spin(-100.0, 0.0, -15.0, 1, "", 1.0, "Pitch damping Cm_q (mostly from the tail)")
+        # derivatives from the tail geometry (instead of typed-in values)
+        from ui.cfd_panel import ToggleSwitch
+
+        self.t_est = ToggleSwitch("Estimate Cm_δe and Cm_q from the tail", True,
+                                  "Tail-volume method: Cm_q = −2 η V_H a_t l_t / c̄, Cm_δe = −η V_H a_t τ")
+        self.vh = _spin(0.2, 1.5, 0.6, 2, "", 0.05, "Horizontal tail volume coefficient V_H = S_h l_t / (S c̄)")
+        self.lt = _spin(1.0, 12.0, 3.5, 1, "c̄", 0.25, "Tail arm in mean chords")
+        self.ce = _spin(0.1, 0.6, 0.3, 2, "", 0.05, "Elevator chord / tail chord")
+        self.t_est.toggled.connect(lambda _v: self._estimate())
+        for w in (self.vh, self.lt, self.ce):
+            w.valueChanged.connect(lambda _v: self._estimate())
         self.kind = QComboBox()
         self.kind.addItem("Elevator pulse", "elevator")
         self.kind.addItem("Vertical gust", "gust")
@@ -59,12 +71,14 @@ class FlightDialog(QDialog):
         form = QFormLayout()
         for text, w in (("Mass", self.mass), ("Airspeed", self.speed), ("Altitude", self.alt),
                         ("Radius of gyration", self.ky), ("CG shift", self.cg), ("Elevator power", self.cmd),
-                        ("Pitch damping", self.cmq), ("Disturbance", self.kind), ("Size", self.size),
+                        ("Pitch damping", self.cmq), ("Tail volume V_H", self.vh), ("Tail arm", self.lt),
+                        ("Elevator chord", self.ce), ("Disturbance", self.kind), ("Size", self.size),
                         ("Duration", self.dur)):
             form.addRow(text, w)
         self.out = QLabel("")
         self.out.setFont(mono_font(10))
         self.out.setWordWrap(True)
+        form.insertRow(7, self.t_est)
         run = button("Simulate", "primary", "play", "Trim, find the modes and fly the response")
         run.clicked.connect(self.recompute)
         left = QVBoxLayout()
@@ -100,7 +114,32 @@ class FlightDialog(QDialog):
         root = QHBoxLayout(self)
         root.addWidget(lw)
         root.addLayout(grid, 1)
+        self._estimate()
         self.recompute()
+
+    def _estimate(self) -> None:
+        """Cm_q and Cm_δe from the tail volume (tail lift slope from its aspect ratio ~4.5; elevator
+        effectiveness τ from the elevator chord ratio, Raymer)."""
+        on = self.t_est.isChecked()
+        for w in (self.vh, self.lt, self.ce):
+            w.setEnabled(on)
+        self.cmd.setEnabled(not on)
+        self.cmq.setEnabled(not on)
+        if not on:
+            return
+        from core.aircraft_design import lift_slope
+
+        a_t = lift_slope(4.5)
+        eta = 0.9
+        tau = min(1.0, 1.55 * self.ce.value() ** 0.5 - 0.2)            # elevator effectiveness (fit)
+        cmq = -2.0 * eta * self.vh.value() * a_t * self.lt.value()
+        cmd = -eta * self.vh.value() * a_t * tau * math.pi / 180.0
+        self.cmq.blockSignals(True)
+        self.cmd.blockSignals(True)
+        self.cmq.setValue(max(min(cmq, 0.0), self.cmq.minimum()))
+        self.cmd.setValue(min(max(cmd, self.cmd.minimum()), self.cmd.maximum()))
+        self.cmq.blockSignals(False)
+        self.cmd.blockSignals(False)
 
     def recompute(self) -> None:
         ac = Aircraft(self.mass.value(), self.ky.value(), self.cg.value() / 100.0, self.cmd.value(), self.cmq.value())
