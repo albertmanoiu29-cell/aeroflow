@@ -171,6 +171,7 @@ class HomePage(QWidget):
         HomeEntry("wing", "Wing analysis", "Lifting line, span loading, induced drag", "wing", "Ctrl+Shift+W"),
         HomeEntry("calc", "Aero calculator", "Atmosphere, Mach, Reynolds, stall speed", "calculator", "Ctrl+Shift+U"),
         HomeEntry("aircraft", "Aircraft design", "Sizing, stability, climb, range", "plane", "Ctrl+Shift+D"),
+        HomeEntry("mission", "Mission planner", "Stages, Δv, payload to orbit", "rocket", "Ctrl+Shift+M"),
         HomeEntry("propeller", "Propeller", "BEM, spinning 3-D slipstream", "propeller"),
         HomeEntry("flight", "Flight dynamics", "Trim, short period and phugoid", "plane"),
     )

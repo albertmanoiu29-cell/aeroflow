@@ -377,6 +377,10 @@ class NozzleWindow(QMainWindow):
         tgrid.addWidget(labeled_row("Throttle", self.thr_profile), 0, 0, 1, 2)
         tgrid.addWidget(labeled_row("over", self.thr_time), 1, 0)
         card.add_layout(tgrid)
+        self.btn_library = button("Save to engine library…", "ghost", "layers", "Keep this engine (geometry, "
+                                  "propellant, chamber pressure) for the mission planner")
+        self.btn_library.clicked.connect(self._save_to_library)
+        card.add(self.btn_library)
         self.btn_throttle = button("Run the throttle programme", "ghost", "chart", "Vary the chamber pressure over "
                                    "time along the chosen profile while the engine fires (watch the Live tab)")
         self.btn_throttle.setCheckable(True)
@@ -384,6 +388,20 @@ class NozzleWindow(QMainWindow):
         card.add(self.btn_throttle)
         self._throttle: Optional[tuple[float, float, float, str]] = None
         return card
+
+    def _save_to_library(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        from core import engine_db as edb
+
+        s = self.view.setup
+        default = self.preset.currentText() if self.preset.currentText() != CUSTOM else "My engine"
+        name, ok = QInputDialog.getText(self, "Save to engine library", "Engine name:", text=default)
+        if not ok or not name.strip():
+            return
+        rec = edb.record_from(name.strip(), s.geom, s.gas, s.pc, self.prop.currentText())
+        edb.add(rec)
+        self.status_label.setText(f"Saved to the engine library: {rec.summary()}")
 
     def _toggle_throttle(self, on: bool) -> None:
         if not on:

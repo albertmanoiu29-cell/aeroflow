@@ -151,3 +151,33 @@ def test_cross_section_grains() -> None:
                                contour=nz.Contour.CONICAL)
     r = sm.simulate(gg.CrossSectionGrain("Finocyl (core + fins)", 0.1, 0.03, 0.3, 1), APCP, nozzle)
     assert r.total_impulse > 0 and r.burn_time > 0
+
+
+def test_engine_library_and_mission(tmp_path) -> None:
+    from dataclasses import replace
+
+    from core import engine_db as edb
+    from core import mission as ms
+
+    builtin = {e.name: e for e in edb.builtin()}
+    merlin = builtin["Sea-level booster · kerolox (Merlin class)"]
+    f_sl, md, isp_sl = merlin.performance(101325.0)
+    f_v, _, isp_v = merlin.performance(1e-3)
+    assert f_v > f_sl > 0 and isp_v > isp_sl > 250
+    path = tmp_path / "engines.json"
+    edb.add(merlin, path)
+    vac = edb.record_from("vac", replace(merlin.geometry(), exit_diameter=merlin.geometry().throat_diameter * 10),
+                          merlin.gas(), merlin.pc)
+    lib = edb.add(vac, path)
+    assert [e.name for e in edb.load(path)] == [e.name for e in lib] and len(lib) == 2
+    assert edb.load(path)[1].performance(1e-3)[2] == pytest.approx(vac.performance(1e-3)[2])
+    stages = [ms.StageSpec(merlin, 9, 400000, 25000), ms.StageSpec(vac, 1, 100000, 4500)]
+    r = ms.analyse(stages, 10000)
+    assert r.stages[0].dv == pytest.approx(9.80665 * r.stages[0].isp * math.log(r.stages[0].m0 / r.stages[0].mf))
+    assert r.margin > 0.0
+    pay = ms.max_payload(stages)
+    assert ms.analyse(stages, pay).margin == pytest.approx(0.0, abs=2.0)
+    opt = ms.optimise_split(stages)
+    assert ms.max_payload(opt) >= pay - 1.0
+    assert sum(s.propellant for s in opt) == pytest.approx(500000.0)
+    assert "orbit" in ms.fly(stages, 10000, 3.7).message.lower()

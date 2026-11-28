@@ -286,7 +286,7 @@ def test_main_window_imports() -> None:
                 "visualization.nozzle_view", "visualization.nozzle_3d", "ui.nozzle_tools", "ui.guide", "ui.appearance", "ui.propeller_dialog", "ui.flight_dialog",
                 "ui.airfoil_dialog", "ui.aero_calc_dialog", "ui.wing_dialog",
                 "ui.shell", "ui.preferences", "visualization.propeller_view",
-                "ui.aircraft_dialog"):
+                "ui.aircraft_dialog", "ui.mission_dialog"):
         importlib.import_module(mod)
 
 

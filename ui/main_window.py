@@ -557,6 +557,8 @@ class MainWindow(QMainWindow):
           "Cp distribution, lift curve, stall estimate and drag polar of a NACA or imported airfoil")
         a(m_tools, "Aircraft design (sizing, stability, performance)…", self.open_aircraft_tool, "Ctrl+Shift+D",
           "Wing and tail sizing, static margin, thrust required vs available, climb, range and endurance")
+        a(m_tools, "Mission planner (stages, Δv, payload to orbit)…", self.open_mission_tool, "Ctrl+Shift+M",
+          "Stack stages with engines from the engine library; Δv budget, payload, optimal split, ascent")
         a(m_tools, "Wing analysis (lifting line)…", self.open_wing_tool, "Ctrl+Shift+W",
           "Spanwise lift, induced drag, span efficiency and where the wing stalls first")
         a(m_tools, "Aero calculator (atmosphere, Mach, Reynolds)…", self.open_aero_calc, "Ctrl+Shift+U",
@@ -791,7 +793,7 @@ class MainWindow(QMainWindow):
         else:
             actions = {"supersonic": self.open_supersonic, "nozzle": self.open_nozzle,
                        "airfoil": self.open_airfoil_tool, "wing": self.open_wing_tool, "calc": self.open_aero_calc,
-                       "aircraft": self.open_aircraft_tool,
+                       "aircraft": self.open_aircraft_tool, "mission": self.open_mission_tool,
                        "propeller": self.open_propeller_tool, "flight": self.open_flight_dynamics,
                        "settings": self.open_preferences, "palette": self.open_command_palette,
                        "import": self.import_dialog, "open": self.open_project_dialog,
@@ -1685,6 +1687,13 @@ class MainWindow(QMainWindow):
         from ui.aircraft_dialog import AircraftDialog
 
         dlg = AircraftDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.show()
+
+    def open_mission_tool(self) -> None:
+        from ui.mission_dialog import MissionDialog
+
+        dlg = MissionDialog(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
 

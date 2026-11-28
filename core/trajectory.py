@@ -160,8 +160,15 @@ def fly(vehicle: Vehicle, thrust_at: Callable[[float, float], tuple[float, float
         mach = v / a_sound
         g = MU_EARTH / (r * r)
         dist = R_EARTH * math.atan2(x_, y_)
-        if stage == 1 and upper.horizontal:                                          # upper stage: burn horizontally
-            dx, dy = ex, ey
+        if stage == 1 and upper.horizontal and f > 0.0:
+            # upper-stage guidance: build horizontal speed, pitching up just enough to hold the altitude
+            # (lift gravity minus the centrifugal relief, and damp any sink or climb)
+            vr = vx_ * upx + vy_ * upy
+            vt = vx_ * ex + vy_ * ey
+            need = g - vt * vt / r - 0.04 * vr
+            s_up = min(max(need * m / f, -0.3), 0.95)
+            c_h = math.sqrt(1.0 - s_up * s_up)
+            dx, dy = c_h * ex + s_up * upx, c_h * ey + s_up * upy
         elif v > vehicle.turn_speed and math.hypot(dist, h_) > vehicle.rail_length:  # gravity turn once fast enough
             dx, dy = vx_ / v, vy_ / v
         else:                                                                        # hold the launch attitude
