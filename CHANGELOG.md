@@ -3,6 +3,39 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [2.0.0] - 2026-11-28
+
+The biggest update so far: a complete visual redesign and a new way to move around the program.
+
+### New design
+- **Graphite theme:** a calm, neutral dark design replaces the neon navy look. Surfaces, borders and text follow one consistent scale, and a single accent colour is used for actions and selection.
+- **Accent colours:** choose Blue, Teal, Violet, Amber or Cyan in Preferences. Every view, chart, button and the logo follow it.
+- **Light theme** redesigned to match.
+- **Controls:**
+  - solid primary buttons and quieter secondary buttons;
+  - clean card headers (no more tinted bars) and underline tabs;
+  - slim sliders with a white handle and compact toggle switches;
+  - inputs use the interface font instead of a typewriter font;
+  - thin scrollbars and refined menus and tooltips.
+- **Charts:** lighter axes, a fainter grid and the interface font on every pyqtgraph chart.
+- **3-D legends:** titles no longer overlap the numbers, and each legend has a translucent backing panel so it stays readable over streamlines.
+- **New logo** (a NACA aerofoil at incidence turning the streamlines), a new splash screen and new icons for every workspace and tool.
+- **HTML engineering report** restyled to match, and it prints cleanly on white paper.
+
+### New way to work
+- **Home screen:**
+  - the workspaces (wind tunnel, polar, Live Flow Lab, Supersonic Lab, Rocket Nozzle Lab, your own model) and the engineering tools;
+  - recent projects and models;
+  - quick actions, the guide and what's new;
+  - it opens at start-up, which you can turn off.
+- **Navigation rail** down the left edge: Home, the three workspaces, both labs, the airfoil, wing and calculator tools, the guide and settings, one click each.
+- **Command palette (Ctrl+K)** and a search box in the top bar: type part of any command, workspace or tool and press Enter. Fuzzy matching, shortcuts and menus are shown alongside.
+- **Preferences (Ctrl+,):**
+  - Appearance: theme with previews, accent, interface size;
+  - Start-up: the Home screen and automatic update checks;
+  - Performance: the compute device and the detected GPU.
+- New shortcuts: **Alt+Home** (Home), **Ctrl+K** (palette), **Ctrl+,** (Preferences). The Help dialog lists all of them.
+
 ## [1.9.0] - 2026-11-27
 
 ### Added: aerospike nozzles

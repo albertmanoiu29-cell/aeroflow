@@ -12,6 +12,9 @@ from config.settings import APP_NAME
 TOPICS: dict[str, str] = {
     "Getting started": """
 <h2>Getting started</h2>
+<p>The <b>Home</b> screen (Alt+Home, or the top icon of the rail on the left) lists every workspace, lab and tool, and
+your recent projects. The <b>navigation rail</b> switches between them in one click. Press <b>Ctrl+K</b> anywhere to
+search for any command by name; <b>Ctrl+,</b> opens Preferences (theme, accent colour, interface size).</p>
 <p>AeroFlow Studio has a <b>wind tunnel</b> for 3-D models (load an STL/OBJ or build a preset wing, set the speed and
 angle, press <b>Run</b>), a <b>polar analysis</b> that sweeps the angle of attack, and four live labs:</p>
 <ul>

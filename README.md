@@ -25,6 +25,16 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## What's new in 2.0
+
+The biggest update so far: a complete redesign.
+
+- **New design:** a calm graphite theme (and a matching light theme), a choice of five accent colours, cleaner controls, charts and 3-D legends, a new logo and a new splash screen.
+- **Home screen** with every workspace, lab and tool, your recent projects and what's new.
+- **Navigation rail** on the left: one click to any workspace, lab or tool.
+- **Command palette (Ctrl+K):** type to find and run any command.
+- **Preferences (Ctrl+,):** theme, accent, interface size, start-up and compute device.
+
 ## What's new in 1.9
 
 - **Aerospike nozzles** in the Rocket Nozzle Lab: annular, or linear in planar mode, with a truncated plug, a live simulation and altitude compensation in theory.

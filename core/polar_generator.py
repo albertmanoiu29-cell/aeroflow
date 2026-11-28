@@ -111,27 +111,27 @@ def _svg_chart(x: FloatArray, series: list[tuple[str, FloatArray, str]], xlabel:
     sy = lambda v: mt + (1.0 - (v - y0) / (y1 - y0)) * (height - mt - mb)  # noqa: E731
     out = [f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
            f'font-family="Segoe UI,Arial" font-size="11">',
-           f'<rect width="{width}" height="{height}" fill="#131A2A" rx="8"/>']
+           f'<rect width="{width}" height="{height}" fill="#16191E" rx="8"/>']
     for i in range(6):
         gy = y0 + (y1 - y0) * i / 5
         gx = x0 + (x1 - x0) * i / 5
-        out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{sy(gy):.1f}" y2="{sy(gy):.1f}" stroke="#1E293B"/>')
-        out.append(f'<text x="{ml - 6}" y="{sy(gy) + 4:.1f}" fill="#94A3B8" text-anchor="end">{fmt(gy, y1 - y0)}</text>')
-        out.append(f'<text x="{sx(gx):.1f}" y="{height - mb + 16}" fill="#94A3B8" text-anchor="middle">'
+        out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{sy(gy):.1f}" y2="{sy(gy):.1f}" stroke="#252A31"/>')
+        out.append(f'<text x="{ml - 6}" y="{sy(gy) + 4:.1f}" fill="#A3AAB5" text-anchor="end">{fmt(gy, y1 - y0)}</text>')
+        out.append(f'<text x="{sx(gx):.1f}" y="{height - mb + 16}" fill="#A3AAB5" text-anchor="middle">'
                    f'{fmt(gx, x1 - x0)}</text>')
     if y0 < 0.0 < y1:
         out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{sy(0):.1f}" y2="{sy(0):.1f}" stroke="#475569"/>')
     for _name, y, colour in series:
         pts = " ".join(f"{sx(a):.1f},{sy(b):.1f}" for a, b in zip(x, y))
         out.append(f'<polyline points="{pts}" fill="none" stroke="{colour}" stroke-width="2"/>')
-    out.append(f'<text x="{(ml + width - mr) / 2:.0f}" y="{height - 6}" fill="#E2E8F0" text-anchor="middle">'
+    out.append(f'<text x="{(ml + width - mr) / 2:.0f}" y="{height - 6}" fill="#E8EAED" text-anchor="middle">'
                f'{html.escape(xlabel)}</text>')
-    out.append(f'<text x="14" y="{height / 2:.0f}" fill="#E2E8F0" text-anchor="middle" '
+    out.append(f'<text x="14" y="{height / 2:.0f}" fill="#E8EAED" text-anchor="middle" '
                f'transform="rotate(-90 14 {height / 2:.0f})">{html.escape(ylabel)}</text>')
     lx = ml + 8
     for name, _, colour in series:
         out.append(f'<rect x="{lx}" y="{mt + 4}" width="10" height="10" fill="{colour}"/>'
-                   f'<text x="{lx + 14}" y="{mt + 13}" fill="#E2E8F0">{html.escape(name)}</text>')
+                   f'<text x="{lx + 14}" y="{mt + 13}" fill="#E8EAED">{html.escape(name)}</text>')
         lx += 18 + 7 * len(name)
     out.append("</svg>")
     return "".join(out)
@@ -154,19 +154,31 @@ def export_html_report(path: str | Path, polar: Optional[PolarData] = None,
     parts: list[str] = [
         "<!doctype html><html><head><meta charset='utf-8'>",
         f"<title>{esc(title)}</title><style>"
-        "body{background:#0B0F19;color:#E2E8F0;font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:32px}"
-        "h1{color:#00E5FF;margin:0 0 4px}h2{color:#6366F1;margin-top:28px}"
-        "table{border-collapse:collapse;min-width:360px}td,th{padding:6px 14px;border-bottom:1px solid #1E293B;"
-        "text-align:left}th{color:#94A3B8;font-weight:600}.grid{display:flex;flex-wrap:wrap;gap:16px}"
-        ".muted{color:#94A3B8}svg{max-width:100%}"
+        "body{background:#101216;color:#E8EAED;font-family:'Segoe UI Variable Text','Segoe UI',Inter,Arial,"
+        "sans-serif;margin:0;padding:40px 48px;line-height:1.45}"
+        ".wrap{max-width:1180px;margin:0 auto}"
+        "header{display:flex;align-items:center;gap:14px;padding-bottom:18px;margin-bottom:8px;"
+        "border-bottom:1px solid #252A31}"
+        ".mark{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#6FA4FF,#1D3F8F)}"
+        "h1{color:#FFFFFF;font-weight:600;font-size:26px;margin:0}"
+        "h2{color:#A3AAB5;font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;"
+        "margin:34px 0 10px}"
+        "table{border-collapse:separate;border-spacing:0;min-width:380px;background:#16191E;border:1px solid #252A31;"
+        "border-radius:10px;overflow:hidden}td,th{padding:7px 16px;border-bottom:1px solid #252A31;text-align:left}"
+        "tr:last-child td{border-bottom:none}th{color:#A3AAB5;font-weight:600}td:nth-child(2){font-variant-numeric:"
+        "tabular-nums}.grid{display:flex;flex-wrap:wrap;gap:16px}"
+        ".muted{color:#A3AAB5}svg{max-width:100%}"
+        "footer{margin-top:40px;padding-top:14px;border-top:1px solid #252A31;color:#6F7682;font-size:12px}"
         # Printing / PDF: dark text on white paper (the SVG presentation colours are overridden by CSS).
-        "@media print{body{background:#fff;color:#0F172A;padding:0}h1{color:#0369A1}h2{color:#4338CA;"
-        "break-after:avoid}td,th{border-bottom:1px solid #CBD5E1}th,.muted{color:#475569}"
-        "svg{break-inside:avoid}svg>rect:first-child{fill:#FFFFFF;stroke:#CBD5E1}svg text{fill:#334155}"
-        "svg line{stroke:#E2E8F0}img{break-inside:avoid;max-width:100%}table{break-inside:avoid}}"
+        "@media print{body{background:#fff;color:#1B1F24;padding:0}h1{color:#1B1F24}h2{color:#555E6B;"
+        "break-after:avoid}table{background:#fff;border-color:#E1E4EA}td,th{border-bottom:1px solid #E1E4EA}"
+        "th,.muted{color:#555E6B}header,footer{border-color:#E1E4EA}"
+        "svg{break-inside:avoid}svg>rect:first-child{fill:#FFFFFF;stroke:#E1E4EA}svg text{fill:#3A404A}"
+        "svg line{stroke:#E1E4EA}img{break-inside:avoid;max-width:100%}table{break-inside:avoid}}"
         "</style></head><body>",
+        "<div class='wrap'><header><div class='mark'></div><div>"
         f"<h1>{esc(title)}</h1><div class='muted'>{esc(APP_NAME)} {esc(APP_VERSION)} · "
-        f"{datetime.now():%Y-%m-%d %H:%M}</div>"]
+        f"{datetime.now():%Y-%m-%d %H:%M}</div></div></header>"]
     if polar is not None:
         parts.append(f"<div class='muted'>{esc(polar.geometry_name)} · {esc(polar.engine)} · "
                      f"V = {polar.velocity_ms:.1f} m/s · Re = {polar.reynolds:.3e} · M = {polar.mach:.3f}</div>")
@@ -187,7 +199,7 @@ def export_html_report(path: str | Path, polar: Optional[PolarData] = None,
                 log.warning("Report image %s skipped: %s", img_path, exc)
                 continue
             parts.append(f"<figure style='margin:0'><img src='data:image/png;base64,{data}' "
-                         f"style='max-width:640px;width:100%;border-radius:8px;border:1px solid #1E293B'>"
+                         f"style='max-width:640px;width:100%;border-radius:10px;border:1px solid #252A31'>"
                          f"<figcaption class='muted'>{esc(caption)}</figcaption></figure>")
         parts.append("</div>")
     if kpis is not None:
@@ -197,8 +209,8 @@ def export_html_report(path: str | Path, polar: Optional[PolarData] = None,
     if polar is not None and len(polar.alpha_deg) > 1:
         a = polar.alpha_deg
         parts.append("<h2>Polar</h2><div class='grid'>")
-        parts.append(_svg_chart(a, [("CL", polar.cl, "#00E5FF")], "α (deg)", "CL"))
-        parts.append(_svg_chart(polar.cd, [("CL", polar.cl, "#6366F1")], "CD", "CL (drag polar)"))
+        parts.append(_svg_chart(a, [("CL", polar.cl, "#4D8EFF")], "α (deg)", "CL"))
+        parts.append(_svg_chart(polar.cd, [("CL", polar.cl, "#A08BFA")], "CD", "CL (drag polar)"))
         parts.append(_svg_chart(a, [("L/D", polar.l_over_d, "#22C55E")], "α (deg)", "L/D"))
         parts.append(_svg_chart(a, [("CM", polar.cm, "#F59E0B")], "α (deg)", "CM"))
         parts.append("</div><h2>Summary</h2><table>")
@@ -219,7 +231,7 @@ def export_html_report(path: str | Path, polar: Optional[PolarData] = None,
     else:
         footer = (f"Generated by the {esc(engine_name)} (potential-flow + empirical models). Results are "
                   "engineering estimates, not certified CFD.")
-    parts.append(f"<p class='muted'>{footer}</p></body></html>")
+    parts.append(f"<footer>{footer}</footer></div></body></html>")
     out.write_text("".join(parts), encoding="utf-8")
     return out
 
