@@ -176,10 +176,10 @@ class HomePage(QWidget):
         HomeEntry("flight", "Flight dynamics", "Trim, short period and phugoid", "plane"),
     )
     WHATS_NEW = (
-        ("A new look", "A calm graphite design, a choice of accent colours and a light theme to match."),
-        ("Home and navigation", "This start screen and a navigation rail to every workspace, lab and tool."),
-        ("Command palette", "Press Ctrl+K and type: every command, workspace and tool is one search away."),
-        ("Preferences", "Theme, accent, interface size, start-up and compute device in one place."),
+        ("Aircraft and missions", "Size a whole aircraft, or stack rocket stages and fly them to orbit."),
+        ("Spinning propeller", "See the propeller turn and the slipstream it drives, in 3-D."),
+        ("Real airfoil drag", "Boundary layer, transition, stall, Mach effects, flaps and slats."),
+        ("AMD and Intel GPUs", "The live labs now run on any modern graphics card, not just NVIDIA."),
     )
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:

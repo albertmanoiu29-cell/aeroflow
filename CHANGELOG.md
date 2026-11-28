@@ -3,6 +3,40 @@
 All notable changes to AeroFlow Studio. Versions follow [semantic versioning](https://semver.org/);
 download releases from the [Releases page](https://github.com/albertmanoiu29-cell/aeroflow/releases).
 
+## [2.1.0] - 2026-11-28
+
+New design tools, a much stronger airfoil analysis, a 3-D propeller view, and GPU acceleration on AMD and Intel graphics cards.
+
+### GPU acceleration on any graphics card
+- The Supersonic Lab, the Live Flow Lab and the Rocket Nozzle Lab now run on **AMD and Intel GPUs** through OpenCL (pyopencl, installed automatically). NVIDIA cards keep using CUDA.
+- Same results as the CPU to round-off. Preferences and the labs show which GPU and which method (CUDA or OpenCL) are in use.
+
+### Propeller
+- **3-D view of the rotation and the airflow:** spinning blades, air particles, helical streamlines and the contracting slipstream tube, in real-time slow motion.
+- The blade-element model now iterates on the induced velocity, so the thrust at zero forward speed is correct.
+
+### Airfoil and wing
+- **Boundary layer:** Thwaites laminar, Michel transition and Head turbulent methods, with Squire-Young drag. Friction and pressure drag, transition points, trip strips and a boundary-layer chart.
+- **Stall from separation** (Kirchhoff), so the maximum lift and the shape of the stall are much closer to wind-tunnel data.
+- **Mach number:** Kármán-Tsien pressures, critical Mach number, wave drag and the sonic Cp line. The wing tool also takes a Mach number.
+- **High lift:** a slotted flap and a leading-edge slat, solved together as several bodies, with a stall check per element.
+
+### New tools
+- **Aircraft design workbench (Ctrl+Shift+D):** wing and tail sizing, neutral point and static margin, stability derivatives, thrust required and available (a propeller matched to the engine power, or a jet), climb, range and endurance. Presets included.
+- **Mission planner (Ctrl+Shift+M):** stack stages, see the Δv of each and the payload to orbit, find the maximum payload and the best propellant split, and fly the ascent with a guided upper stage.
+- **Engine library:** save engines from the Nozzle Lab and use them in the mission planner.
+- **Flight dynamics:** the elevator power and the pitch damping can be estimated from the tail size and position.
+
+### Labs
+- **Supersonic Lab:** a 70° sphere-cone heat shield, a biconic entry body and a movable inlet centre-body (spillage or a swallowed shock).
+- **Rocket Nozzle Lab:** throttle programmes (max-Q bucket, deep throttle, landing burn, pulses, ramp) and film cooling in the heat model.
+- **Solid motors:** star, finocyl, moon-burner and C-slot grains, with a cross-section view of the burn-back.
+
+### Projects and fixes
+- Project files now save the Nozzle and Supersonic Labs and the inputs of every tool.
+- Fixed a crash at start-up when the window had been closed maximised, and the saved panel layout is no longer reset at every start.
+- Start-up is quicker: background warm-ups wait until the window is shown.
+
 ## [2.0.0] - 2026-11-28
 
 The biggest update so far: a complete visual redesign and a new way to move around the program.

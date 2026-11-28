@@ -25,6 +25,16 @@ Colour conventions are the same in every view:
 - **Speed:** the colour scale is centred on the freestream speed, so undisturbed air is the middle colour. Accelerated air is warm and slowed air (stagnation, wake) is cool.
 - **Pressure (Cp):** a diverging blue–white–red scale that is symmetric about Cp = 0. Blue is suction and red is high pressure.
 
+## What's new in 2.1
+
+- **AMD and Intel GPU acceleration:** the Supersonic, Live Flow and Nozzle Labs run on any modern graphics card through OpenCL; NVIDIA cards keep using CUDA.
+- **Propeller in 3-D:** watch the blades turn and the air they move (particles, helical streamlines, the contracting slipstream). Static thrust is now right.
+- **Airfoil tool:** a boundary layer (real friction and pressure drag, transition, separation-driven stall, trip strips), Mach number effects and multi-element high lift (slotted flap, slat).
+- **Aircraft design workbench (Ctrl+Shift+D):** wing and tail sizing, stability, thrust required vs available, climb, range and endurance.
+- **Mission planner (Ctrl+Shift+M):** stack stages with engines from the new engine library, see the Δv budget and the payload to orbit, optimise the split and fly the ascent.
+- **Labs:** sphere-cone and biconic entry bodies and a movable inlet centre-body; throttle programmes and film cooling in the Nozzle Lab; star, finocyl, moon and C-slot solid grains.
+- **Projects** now save the labs and every tool's inputs. A start-up crash with a maximised window is fixed.
+
 ## What's new in 2.0
 
 The biggest update so far: a complete redesign.
