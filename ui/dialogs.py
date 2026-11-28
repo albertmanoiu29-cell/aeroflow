@@ -332,7 +332,7 @@ class HelpDialog(QDialog):
             tabs.addTab(box, name)
         about = QLabel(
             f"<p><b>{APP_NAME}</b> {APP_VERSION}</p>"
-            "<p>Built with PySide6, PyVista / VTK, NumPy, SciPy, numba, CuPy, trimesh and pyqtgraph.</p>"
+            "<p>Built with PySide6, PyVista / VTK, NumPy, SciPy, numba, CuPy, pyopencl, trimesh and pyqtgraph.</p>"
             f"<p>Project page, releases and issue tracker: <a href='{PROJECT_URL}'>{PROJECT_URL}</a></p>"
             "<p>OpenFOAM® is a registered trademark of OpenCFD Ltd. AeroFlow Studio is not affiliated "
             "with or endorsed by OpenCFD or the OpenFOAM Foundation. NVIDIA and CUDA are trademarks of "

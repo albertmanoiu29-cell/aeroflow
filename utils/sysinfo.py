@@ -58,7 +58,7 @@ def system_report(openfoam: Optional[str] = None) -> str:
     except Exception:  # noqa: BLE001
         lines.append("Qt: unavailable")
     for label, dist in (("VTK", "vtk"), ("PyVista", "pyvista"), ("NumPy", "numpy"), ("SciPy", "scipy"),
-                        ("pyqtgraph", "pyqtgraph"), ("CuPy", "cupy-cuda12x")):
+                        ("pyqtgraph", "pyqtgraph"), ("CuPy", "cupy-cuda12x"), ("pyopencl", "pyopencl")):
         lines.append(f"{label}: {_version(dist)}")
     lines.append(f"CPU kernels: {accel.backend()}")
     if compute.probed():

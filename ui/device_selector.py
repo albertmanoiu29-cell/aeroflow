@@ -44,7 +44,8 @@ class DeviceSelector(QWidget):
         lay = QGridLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setVerticalSpacing(3)
-        tip = ("Where the live solvers run. The GPU (CUDA) is typically 5-25x faster than the CPU; "
+        tip = ("Where the live solvers run. The GPU (CUDA on NVIDIA, OpenCL on AMD and Intel) is typically 5-25x "
+               "faster than the CPU; "
                "the flow keeps running when you switch.")
         cap = QLabel(label)
         cap.setToolTip(tip)
@@ -88,7 +89,7 @@ class DeviceSelector(QWidget):
         model = self.combo.model()
         gpu_item = model.item(list(Device).index(Device.GPU)) if hasattr(model, "item") else None
         if not compute.probed():
-            self.note.setText("Checking for a CUDA GPU…")
+            self.note.setText("Checking for a GPU…")
             return
         info = compute.gpu_info()
         if gpu_item is not None:

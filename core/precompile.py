@@ -1,4 +1,4 @@
-"""Compile every numba and CUDA kernel ahead of time (run by the installer / setup script).
+"""Compile every numba and GPU (CUDA / OpenCL) kernel ahead of time (run by the installer / setup script).
 
 numba caches compiled kernels next to their source files and CuPy caches CUDA binaries per user, so
 running this once at install time means the first launch of the app (and of every Lab) starts instantly
@@ -33,9 +33,9 @@ def main() -> int:
             lbm2d_gpu._module()
             nozzle_gpu.load_module(True)
             nozzle_gpu.load_module(False)
-            print("    GPU kernels compiled")
+            print(f"    GPU kernels compiled ({info.backend}: {info.name})")
         else:
-            print(f"    No GPU kernels to compile ({info.reason or 'no CUDA GPU'})")
+            print(f"    No GPU kernels to compile ({info.reason or 'no GPU'})")
     except Exception as exc:  # noqa: BLE001 - optional; compiled on first use instead
         print(f"    GPU kernels skipped: {exc}")
     print(f"    Kernel pre-compilation done in {time.perf_counter() - t0:.1f} s")

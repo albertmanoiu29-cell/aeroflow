@@ -213,7 +213,9 @@ class PreferencesDialog(QDialog):
         lay.addWidget(make_section_label("Compute device"))
         lay.addWidget(self.device)
         info = compute.gpu_info()
-        status = QLabel(f"GPU: {info.name}" if info.available else "No CUDA GPU detected: the labs run on the CPU.")
+        status = QLabel(f"GPU: {info.name} ({info.backend})" if info.available
+                        else f"No usable GPU: the labs run on the CPU. {info.reason}")
+        status.setWordWrap(True)
         status.setProperty("role", "muted")
         lay.addWidget(status)
         lay.addStretch(1)

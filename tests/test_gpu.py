@@ -1,4 +1,4 @@
-"""GPU (CUDA) backends of the Labs: same results as the CPU kernels, safe device switching.
+"""GPU (CUDA or OpenCL; set AEROFLOW_GPU_BACKEND to pick) backends of the Labs: same results as the CPU kernels, safe device switching.
 
 Skipped automatically on machines without a working CUDA GPU / CuPy.
 """
@@ -179,3 +179,43 @@ def test_nozzle_gpu_matches_cpu() -> None:
     assert c.device == "GPU" and abs(c.time - a.time) < 1e-3 * a.time
     assert np.isfinite(c.U).all()
     assert np.max(np.abs(a.U - c.U)) / np.max(np.abs(a.U)) < 2e-3
+
+
+def test_kernel_sources_are_portable():
+    """The kernels use only the macros both dialects define (no raw CUDA keywords or C++ references)."""
+    import re
+
+    from core import lbm2d_gpu, nozzle_gpu, supersonic_gpu
+
+    for src in (supersonic_gpu._SRC, nozzle_gpu._NOZZLE_SRC, lbm2d_gpu._SRC):
+        assert not re.search(r"blockIdx|threadIdx|__global__|__device__|__shared__|atomic[A-Z]|long long", src)
+        assert not re.search(r"\breal\s*&", src)
+
+
+def test_opencl_backend_matches_cpu():
+    """The OpenCL runtime (any vendor's GPU) gives the CPU results, when an OpenCL GPU is present."""
+    pytest.importorskip("pyopencl")
+    from core import gpu_backend
+
+    rt, info = gpu_backend.probe_opencl()
+    if rt is None:
+        pytest.skip(info["reason"])
+    from core import supersonic_gpu
+
+    saved = (compute._info, compute._cupy)
+    try:
+        compute._info = compute.GPUInfo(True, name=info["name"], backend="OpenCL")
+        compute._cupy = rt
+        supersonic_gpu._module_cache.clear()
+        compute.set_preference(Device.GPU)
+        a = _wedge(100, 60)
+        a.step(40)
+        assert a.device == "GPU"
+        compute.set_preference(Device.CPU)
+        b = _wedge(100, 60)
+        b.step(40)
+        assert a.time == pytest.approx(b.time, rel=1e-10)
+        np.testing.assert_allclose(a.U, b.U, rtol=1e-9, atol=1e-9)
+    finally:
+        compute._info, compute._cupy = saved
+        supersonic_gpu._module_cache.clear()

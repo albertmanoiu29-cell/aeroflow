@@ -1,4 +1,4 @@
-"""CUDA backend of the Live Flow Lab (:class:`core.lbm2d.FlowLab2D`): D2Q9 BGK-Smagorinsky lattice
+"""GPU backend (CUDA or OpenCL, see :mod:`core.gpu_backend`) of the Live Flow Lab (:class:`core.lbm2d.FlowLab2D`): D2Q9 BGK-Smagorinsky lattice
 Boltzmann with the same boundaries, sponge layers and momentum-exchange forces as the numba kernel.
 
 One thread per lattice cell (fused pull-stream + collide), float32 like the CPU solver. The populations
@@ -14,26 +14,26 @@ import threading
 
 import numpy as np
 
-from core import compute
+from core import compute, gpu_backend
 
 _SRC = r"""
-__constant__ int CX[9] = {0, 1, 0, -1, 0, 1, -1, -1, 1};
-__constant__ int CY[9] = {0, 0, 1, 0, -1, 1, 1, -1, -1};
-__constant__ float WT[9] = {4.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f,
+CONSTANT int CX[9] = {0, 1, 0, -1, 0, 1, -1, -1, 1};
+CONSTANT int CY[9] = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+CONSTANT float WT[9] = {4.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f, 1.0f / 9.0f,
                             1.0f / 36.0f, 1.0f / 36.0f, 1.0f / 36.0f, 1.0f / 36.0f};
-__constant__ int OPP[9] = {0, 3, 4, 1, 2, 7, 8, 5, 6};
-__constant__ int REFY[9] = {0, 1, 4, 3, 2, 8, 7, 6, 5};
+CONSTANT int OPP[9] = {0, 3, 4, 1, 2, 7, 8, 5, 6};
+CONSTANT int REFY[9] = {0, 1, 4, 3, 2, 8, 7, 6, 5};
 
 #define F(a, i, y, x) a[((size_t)(i) * ny + (y)) * nx + (x)]
 
-extern "C" __global__ void lbm_step(const float* __restrict__ fs, float* __restrict__ fd,
-                                    const unsigned char* __restrict__ solid,
-                                    const unsigned char* __restrict__ special,
-                                    float u_in, const float* __restrict__ tau0, float smag,
-                                    float* __restrict__ uxa, float* __restrict__ uya, float* __restrict__ rhoa,
-                                    double* force, const float* __restrict__ sponge, int ny, int nx) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+KERNEL lbm_step(GMEM const float* RESTRICT fs, GMEM float* RESTRICT fd,
+                                    GMEM const unsigned char* RESTRICT solid,
+                                    GMEM const unsigned char* RESTRICT special,
+                                    float u_in, GMEM const float* RESTRICT tau0, float smag,
+                                    GMEM float* RESTRICT uxa, GMEM float* RESTRICT uya, GMEM float* RESTRICT rhoa,
+                                    GMEM double* force, GMEM const float* RESTRICT sponge, int ny, int nx) {
+    int x = GID_X;
+    int y = GID_Y;
     if (x >= nx || y >= ny) return;
     size_t c = (size_t)y * nx + x;
     float s = sponge[x];
@@ -153,17 +153,17 @@ extern "C" __global__ void lbm_step(const float* __restrict__ fs, float* __restr
         F(fd, i, y, x) = (s > 0.0f) ? fp + s * (ft[i] - fp) : fp;
     }
     uxa[c] = u; uya[c] = v; rhoa[c] = rho;
-    if (fx != 0.0) atomicAdd(&force[0], fx);
-    if (fy != 0.0) atomicAdd(&force[1], fy);
+    if (fx != 0.0) ATOMIC_ADD_F64(&force[0], fx);
+    if (fy != 0.0) ATOMIC_ADD_F64(&force[1], fy);
 }
 
 // Semi-Lagrangian smoke advection over `dt` steps, then the inlet rake (streaks every `spacing` rows).
-extern "C" __global__ void advect_dye(const float* __restrict__ dye, float* __restrict__ out,
-                                      const float* __restrict__ ux, const float* __restrict__ uy,
-                                      const unsigned char* __restrict__ solid, float dt, float decay,
+KERNEL advect_dye(GMEM const float* RESTRICT dye, GMEM float* RESTRICT out,
+                                      GMEM const float* RESTRICT ux, GMEM const float* RESTRICT uy,
+                                      GMEM const unsigned char* RESTRICT solid, float dt, float decay,
                                       int spacing, int ny, int nx) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int x = GID_X;
+    int y = GID_Y;
     if (x >= nx || y >= ny) return;
     size_t c = (size_t)y * nx + x;
     if (x < 3) {
@@ -192,12 +192,12 @@ _module_lock = threading.Lock()
 
 
 def _module():
-    """The compiled CUDA module (built once; CuPy also caches the binary on disk between sessions)."""
+    """The compiled GPU module (built once; CuPy also caches the binary on disk between sessions)."""
     cp = compute.cupy()
     with _module_lock:                     # the start-up warm-up thread may be compiling it right now
         mod = _module_cache.get("m")
         if mod is None:
-            mod = cp.RawModule(code=_SRC, options=("--std=c++14",))
+            mod = cp.RawModule(code=gpu_backend.prelude(cp) + _SRC, options=("--std=c++14",))
             mod.get_function("lbm_step")    # RawModule compiles lazily: force it here
             _module_cache["m"] = mod
     return mod
@@ -243,7 +243,7 @@ class FlowLabGPU:
         self.ev_start = cp.cuda.Event()
         self.ev_end = cp.cuda.Event()
         self.grid = (math.ceil(self.nx / _BLOCK[0]), math.ceil(self.ny / _BLOCK[1]))
-        self.use_graphs = True
+        self.use_graphs = bool(getattr(cp, "GRAPHS", True))   # CUDA graphs (none on OpenCL)
         self._graphs: dict[tuple[int, int], object] = {}
         self._graph_key: tuple = ()
         self.pending = 0

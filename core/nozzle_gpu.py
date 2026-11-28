@@ -1,4 +1,4 @@
-"""CUDA backend of the Rocket Nozzle Lab solver (:class:`core.nozzle.NozzleFlow`).
+"""GPU backend (CUDA or OpenCL) of the Rocket Nozzle Lab solver (:class:`core.nozzle.NozzleFlow`).
 
 It reuses the Supersonic Lab kernels (HLLC/HLL fluxes, MUSCL, immersed-boundary walls, CFL reduction) and
 adds two of its own: the nozzle boundary conditions (injector inlet with the ignition ramp, axis, far
@@ -23,7 +23,7 @@ def load_module(single: bool = True):
     return _module("nozzle", _NOZZLE_SRC, single=single, cfl=NOZZLE_CFL)
 
 _NOZZLE_SRC = r"""
-__device__ __forceinline__ real ramp_f(const treal* __restrict__ P, treal tt) {
+DEVICE real ramp_f(GMEM const treal* RESTRICT P, treal tt) {
     real t = (real)tt;
     real ti = (real)P[5], tau = (real)P[6], toff = (real)P[7], tauoff = (real)P[8], foff = (real)P[9];
     if (t < ti) return 0.0;
@@ -38,24 +38,24 @@ __device__ __forceinline__ real ramp_f(const treal* __restrict__ P, treal tt) {
 
 // Far-field ghost state (see NozzleFlow._far): free stream in flight; in still air, outflow at the ambient static
 // pressure and inflow from air at rest (ambient total pressure and temperature).
-__device__ __forceinline__ void far_state(real r, real u, real v, real p, real un, real pa, real ra, real uf,
-                                          bool outlet, real g, real &o0, real &o1, real &o2, real &o3) {
-    if (uf > 0.0 && !outlet) { o0 = ra; o1 = uf; o2 = 0.0; o3 = pa; return; }
-    if (un >= 0.0) { o0 = r; o1 = u; o2 = v; o3 = pa; return; }
+DEVICE void far_state(real r, real u, real v, real p, real un, real pa, real ra, real uf,
+                                          bool outlet, real g, real *o0, real *o1, real *o2, real *o3) {
+    if (uf > 0.0 && !outlet) { *o0 = ra; *o1 = uf; *o2 = 0.0; *o3 = pa; return; }
+    if (un >= 0.0) { *o0 = r; *o1 = u; *o2 = v; *o3 = pa; return; }
     real ta = g * pa / ra;
     real q2 = u * u + v * v;
     real q2c = fmin(q2, 0.9 * 2.0 * ta / (g + 1.0));
     real scale = sqrt(q2c / fmax(q2, 1e-30));
     real tt = ta - 0.5 * (g - 1.0) * q2c;
     real pin = pa * pow(tt / ta, g / (g - 1.0));
-    o0 = g * pin / tt; o1 = u * scale; o2 = v * scale; o3 = pin;
+    *o0 = g * pin / tt; *o1 = u * scale; *o2 = v * scale; *o3 = pin;
 }
 
 // Ghost layers of the nozzle domain (see NozzleFlow._fill_ghosts, which this mirrors exactly).
-extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, const treal* __restrict__ P,
-                                         const treal* __restrict__ tsum, real g) {
+KERNEL ghosts_nozzle(GMEM real* RESTRICT W, int ny, int nx, GMEM const treal* RESTRICT P,
+                                         GMEM const treal* RESTRICT tsum, real g) {
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = GID_X;
     if (t >= nyp * nxp) return;
     int j = t / nxp, i = t - j * nxp;
     bool gx = i < G || i >= nx + G;
@@ -67,7 +67,7 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
         o0 = ra; o1 = uf; o2 = 0.0; o3 = pa;
     } else if (i < G) {                   // injector face / far field upstream
         real r = WI(0, j, G), u = WI(1, j, G), v = WI(2, j, G), p = WI(3, j, G);
-        far_state(r, u, v, p, -u, pa, ra, uf, false, g, o0, o1, o2, o3);
+        far_state(r, u, v, p, -u, pa, ra, uf, false, g, &o0, &o1, &o2, &o3);
         if (j - G < (int)P[10] && j - G >= (int)P[12]) {   // injector rows (annular for an aerospike)
             real f = ramp_f(P, *tsum);
             real p0 = pa + f * ((real)P[3] - pa), T0 = (real)P[4];
@@ -91,10 +91,10 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
     } else if (i >= nx + G) {             // outflow
         real r = WI(0, j, nx + G - 1), u = WI(1, j, nx + G - 1), v = WI(2, j, nx + G - 1), p = WI(3, j, nx + G - 1);
         if (u >= sqrt(g * p / r)) { o0 = r; o1 = u; o2 = v; o3 = p; }
-        else far_state(r, u, v, p, u, pa, ra, uf, true, g, o0, o1, o2, o3);
+        else far_state(r, u, v, p, u, pa, ra, uf, true, g, &o0, &o1, &o2, &o3);
     } else if (j >= ny + G) {             // far field above
         real r = WI(0, ny + G - 1, i), u = WI(1, ny + G - 1, i), v = WI(2, ny + G - 1, i), p = WI(3, ny + G - 1, i);
-        far_state(r, u, v, p, v, pa, ra, uf, false, g, o0, o1, o2, o3);
+        far_state(r, u, v, p, v, pa, ra, uf, false, g, &o0, &o1, &o2, &o3);
     } else {                              // axis / symmetry plane: mirror
         int jm = 2 * G - 1 - j;
         o0 = WI(0, jm, i); o1 = WI(1, jm, i); o2 = -WI(2, jm, i); o3 = WI(3, jm, i);
@@ -106,7 +106,7 @@ extern "C" __global__ void ghosts_nozzle(real* __restrict__ W, int ny, int nx, c
 }
 
 // Wall pressure: exact piston solution normal to the wall (see core.nozzle._wall_pressure).
-__device__ __forceinline__ real wall_pressure(real r, real u, real v, real p, real nx_, real ny_, real g) {
+DEVICE real wall_pressure(real r, real u, real v, real p, real nx_, real ny_, real g) {
     real un = u * nx_ + v * ny_;
     real c = sqrt(g * p / r);
     if (un > 0.0) {
@@ -119,15 +119,15 @@ __device__ __forceinline__ real wall_pressure(real r, real u, real v, real p, re
 }
 
 // SSP-RK stage of the cut-cell scheme (see core.nozzle._rk_cut_nb, which this mirrors line by line).
-extern "C" __global__ void rk_update_cut(const real* Ubase, const real* __restrict__ Ucur,
-                                         const real* __restrict__ F, const real* __restrict__ Gf,
-                                         const real* __restrict__ W, const unsigned char* __restrict__ solid,
-                                         const real* __restrict__ ax, const real* __restrict__ ay,
-                                         const real* __restrict__ wx, const real* __restrict__ wr,
-                                         const real* __restrict__ nwx, const real* __restrict__ nwr,
-                                         const real* __restrict__ ks, const treal* __restrict__ dtp, real a,
-                                         int axi, real g, int ny, int nx, real* out) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+KERNEL rk_update_cut(GMEM const real* Ubase, GMEM const real* RESTRICT Ucur,
+                                         GMEM const real* RESTRICT F, GMEM const real* RESTRICT Gf,
+                                         GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT solid,
+                                         GMEM const real* RESTRICT ax, GMEM const real* RESTRICT ay,
+                                         GMEM const real* RESTRICT wx, GMEM const real* RESTRICT wr,
+                                         GMEM const real* RESTRICT nwx, GMEM const real* RESTRICT nwr,
+                                         GMEM const real* RESTRICT ks, GMEM const treal* RESTRICT dtp, real a,
+                                         int axi, real g, int ny, int nx, GMEM real* out) {
+    int t = GID_X;
     if (t >= ny * nx) return;
     int jj = t / nx, ii = t - jj * nx;
     int nyp = ny + 2 * G, nxp = nx + 2 * G;

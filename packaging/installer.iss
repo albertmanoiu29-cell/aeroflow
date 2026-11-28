@@ -46,7 +46,7 @@ CloseApplications=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
-WelcomeLabel2=This will install [name/ver] on your computer.%n%nThe installer also sets up the Python libraries the program needs (and NVIDIA GPU acceleration if you have an NVIDIA graphics card). This needs an internet connection and takes about 5-10 minutes; a console window shows the progress.%n%nIt is recommended that you close all other applications before continuing.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nThe installer also sets up the Python libraries the program needs (and GPU acceleration: CUDA on NVIDIA graphics cards, OpenCL on AMD and Intel ones). This needs an internet connection and takes about 5-10 minutes; a console window shows the progress.%n%nIt is recommended that you close all other applications before continuing.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

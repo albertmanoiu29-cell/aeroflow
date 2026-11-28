@@ -1,4 +1,4 @@
-"""CUDA backend of the Supersonic Lab solver (:class:`core.supersonic.Supersonic2D`).
+"""GPU backend (CUDA or OpenCL, see :mod:`core.gpu_backend`) of the Supersonic Lab solver (:class:`core.supersonic.Supersonic2D`).
 
 A line-by-line port of the numba kernels — HLLC/HLL hybrid fluxes, MUSCL-minmod reconstruction,
 immersed-boundary ghost cells, SSP-RK2 — in double precision, so GPU and CPU results agree to round-off.
@@ -18,7 +18,7 @@ from typing import Optional
 
 import numpy as np
 
-from core import compute
+from core import compute, gpu_backend
 
 _SRC = r"""
 #ifndef REAL_T
@@ -33,20 +33,20 @@ typedef double treal;     // time and time step: always double (no drift over lo
 #define CFL 0.5
 #endif
 
-__device__ __forceinline__ real minmod(real a, real b) {
+DEVICE real minmod(real a, real b) {
     if (a * b <= 0.0) return 0.0;
     return fabs(a) < fabs(b) ? a : b;
 }
 
-__device__ __forceinline__ void muscl(real a0, real a1, real a2, real a3, real &l, real &r) {
-    l = a1 + 0.5 * minmod(a1 - a0, a2 - a1);
-    r = a2 - 0.5 * minmod(a2 - a1, a3 - a2);
+DEVICE void muscl(real a0, real a1, real a2, real a3, real *l, real *r) {
+    *l = a1 + 0.5 * minmod(a1 - a0, a2 - a1);
+    *r = a2 - 0.5 * minmod(a2 - a1, a3 - a2);
 }
 
 // Normal-direction flux between left/right primitive states (u normal, v tangential):
 // HLLC, switching to HLL across strong shocks (anti-carbuncle).
-__device__ void riemann(real rl, real ul, real vl, real pl, real rr, real ur, real vr, real pr, real g,
-                        real &f0, real &f1, real &f2, real &f3) {
+DEVICE void riemann(real rl, real ul, real vl, real pl, real rr, real ur, real vr, real pr, real g,
+                        real *f0, real *f1, real *f2, real *f3) {
     real cl = sqrt(g * pl / rl);
     real cr = sqrt(g * pr / rr);
     real el = pl / (g - 1.0) + 0.5 * rl * (ul * ul + vl * vl);
@@ -55,14 +55,14 @@ __device__ void riemann(real rl, real ul, real vl, real pl, real rr, real ur, re
     real sr = fmax(ul + cl, ur + cr);
     real fl0 = rl * ul, fl1 = rl * ul * ul + pl, fl2 = rl * ul * vl, fl3 = ul * (el + pl);
     real fr0 = rr * ur, fr1 = rr * ur * ur + pr, fr2 = rr * ur * vr, fr3 = ur * (er + pr);
-    if (sl >= 0.0) { f0 = fl0; f1 = fl1; f2 = fl2; f3 = fl3; return; }
-    if (sr <= 0.0) { f0 = fr0; f1 = fr1; f2 = fr2; f3 = fr3; return; }
+    if (sl >= 0.0) { *f0 = fl0; *f1 = fl1; *f2 = fl2; *f3 = fl3; return; }
+    if (sr <= 0.0) { *f0 = fr0; *f1 = fr1; *f2 = fr2; *f3 = fr3; return; }
     if (fmax(pl, pr) > 2.0 * fmin(pl, pr)) {                       // HLL
         real inv = 1.0 / (sr - sl);
-        f0 = (sr * fl0 - sl * fr0 + sl * sr * (rr - rl)) * inv;
-        f1 = (sr * fl1 - sl * fr1 + sl * sr * (rr * ur - rl * ul)) * inv;
-        f2 = (sr * fl2 - sl * fr2 + sl * sr * (rr * vr - rl * vl)) * inv;
-        f3 = (sr * fl3 - sl * fr3 + sl * sr * (er - el)) * inv;
+        *f0 = (sr * fl0 - sl * fr0 + sl * sr * (rr - rl)) * inv;
+        *f1 = (sr * fl1 - sl * fr1 + sl * sr * (rr * ur - rl * ul)) * inv;
+        *f2 = (sr * fl2 - sl * fr2 + sl * sr * (rr * vr - rl * vl)) * inv;
+        *f3 = (sr * fl3 - sl * fr3 + sl * sr * (er - el)) * inv;
         return;
     }
     real den = rl * (sl - ul) - rr * (sr - ur);
@@ -70,30 +70,30 @@ __device__ void riemann(real rl, real ul, real vl, real pl, real rr, real ur, re
     if (sm >= 0.0) {
         real c = rl * (sl - ul) / (sl - sm);
         real u3 = c * (el / rl + (sm - ul) * (sm + pl / (rl * (sl - ul))));
-        f0 = fl0 + sl * (c - rl);
-        f1 = fl1 + sl * (c * sm - rl * ul);
-        f2 = fl2 + sl * (c * vl - rl * vl);
-        f3 = fl3 + sl * (u3 - el);
+        *f0 = fl0 + sl * (c - rl);
+        *f1 = fl1 + sl * (c * sm - rl * ul);
+        *f2 = fl2 + sl * (c * vl - rl * vl);
+        *f3 = fl3 + sl * (u3 - el);
         return;
     }
     real c = rr * (sr - ur) / (sr - sm);
     real u3 = c * (er / rr + (sm - ur) * (sm + pr / (rr * (sr - ur))));
-    f0 = fr0 + sr * (c - rr);
-    f1 = fr1 + sr * (c * sm - rr * ur);
-    f2 = fr2 + sr * (c * vr - rr * vr);
-    f3 = fr3 + sr * (u3 - er);
+    *f0 = fr0 + sr * (c - rr);
+    *f1 = fr1 + sr * (c * sm - rr * ur);
+    *f2 = fr2 + sr * (c * vr - rr * vr);
+    *f3 = fr3 + sr * (u3 - er);
 }
 
 #define WI(k, j, i) W[((size_t)(k) * nyp + (j)) * nxp + (i)]
 
 // Flux through the face between padded cells L=(lj,li) and R=(rj,ri) in the (dj,di) direction.
 // nc / tc: indices of the normal / tangential velocity in W. `wall`: face-reflection solids.
-__device__ void face_flux(const real* __restrict__ W, const unsigned char* __restrict__ wall,
+DEVICE void face_flux(GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT wall,
                           int nyp, int nxp, int lj, int li, int rj, int ri, int dj, int di, int nc, int tc,
-                          real g, real &f0, real &f1, real &f2, real &f3) {
+                          real g, real *f0, real *f1, real *f2, real *f3) {
     bool sl_ = wall[lj * nxp + li] != 0;
     bool sr_ = wall[rj * nxp + ri] != 0;
-    if (sl_ && sr_) { f0 = f1 = f2 = f3 = 0.0; return; }
+    if (sl_ && sr_) { *f0 = *f1 = *f2 = *f3 = 0.0; return; }
     real rl = WI(0, lj, li), pl = WI(3, lj, li), nl = WI(nc, lj, li), tl = WI(tc, lj, li);
     real rr = WI(0, rj, ri), pr = WI(3, rj, ri), nr = WI(nc, rj, ri), tr = WI(tc, rj, ri);
     if (sl_) {                        // slip wall on the left: mirror the fluid state
@@ -104,13 +104,13 @@ __device__ void face_flux(const real* __restrict__ W, const unsigned char* __res
         int llj = lj - dj, lli = li - di, rrj = rj + dj, rri = ri + di;
         if (!(wall[llj * nxp + lli] || wall[rrj * nxp + rri])) {   // second order away from walls
             real a, b, c, d;
-            muscl(WI(0, llj, lli), rl, rr, WI(0, rrj, rri), a, b);
-            muscl(WI(3, llj, lli), pl, pr, WI(3, rrj, rri), c, d);
+            muscl(WI(0, llj, lli), rl, rr, WI(0, rrj, rri), &a, &b);
+            muscl(WI(3, llj, lli), pl, pr, WI(3, rrj, rri), &c, &d);
             if (a > RHO_FLOOR && b > RHO_FLOOR && c > P_FLOOR && d > P_FLOOR) {
                 rl = a; rr = b; pl = c; pr = d;
                 real x, y;
-                muscl(WI(nc, llj, lli), nl, nr, WI(nc, rrj, rri), x, y); nl = x; nr = y;
-                muscl(WI(tc, llj, lli), tl, tr, WI(tc, rrj, rri), x, y); tl = x; tr = y;
+                muscl(WI(nc, llj, lli), nl, nr, WI(nc, rrj, rri), &x, &y); nl = x; nr = y;
+                muscl(WI(tc, llj, lli), tl, tr, WI(tc, rrj, rri), &x, &y); tl = x; tr = y;
             }
         }
     }
@@ -118,8 +118,8 @@ __device__ void face_flux(const real* __restrict__ W, const unsigned char* __res
 }
 
 // Interior primitives (with positivity floors) into the padded W.
-extern "C" __global__ void prim(const real* __restrict__ U, real* __restrict__ W, real g, int ny, int nx) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+KERNEL prim(GMEM const real* RESTRICT U, GMEM real* RESTRICT W, real g, int ny, int nx) {
+    int t = GID_X;
     if (t >= ny * nx) return;
     int jj = t / nx, ii = t - jj * nx;
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
@@ -137,9 +137,9 @@ extern "C" __global__ void prim(const real* __restrict__ U, real* __restrict__ W
 }
 
 // Ghost layers: supersonic inflow (left), zero-gradient outflow (right), far field (top / bottom).
-extern "C" __global__ void ghosts(real* __restrict__ W, int ny, int nx, real r0, real u0, real v0, real p0) {
+KERNEL ghosts(GMEM real* RESTRICT W, int ny, int nx, real r0, real u0, real v0, real p0) {
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = GID_X;
     if (t >= nyp * nxp) return;
     int j = t / nxp, i = t - j * nxp;
     bool gx = i < G || i >= nx + G;
@@ -158,17 +158,17 @@ extern "C" __global__ void ghosts(real* __restrict__ W, int ny, int nx, real r0,
 
 // Immersed-boundary ghost states: the flow at each ghost cell's mirror image across the true wall,
 // keeping rho and p and reflecting the velocity about the wall normal.
-extern "C" __global__ void fill_ib(real* __restrict__ W, int nyp, int nxp, int count,
-                                   const long long* __restrict__ gj, const long long* __restrict__ gi,
-                                   const long long* __restrict__ sj, const long long* __restrict__ si,
-                                   const real* __restrict__ sw, const real* __restrict__ nrm) {
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
+KERNEL fill_ib(GMEM real* RESTRICT W, int nyp, int nxp, int count,
+                                   GMEM const i64* RESTRICT gj, GMEM const i64* RESTRICT gi,
+                                   GMEM const i64* RESTRICT sj, GMEM const i64* RESTRICT si,
+                                   GMEM const real* RESTRICT sw, GMEM const real* RESTRICT nrm) {
+    int k = GID_X;
     if (k >= count) return;
     real r = 0.0, u = 0.0, v = 0.0, p = 0.0;
     for (int q = 0; q < 4; ++q) {
         real w = sw[4 * k + q];
         if (w == 0.0) continue;
-        long long a = sj[4 * k + q], b = si[4 * k + q];
+        i64 a = sj[4 * k + q], b = si[4 * k + q];
         r += w * WI(0, a, b);
         u += w * WI(1, a, b);
         v += w * WI(2, a, b);
@@ -184,11 +184,11 @@ extern "C" __global__ void fill_ib(real* __restrict__ W, int nyp, int nxp, int c
 
 // Largest (|u| + |v| + 2c) over the fluid cells: block reduction, then one atomic per block. Speeds are
 // non-negative, so their IEEE bit patterns order like unsigned integers.
-extern "C" __global__ void max_speed(const real* __restrict__ W, const unsigned char* __restrict__ solid,
-                                     real g, int ny, int nx, unsigned long long* smax) {
-    __shared__ real sh[256];
+KERNEL max_speed(GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT solid,
+                                     real g, int ny, int nx, GMEM u64* smax) {
+    SHARED real sh[256];
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = GID_X;
     real s = 0.0;
     if (t < ny * nx) {
         int j = t / nx + G, i = t % nx + G;
@@ -197,19 +197,19 @@ extern "C" __global__ void max_speed(const real* __restrict__ W, const unsigned 
             s = fabs(WI(1, j, i)) + fabs(WI(2, j, i)) + 2.0 * c;
         }
     }
-    sh[threadIdx.x] = s;
-    __syncthreads();
-    for (int o = blockDim.x / 2; o > 0; o >>= 1) {
-        if (threadIdx.x < o) sh[threadIdx.x] = fmax(sh[threadIdx.x], sh[threadIdx.x + o]);
-        __syncthreads();
+    sh[LID_X] = s;
+    SYNC_LOCAL();
+    for (int o = LSIZE_X / 2; o > 0; o >>= 1) {
+        if (LID_X < o) sh[LID_X] = fmax(sh[LID_X], sh[LID_X + o]);
+        SYNC_LOCAL();
     }
-    if (threadIdx.x == 0) atomicMax(smax, (unsigned long long)__double_as_longlong(sh[0]));
+    if (LID_X == 0) ATOMIC_MAX_U64(smax, DBL_AS_U64(sh[0]));
 }
 
 // Local Mach number of the interior cells (0 inside the body), for display: saves the host recomputing it.
-extern "C" __global__ void mach_out(const real* __restrict__ W, const unsigned char* __restrict__ solid,
-                                    real g, int ny, int nx, float* __restrict__ M) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+KERNEL mach_out(GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT solid,
+                                    real g, int ny, int nx, GMEM float* RESTRICT M) {
+    int t = GID_X;
     if (t >= ny * nx) return;
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
     int j = t / nx + G, i = t % nx + G;
@@ -219,25 +219,25 @@ extern "C" __global__ void mach_out(const real* __restrict__ W, const unsigned c
 }
 
 // dt = CFL / max speed; accumulate the simulated time; clear the reduction for the next step.
-extern "C" __global__ void finish_dt(unsigned long long* smax, treal* dt, treal* tsum) {
-    treal s = __longlong_as_double((long long)(*smax));
+KERNEL finish_dt(GMEM u64* smax, GMEM treal* dt, GMEM treal* tsum) {
+    treal s = U64_AS_DBL(*smax);
     treal d = (treal)CFL / (s > (treal)1e-9 ? s : (treal)1e-9);
     *dt = d;
     *tsum += d;
-    *smax = 0ULL;
+    *smax = (u64)0;
 }
 
 // x-face fluxes F (4, ny, nx+1); face f lies between interior cells f-1 and f.
-extern "C" __global__ void flux_x(const real* __restrict__ W, const unsigned char* __restrict__ wall, real g,
-                                  int ny, int nx, real* __restrict__ F) {
+KERNEL flux_x(GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT wall, real g,
+                                  int ny, int nx, GMEM real* RESTRICT F) {
     int nf = nx + 1;
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = GID_X;
     if (t >= ny * nf) return;
     int jj = t / nf, f = t - jj * nf;
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
     int j = jj + 2, li = f + 1;
     real f0, f1, f2, f3;
-    face_flux(W, wall, nyp, nxp, j, li, j, li + 1, 0, 1, 1, 2, g, f0, f1, f2, f3);
+    face_flux(W, wall, nyp, nxp, j, li, j, li + 1, 0, 1, 1, 2, g, &f0, &f1, &f2, &f3);
     size_t plane = (size_t)ny * nf;
     F[t] = f0;
     F[plane + t] = f1;          // normal momentum = x
@@ -246,16 +246,16 @@ extern "C" __global__ void flux_x(const real* __restrict__ W, const unsigned cha
 }
 
 // y-face fluxes G (4, ny+1, nx); face f lies between interior rows f-1 and f.
-extern "C" __global__ void flux_y(const real* __restrict__ W, const unsigned char* __restrict__ wall, real g,
-                                  int ny, int nx, real* __restrict__ Gf) {
+KERNEL flux_y(GMEM const real* RESTRICT W, GMEM const unsigned char* RESTRICT wall, real g,
+                                  int ny, int nx, GMEM real* RESTRICT Gf) {
     int nf = ny + 1;
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = GID_X;
     if (t >= nf * nx) return;
     int ff = t / nx, ii = t - ff * nx;
     int nyp = ny + 2 * G, nxp = nx + 2 * G;
     int lj = ff + 1, i = ii + 2;
     real f0, f1, f2, f3;
-    face_flux(W, wall, nyp, nxp, lj, i, lj + 1, i, 1, 0, 2, 1, g, f0, f1, f2, f3);
+    face_flux(W, wall, nyp, nxp, lj, i, lj + 1, i, 1, 0, 2, 1, g, &f0, &f1, &f2, &f3);
     size_t plane = (size_t)nf * nx;
     Gf[t] = f0;
     Gf[plane + t] = f2;         // tangential = x
@@ -264,11 +264,11 @@ extern "C" __global__ void flux_y(const real* __restrict__ W, const unsigned cha
 }
 
 // Fused SSP-RK stage: out = a*Ubase + (1-a)*(Ucur + dt*R). `out` may alias Ubase. Body cells copy Ubase.
-extern "C" __global__ void rk_update(const real* Ubase, const real* __restrict__ Ucur,
-                                     const real* __restrict__ F, const real* __restrict__ Gf,
-                                     const unsigned char* __restrict__ solid, const treal* __restrict__ dtp,
-                                     real a, int ny, int nx, real* out) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
+KERNEL rk_update(GMEM const real* Ubase, GMEM const real* RESTRICT Ucur,
+                                     GMEM const real* RESTRICT F, GMEM const real* RESTRICT Gf,
+                                     GMEM const unsigned char* RESTRICT solid, GMEM const treal* RESTRICT dtp,
+                                     real a, int ny, int nx, GMEM real* out) {
+    int t = GID_X;
     if (t >= ny * nx) return;
     int jj = t / nx, ii = t - jj * nx;
     int nxp = nx + 2 * G;
@@ -306,7 +306,7 @@ def single_precision_source(src: str) -> str:
 
 
 def _module(key: str = "m", extra_src: str = "", single: bool = False, cfl: Optional[float] = None):
-    """The compiled CUDA module (built once; CuPy also caches the binary on disk between sessions).
+    """The compiled GPU module (built once; CuPy also caches the binary on disk between sessions).
     ``extra_src`` appends more kernels (the Nozzle Lab's boundary conditions) under its own ``key``;
     ``single`` builds it in float, ``cfl`` overrides the time-step factor."""
     cp = compute.cupy()
@@ -319,7 +319,7 @@ def _module(key: str = "m", extra_src: str = "", single: bool = False, cfl: Opti
                 code = single_precision_source(code)
             if cfl is not None:
                 code = f"#define CFL {float(cfl)!r}\n" + code
-            mod = cp.RawModule(code=code, options=("--std=c++14",))
+            mod = cp.RawModule(code=gpu_backend.prelude(cp) + code, options=("--std=c++14",))
             mod.get_function("prim")    # RawModule compiles lazily: force it here
             _module_cache[key] = mod
     return mod
@@ -382,7 +382,7 @@ class SupersonicGPU:
         self.ib_count = 0
         self.ib = None
         self.ib_version = 0                  # bumped on every upload (graphs hold the ghost-cell pointers)
-        self.use_graphs = True
+        self.use_graphs = bool(getattr(cp, "GRAPHS", True))   # CUDA graphs (none on OpenCL)
         self._graphs: dict[int, object] = {}
         self._graph_key: tuple = ()
         self.h_W = _pinned((4, nyp, nxp), self.dtype)

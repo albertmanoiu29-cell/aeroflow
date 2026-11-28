@@ -75,7 +75,8 @@ rem ---- 5. Optional: NVIDIA GPU acceleration for the Live Flow Lab and Superson
 where nvidia-smi >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo No NVIDIA GPU driver found - the Labs will run on the CPU.
+    echo No NVIDIA GPU driver found - the Labs use an AMD or Intel GPU through OpenCL if one is present.
+    "%VPY%" -c "from core import compute; i = compute.gpu_info(); print('   ', i.summary())"
 ) else (
     echo.
     echo NVIDIA GPU detected - installing CUDA acceleration (CuPy, no CUDA Toolkit needed^)...

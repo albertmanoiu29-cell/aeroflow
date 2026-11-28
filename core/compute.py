@@ -1,4 +1,5 @@
-"""Compute-device selection: run the live solvers on the GPU (CUDA via CuPy) or on the CPU (numba).
+"""Compute-device selection: run the live solvers on the GPU (CUDA via CuPy, or OpenCL via pyopencl) or on
+the CPU (numba).
 
 The Supersonic Lab (compressible Euler) and the Live Flow Lab (lattice Boltzmann) have CUDA kernels in
 :mod:`core.supersonic_gpu` and :mod:`core.lbm2d_gpu`. This module decides whether they are used:
@@ -12,6 +13,10 @@ CuPy needs NVIDIA's run-time compiler (NVRTC) and the CUDA headers to build kern
 from a CUDA Toolkit install (``CUDA_PATH``) or from NVIDIA's pip wheels (``nvidia-cuda-nvrtc-cu12`` and
 ``nvidia-cuda-runtime-cu12``); :func:`_prepare_cuda_paths` points CuPy at the pip wheels when no
 toolkit is installed, so no system-wide CUDA install is needed.
+
+NVIDIA GPUs use CUDA; AMD and Intel GPUs (and NVIDIA ones without CuPy) use OpenCL through the CuPy
+look-alike in :mod:`core.gpu_backend`, with the same kernel source. ``AEROFLOW_GPU_BACKEND`` (``cuda`` /
+``opencl``) forces one of them.
 
 The environment variable ``AEROFLOW_DEVICE`` (``auto`` / ``gpu`` / ``cpu``) overrides the stored
 preference (useful for testing and troubleshooting).
@@ -42,7 +47,7 @@ class Device(str, Enum):
 
     @property
     def label(self) -> str:
-        return {"auto": "Auto (GPU if available)", "gpu": "GPU (CUDA)", "cpu": "CPU (numba)"}[self.value]
+        return {"auto": "Auto (GPU if available)", "gpu": "GPU (CUDA / OpenCL)", "cpu": "CPU (numba)"}[self.value]
 
 
 @dataclass(frozen=True)
@@ -54,8 +59,11 @@ class GPUInfo:
     memory_gb: float = 0.0
     compute_capability: str = ""
     reason: str = ""            # why the GPU is unavailable (empty when available)
+    backend: str = ""           # "CUDA" or "OpenCL"
 
     def summary(self) -> str:
+        if self.available and self.backend == "OpenCL":
+            return f"{self.name} ({self.memory_gb:.0f} GB, {self.compute_capability or 'OpenCL'})"
         if self.available:
             return f"{self.name} ({self.memory_gb:.0f} GB, CUDA sm_{self.compute_capability})"
         return f"GPU unavailable: {self.reason}"
@@ -133,6 +141,29 @@ def _prepare_cuda_paths() -> None:
 def _probe() -> GPUInfo:
     if os.environ.get("AEROFLOW_NO_GPU", "").strip() not in ("", "0", "false", "False"):
         return GPUInfo(False, reason="disabled by AEROFLOW_NO_GPU")
+    want = os.environ.get("AEROFLOW_GPU_BACKEND", "").strip().lower()
+    cuda = _probe_cuda() if want != "opencl" else GPUInfo(False, reason="CUDA skipped (AEROFLOW_GPU_BACKEND)")
+    if cuda.available or want == "cuda":
+        return cuda
+    ocl = _probe_opencl()
+    if ocl.available:
+        return ocl
+    return GPUInfo(False, reason=f"{ocl.reason}; CUDA: {cuda.reason}")
+
+
+def _probe_opencl() -> GPUInfo:
+    global _cupy
+    from core import gpu_backend
+
+    rt, info = gpu_backend.probe_opencl()
+    if rt is None:
+        return GPUInfo(False, reason=info["reason"])
+    _cupy = rt
+    return GPUInfo(True, name=info["name"], memory_gb=info["memory_gb"], compute_capability=info["version"],
+                   backend="OpenCL")
+
+
+def _probe_cuda() -> GPUInfo:
     _prepare_cuda_paths()
     try:
         import warnings
@@ -166,7 +197,7 @@ def _probe() -> GPUInfo:
         return GPUInfo(False, reason=f"CUDA initialisation failed: {msg[:200]}")
     global _cupy
     _cupy = cp
-    return GPUInfo(True, name=name, memory_gb=mem, compute_capability=cc)
+    return GPUInfo(True, name=name, memory_gb=mem, compute_capability=cc, backend="CUDA")
 
 
 def gpu_info() -> GPUInfo:
@@ -188,7 +219,7 @@ def probed() -> bool:
 
 
 def cupy() -> Any:
-    """The CuPy module (only valid when :func:`gpu_info` reports the GPU as available)."""
+    """The CuPy module, or its OpenCL look-alike (only valid when :func:`gpu_info` reports a GPU)."""
     if not gpu_info().available:
         raise RuntimeError(gpu_info().reason)
     return _cupy
@@ -243,7 +274,7 @@ def use_gpu(wait: bool = True) -> bool:
 def describe() -> str:
     """One line for status bars: what the live solvers run on."""
     if use_gpu():
-        return f"GPU · {gpu_info().name}"
+        return f"GPU · {gpu_info().name} · {gpu_info().backend}"
     from core import accel
 
     cpu = f"CPU · {accel.backend()}"

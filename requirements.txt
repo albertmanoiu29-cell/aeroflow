@@ -22,6 +22,10 @@ scipy>=1.11,<2
 # Instant engine falls back to vectorised NumPy automatically.
 numba>=0.60; python_version < "3.15"
 
+# GPU acceleration of the Labs on AMD and Intel graphics cards (OpenCL; NVIDIA cards use CUDA via
+# requirements-gpu.txt). Harmless without an OpenCL driver: the Labs then run on the CPU.
+pyopencl>=2024.2
+
 # --- 2D charts & plotting -------------------------------------------------
 pyqtgraph>=0.13.3,<0.15
 matplotlib>=3.8,<4
