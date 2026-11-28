@@ -1787,11 +1787,15 @@ class NozzleWindow(QMainWindow):
         super().showEvent(event)
         self._refresh(force=True)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        """Closing hides the window (the state is kept); the simulation pauses."""
+    def pause(self) -> None:
+        """Stop the simulation (the state is kept)."""
         self._save_layout()
         self.view.stop()
         self._sync_run_button()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Closing hides the window (the state is kept); the simulation pauses."""
+        self.pause()
         event.accept()
 
     def shutdown(self) -> None:

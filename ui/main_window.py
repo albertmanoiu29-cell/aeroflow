@@ -111,6 +111,8 @@ class MainWindow(QMainWindow):
         self._supersonic: Optional[Any] = None              # the Supersonic Lab window (created on demand)
         self._nozzle: Optional[Any] = None                  # the Rocket Nozzle Lab window (created on demand)
         self._tools: dict[str, Any] = {}                    # open tool windows by key
+        self._lab_page: Optional[str] = None                # "supersonic" / "nozzle" while a lab page is shown
+        self._docks_before_lab: tuple[bool, bool] = (True, True)
         self._tool_states: dict[str, dict] = {}             # their last inputs (saved in projects)
         self._pending_labs: dict[str, dict] = {}            # lab states from a project, applied when opened
         self.toasts = ToastManager(self, bottom_margin=STATUS_BAR_HEIGHT + 14)
@@ -269,8 +271,10 @@ class MainWindow(QMainWindow):
              [NavItem("cfd", "Tunnel", "wind", "Wind tunnel: 3-D streamlines, pressure and forces (Ctrl+1)"),
               NavItem("polar", "Polar", "chart", "Polar analysis: CL, CD and L/D across angles of attack (Ctrl+2)"),
               NavItem("live", "Live", "waves", "Live Flow Lab: a real-time 2-D wind tunnel (Ctrl+3)")],
-             [NavItem("supersonic", "Mach", "shock", "Supersonic Lab: shock waves above Mach 1 (Ctrl+4)", False),
-              NavItem("nozzle", "Nozzle", "rocket", "Rocket Nozzle Lab: engines, plumes, thrust (Ctrl+5)", False)],
+             [NavItem("supersonic", "Mach", "shock", "Supersonic Lab: shock waves above Mach 1 (Ctrl+4)",
+                      self._labs_embedded()),
+              NavItem("nozzle", "Nozzle", "rocket", "Rocket Nozzle Lab: engines, plumes, thrust (Ctrl+5)",
+                      self._labs_embedded())],
              [NavItem("airfoil", "Airfoil", "airfoil", "Airfoil analysis: panel method (Ctrl+Shift+A)", False),
               NavItem("wing", "Wing", "wing", "Wing analysis: lifting line (Ctrl+Shift+W)", False),
               NavItem("calc", "Calc", "calculator", "Aero calculator (Ctrl+Shift+U)", False)]],
@@ -753,6 +757,7 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: AppMode) -> None:
         if self._closing or self._recording:
             return
+        self._leave_lab_page()
         self._leave_home()
         previous = self.mode
         self.mode = mode
@@ -783,6 +788,7 @@ class MainWindow(QMainWindow):
         """The start screen: the side panels step aside while it is shown."""
         if self._closing or self._recording:
             return
+        self._leave_lab_page()
         if not self._home_visible:
             self._docks_before_home = (self.left_dock.isVisible(), self.right_dock.isVisible())
         self._home_visible = True
@@ -1284,9 +1290,7 @@ class MainWindow(QMainWindow):
             if "supersonic" in self._pending_labs:
                 self._apply_lab_state("supersonic", self._supersonic, self._pending_labs.pop("supersonic"))
         win = self._supersonic
-        win.show()
-        win.raise_()
-        win.activateWindow()
+        self._present_lab("supersonic", win)
         if not win.view.running:
             win.toggle_run()
 
@@ -1302,9 +1306,57 @@ class MainWindow(QMainWindow):
             if "nozzle" in self._pending_labs:
                 self._apply_lab_state("nozzle", self._nozzle, self._pending_labs.pop("nozzle"))
         win = self._nozzle
+        self._present_lab("nozzle", win)
+
+    # -- labs: their own windows, or pages of the main window -----------------------------------------
+    def _labs_embedded(self) -> bool:
+        v = self._settings().value("ui/labs_embedded", True)
+        return v if isinstance(v, bool) else str(v).lower() not in ("false", "0")
+
+    def _present_lab(self, key: str, win: Any) -> None:
+        if self.stack.indexOf(win) < 0 and not win.isWindow():
+            win.setWindowFlags(Qt.WindowType.Window)       # an embedded lab that was taken out of the stack
+        if self.stack.indexOf(win) < 0 and not getattr(win, "_aeroflow_windowed", False) and self._labs_embedded():
+            win.setWindowFlags(Qt.WindowType.Widget)
+            self.stack.addWidget(win)
+        if self.stack.indexOf(win) < 0:
+            win._aeroflow_windowed = True
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            return
+        if self._lab_page != key:
+            self._leave_lab_page()
+            self._leave_home()
+            self._docks_before_lab = (self.left_dock.isVisible(), self.right_dock.isVisible())
+            self.left_dock.hide()
+            self.right_dock.hide()
+            if self.mode == AppMode.LIVE:
+                self._lab_user_paused = not self.lab_view.running
+                self.lab_view.stop()
+            self.cfd_view.set_animation_paused(True)
+            self._lab_page = key
+        self.stack.setCurrentWidget(win)
         win.show()
-        win.raise_()
-        win.activateWindow()
+        self.rail.set_current(key)
+        self._status({"supersonic": "Supersonic Lab", "nozzle": "Rocket Nozzle Lab"}[key]
+                     + " - the wind tunnel and the other workspaces are one click away on the rail.")
+
+    def _leave_lab_page(self) -> None:
+        """Pause the lab page being left and bring the side panels back."""
+        key = self._lab_page
+        if key is None:
+            return
+        self._lab_page = None
+        win = self._supersonic if key == "supersonic" else self._nozzle
+        if win is not None:
+            try:
+                win.pause()
+            except Exception:  # noqa: BLE001
+                log.debug("Lab pause failed", exc_info=True)
+        left, right = self._docks_before_lab
+        self.left_dock.setVisible(left)
+        self.right_dock.setVisible(right)
 
     def _export_runs(self) -> None:
         if not self.runs.records:
@@ -2092,7 +2144,7 @@ class MainWindow(QMainWindow):
         for attr, title in (("_supersonic", "Supersonic Lab"), ("_nozzle", "Rocket Nozzle Lab")):
             win = getattr(self, attr)
             if win is not None:
-                src.append(rbu.Source(attr, title, lambda w=win, t=title: rbu.capture_section(t, w)))
+                src.append(rbu.Source(attr, title, lambda w=win, t=title, a=attr: self._capture_lab(a[1:], t, w)))
         for key, dlg in list(self._tools.items()):
             try:
                 title = dlg.windowTitle().split(" — ")[0]
@@ -2100,6 +2152,27 @@ class MainWindow(QMainWindow):
                 continue
             src.append(rbu.Source(key, title, lambda d=dlg, t=title: rbu.capture_section(t, d)))
         return src
+
+    def _capture_lab(self, key: str, title: str, win: Any):
+        """A lab as shown: an embedded lab page is brought forward for the picture, then left again."""
+        from ui import report_builder as rbu
+
+        if self.stack.indexOf(win) < 0:
+            return rbu.capture_section(title, win)
+        before_lab, before_home, before_mode = self._lab_page, self._home_visible, self.mode
+        running = bool(getattr(win.view, "running", False))
+        self._present_lab(key, win)
+        sec = rbu.capture_section(title, win)
+        if before_lab is None:
+            if before_home:
+                self.show_home()
+            else:
+                self._set_mode(before_mode)
+        elif before_lab != key:
+            self._present_lab(before_lab, self._supersonic if before_lab == "supersonic" else self._nozzle)
+        if not running and getattr(win.view, "running", False):
+            win.pause()
+        return sec
 
     def _capture_mode(self, mode: Any, title: str):
         from ui import report_builder as rbu

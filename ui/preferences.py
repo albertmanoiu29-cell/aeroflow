@@ -194,8 +194,13 @@ class PreferencesDialog(QDialog):
                                    "Otherwise the wind tunnel opens directly")
         self.t_updates = ToggleSwitch("Check for updates automatically (at most once a day)",
                                       flag("updates/auto", True))
+        self.t_labs = ToggleSwitch("Open the Supersonic and Nozzle Labs inside the main window",
+                                   flag("ui/labs_embedded", True),
+                                   "As pages beside the wind tunnel (switch with the rail); off: separate windows. "
+                                   "Applies to labs opened after the next start")
         lay.addWidget(self.t_home)
         lay.addWidget(self.t_updates)
+        lay.addWidget(self.t_labs)
         lay.addStretch(1)
         return w
 
@@ -243,6 +248,7 @@ class PreferencesDialog(QDialog):
         st.setValue("ui/scale", scale)
         st.setValue("ui/show_home", self.t_home.isChecked())
         st.setValue("updates/auto", self.t_updates.isChecked())
+        st.setValue("ui/labs_embedded", self.t_labs.isChecked())
         st.sync()
         dev = self.device.currentData()
         if dev is not None and dev != compute.preference():

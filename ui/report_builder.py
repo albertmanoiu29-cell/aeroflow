@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSettings, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QSettings, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -45,9 +45,10 @@ def capture(win: QWidget) -> bytes:
         QApplication.processEvents()
     pix = QPixmap()
     scr = win.screen()
-    if scr is not None and win.isWindow() and QApplication.platformName() not in ("offscreen", "minimal"):
-        g = win.geometry()
-        pix = scr.grabWindow(0, g.x() - scr.geometry().x(), g.y() - scr.geometry().y(), g.width(), g.height())
+    if scr is not None and win.isVisible() and QApplication.platformName() not in ("offscreen", "minimal"):
+        top = win.mapToGlobal(QPoint(0, 0))         # also for a page embedded in the main window
+        sg = scr.geometry()
+        pix = scr.grabWindow(0, top.x() - sg.x(), top.y() - sg.y(), win.width(), win.height())
     if pix.isNull():
         pix = win.grab()
     return png_bytes(pix)

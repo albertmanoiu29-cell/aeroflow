@@ -622,11 +622,15 @@ class SupersonicWindow(QMainWindow):
         super().showEvent(event)
         self._refresh_all()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        """Closing only hides the window (the state is kept); the simulation pauses."""
+    def pause(self) -> None:
+        """Stop the simulation (the state is kept)."""
         self.view.stop()
         self.btn_run.setText("Run")
         self.btn_step.setEnabled(True)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Closing only hides the window (the state is kept); the simulation pauses."""
+        self.pause()
         event.accept()
 
     def shutdown(self) -> None:
