@@ -58,3 +58,20 @@ def test_batch_on_a_wing() -> None:
     assert np.all(np.diff(cl[np.isclose(res.X[:, 1], 50.0)][np.argsort(res.X[np.isclose(res.X[:, 1], 50.0), 0])]) > 0)
     surf = doe.fit_quadratic(res, "CL")
     assert surf.r2 > 0.98                       # CL is nearly linear in α below the stall
+
+
+def test_combined_report_html(tmp_path) -> None:
+    from core import report_book as rb
+
+    png = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                        "1f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082")
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(png)
+    meta = rb.ReportMeta("Wing <study>", "sub", "Me", "Org", notes="line 1\nline 2", logo=logo)
+    secs = [rb.Section("A", rows=[(f"k{i}", str(i)) for i in range(14)], images=[("pic", png)]),
+            rb.Section("B", text="hello")]
+    out = rb.write(tmp_path / "r.html", meta, secs)
+    h = out.read_text(encoding="utf-8")
+    assert "Wing &lt;study&gt;" in h and "<h2>Contents</h2>" in h and "1. A" in h and "2. B" in h
+    assert h.count("data:image/png;base64,") == 2                 # the logo and the figure, embedded
+    assert "kv two" in h and "k13" in h

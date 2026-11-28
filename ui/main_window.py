@@ -455,6 +455,8 @@ class MainWindow(QMainWindow):
         self.m_recent.aboutToShow.connect(self._fill_recent_menu)
         m_file.addSeparator()
         a(m_file, "Export report…", self.export_report, "Ctrl+E", "Self-contained HTML engineering report")
+        a(m_file, "Combined report (PDF)…", self.export_combined_report, "Ctrl+Shift+R",
+          "One report with a title page, your logo and notes, combining the wind tunnel, polar, labs and open tools")
         a(m_file, "Export polar CSV…", self.export_csv, "", "The last polar sweep as CSV")
         a(m_file, "Export run history CSV…", self._export_runs, "", "Every solve of this session as CSV")
         a(m_file, "Save screenshot…", self.screenshot_dialog, "Ctrl+S", "4K screenshot of the active view")
@@ -2019,6 +2021,87 @@ class MainWindow(QMainWindow):
             self.notify(f"Report saved: {Path(out).name}", "success")
         except Exception as exc:  # noqa: BLE001
             self._error("Report export failed", str(exc))
+
+    def _report_sources(self) -> list:
+        """Everything that can go into a combined report right now."""
+        from ui import report_builder as rbu
+        from core import report_book as rb
+
+        src: list = []
+        model = self.geometry_mgr.model
+        if model is not None and self.result is not None:
+            def tunnel() -> "rb.Section":
+                k, c = self.result.kpis, self.result.conditions
+                rows = [("Geometry", model.name), ("Engine", str(self.result.engine)),
+                        ("Speed", f"{c.velocity_ms:.2f} m/s"), ("Angle of attack", f"{c.alpha_deg:.2f}°"),
+                        ("Sideslip", f"{c.beta_deg:.2f}°"), ("Altitude", f"{c.altitude_m:.0f} m"),
+                        ("Reynolds number", f"{k.reynolds:.3g}"), ("Mach number", f"{k.mach:.3f}"),
+                        ("CL", f"{k.cl:+.4f}"), ("CD", f"{k.cd:.5f}"), ("CM", f"{k.cm:+.4f}"),
+                        ("L/D", f"{k.l_over_d:.2f}"), ("Lift", f"{k.lift_n:,.1f} N"), ("Drag", f"{k.drag_n:,.1f} N")]
+                rows += list(model.info.rows())
+                previous = self.mode
+                if previous != AppMode.CFD:
+                    self._set_mode(AppMode.CFD)
+                QApplication.processEvents()
+                shot = self.cfd_view.save_screenshot(rbu.tmpdir() / "flow.png", target_width=1800)
+                if previous != AppMode.CFD:
+                    self._set_mode(previous)
+                return rb.Section("Wind tunnel", rows=rows, images=[("3-D flow field", rbu.file_png(shot))])
+
+            src.append(rbu.Source("tunnel", "Wind tunnel: result and 3-D flow", tunnel))
+        if self.polar is not None:
+            def polar() -> "rb.Section":
+                import numpy as np
+
+                d = rbu.tmpdir()
+                imgs = []
+                for name, plot in zip(("Lift curve", "Drag polar", "Efficiency", "Pitching moment"),
+                                      self.polar_big.plots()):
+                    imgs.append((name, rbu.file_png(export_plot_png(plot, d / f"{sanitize_filename(name)}.png"))))
+                pl = self.polar
+                j = int(np.nanargmax(pl.cl / np.where(np.abs(pl.cd) > 1e-12, pl.cd, np.nan)))
+                rows = [("Geometry", pl.geometry_name), ("Engine", pl.engine), ("Reynolds number", f"{pl.reynolds:.3g}"),
+                        ("CL max", f"{float(np.nanmax(pl.cl)):.3f} at {pl.alpha_deg[int(np.nanargmax(pl.cl))]:.1f}°"),
+                        ("Best L/D", f"{pl.cl[j] / pl.cd[j]:.2f} at {pl.alpha_deg[j]:.1f}°")]
+                return rb.Section("Polar", rows=rows, images=imgs)
+
+            src.append(rbu.Source("polar", "Polar: lift, drag, efficiency, moment", polar))
+        if self.mode == AppMode.LIVE or getattr(self.lab_view, "has_flow", False):
+            src.append(rbu.Source("live", "Live Flow Lab (current view)",
+                                  lambda: self._capture_mode(AppMode.LIVE, "Live Flow Lab"), checked=False))
+        for attr, title in (("_supersonic", "Supersonic Lab"), ("_nozzle", "Rocket Nozzle Lab")):
+            win = getattr(self, attr)
+            if win is not None:
+                src.append(rbu.Source(attr, title, lambda w=win, t=title: rbu.capture_section(t, w)))
+        for key, dlg in list(self._tools.items()):
+            try:
+                title = dlg.windowTitle().split(" — ")[0]
+            except RuntimeError:
+                continue
+            src.append(rbu.Source(key, title, lambda d=dlg, t=title: rbu.capture_section(t, d)))
+        return src
+
+    def _capture_mode(self, mode: Any, title: str):
+        from ui import report_builder as rbu
+
+        previous = self.mode
+        self._set_mode(mode)
+        sec = rbu.capture_section(title, self)
+        self._set_mode(previous)
+        return sec
+
+    def export_combined_report(self) -> None:
+        from config.theme import PALETTE
+        from ui.report_builder import build_report
+
+        sources = self._report_sources()
+        if not sources:
+            self._status("Nothing to report yet: run a solve, or open a lab or a tool.")
+            return
+        model = self.geometry_mgr.model
+        title = f"{model.name}: engineering report" if model is not None else "Engineering report"
+        build_report(self, sources, title, self._default_name("_combined_report.html"), PALETTE.cyan,
+                     lambda text, level: self.notify(text, level))
 
     def show_help(self, tab: str = "") -> None:
         """Help / shortcuts / about / system report."""
