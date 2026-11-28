@@ -1095,8 +1095,33 @@ def make_icon(name: str, size: int = 20, color: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # Logo
 # ---------------------------------------------------------------------------
+def _logo_airfoil(chord: float, x0: float, y0: float, angle_deg: float, n: int = 40) -> QPainterPath:
+    """A NACA 2415-like section (chord ``chord``, leading edge at (x0, y0)), rotated nose-up by ``angle_deg``."""
+    m, pp, t = 0.03, 0.4, 0.19
+    xs = [0.5 * (1 - math.cos(math.pi * k / n)) for k in range(n + 1)]
+    upper, lower = [], []
+    for x in xs:
+        yt = 5 * t * (0.2969 * math.sqrt(x) - 0.126 * x - 0.3516 * x * x + 0.2843 * x ** 3 - 0.1036 * x ** 4)
+        yc = m / pp ** 2 * (2 * pp * x - x * x) if x < pp else m / (1 - pp) ** 2 * (1 - 2 * pp + 2 * pp * x - x * x)
+        upper.append((x, yc + yt))
+        lower.append((x, yc - yt))
+    pts = upper[::-1] + lower[1:]
+    a = math.radians(angle_deg)
+    path = QPainterPath()
+    for k, (x, y) in enumerate(pts):
+        X, Y = x * chord, -y * chord                 # screen y points down
+        xr = x0 + X * math.cos(a) + Y * math.sin(a)
+        yr = y0 - X * math.sin(a) + Y * math.cos(a)
+        if k == 0:
+            path.moveTo(xr, yr)
+        else:
+            path.lineTo(xr, yr)
+    path.closeSubpath()
+    return path
+
+
 def make_logo_pixmap(size: int = 32) -> QPixmap:
-    """Draw the AeroFlow mark: a deep accent tile with a white airfoil riding three streamlines."""
+    """Draw the AeroFlow mark: an accent tile with a white airfoil at incidence and the streamlines it turns."""
     scale = 2.0
     pix = QPixmap(int(size * scale), int(size * scale))
     pix.setDevicePixelRatio(scale)
@@ -1106,38 +1131,28 @@ def make_logo_pixmap(size: int = 32) -> QPixmap:
     painter.scale(size / 32.0, size / 32.0)
 
     grad = QLinearGradient(0, 0, 32, 32)
-    grad.setColorAt(0.0, qcolor(lerp_color(PALETTE.cyan, "#FFFFFF", 0.12)))
-    grad.setColorAt(1.0, qcolor(lerp_color(PALETTE.cyan, "#0A0F2C", 0.55)))
+    grad.setColorAt(0.0, qcolor(lerp_color(PALETTE.cyan, "#FFFFFF", 0.18)))
+    grad.setColorAt(1.0, qcolor(lerp_color(PALETTE.cyan, "#050A24", 0.58)))
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(grad)
-    painter.drawRoundedRect(QRectF(1, 1, 30, 30), 8.5, 8.5)
-    # soft top highlight
-    hi = QLinearGradient(0, 1, 0, 16)
-    hi.setColorAt(0.0, QColor(255, 255, 255, 46))
-    hi.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.setBrush(hi)
-    painter.drawRoundedRect(QRectF(1, 1, 30, 15), 8.5, 8.5)
+    painter.drawRoundedRect(QRectF(1, 1, 30, 30), 8.0, 8.0)
 
-    pen = QPen(QColor(255, 255, 255, 150), 1.4)
+    pen = QPen(QColor(255, 255, 255, 120), 1.35)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    for start, c1, c2, end in (
-        ((5.0, 11.0), (11.0, 10.0), (17.0, 6.5), (27.0, 9.0)),
-        ((5.0, 21.5), (12.0, 23.0), (19.0, 22.5), (27.0, 20.0)),
-        ((5.0, 25.5), (12.0, 26.5), (19.0, 26.0), (27.0, 24.5)),
+    for start, c1, c2, end in (                      # lifted over the suction side, turned down behind
+        ((4.0, 9.0), (10.0, 9.0), (13.0, 5.6), (28.0, 9.6)),
+        ((4.0, 20.6), (11.0, 20.6), (18.0, 20.6), (28.0, 23.4)),
+        ((4.0, 24.8), (12.0, 24.8), (19.0, 24.8), (28.0, 26.6)),
     ):
         path = QPainterPath()
         path.moveTo(*start)
         path.cubicTo(QPointF(*c1), QPointF(*c2), QPointF(*end))
         painter.drawPath(path)
-    wing = QPainterPath()
-    wing.moveTo(6.5, 17.5)
-    wing.cubicTo(8.5, 11.5, 19.5, 11.0, 26.0, 16.0)
-    wing.cubicTo(19.5, 18.6, 11.5, 19.8, 6.5, 17.5)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(255, 255, 255, 245))
-    painter.drawPath(wing)
+    painter.setBrush(QColor(255, 255, 255, 250))
+    painter.drawPath(_logo_airfoil(21.0, 5.4, 14.6, -9.0))
     painter.end()
     return pix
 

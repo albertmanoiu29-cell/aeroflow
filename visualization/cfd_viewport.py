@@ -39,7 +39,7 @@ from config.settings import (
     PARAM_LIMITS, SUPPORTED_MESH_EXTENSIONS, IsoField, ScalarField, SeedShape, SliceAxis,
 )
 from config.theme import (
-    CFD_BACKGROUND_BOTTOM, CFD_BACKGROUND_TOP, PALETTE, make_icon, mono_font, set_property,
+    CFD_BACKGROUND_BOTTOM, CFD_BACKGROUND_TOP, PALETTE, hex_to_rgb01, make_icon, mono_font, set_property,
 )
 from core.geometry_manager import GeometryModel
 from core.results import AeroKPIs, SolverResult
@@ -669,8 +669,38 @@ class CFDViewport(QWidget):
         except Exception as exc:  # a failed layer must never take the viewport down
             log.exception("Visualisation update failed: %s", exc)
             self.status_message.emit(f"Visualisation update failed: {exc}")
+        self._style_bars()
         if render:
             self.plotter.render()
+
+    def _style_bars(self) -> None:
+        """Legend polish: the title sits clear above the bar (it overlapped the top label), labels on the left
+        of the bar so long titles never run into them, a thin outline-free bar."""
+        try:
+            bars = getattr(self.plotter, "scalar_bars", None) or {}
+            for bar in bars.values():
+                if getattr(bar, "_af_styled", False):
+                    continue
+                if hasattr(bar, "SetVerticalTitleSeparation"):
+                    bar.SetVerticalTitleSeparation(10)
+                bar.SetTextPositionToPrecedeScalarBar()
+                bar.SetBarRatio(0.45)
+                bar.SetDrawFrame(False)
+                bar.SetDrawBackground(True)                     # a translucent panel: readable over streamlines
+                bg = bar.GetBackgroundProperty()
+                bg.SetColor(*hex_to_rgb01(PALETTE.surface))
+                bg.SetOpacity(0.78)
+                bar.UnconstrainedFontSizeOn()
+                tp = bar.GetTitleTextProperty()
+                tp.SetFontSize(12)
+                tp.SetBold(False)
+                tp.SetJustificationToRight()
+                lp = bar.GetLabelTextProperty()
+                lp.SetFontSize(11)
+                lp.SetBold(False)
+                bar._af_styled = True
+        except Exception as exc:  # noqa: BLE001 - cosmetic only
+            log.debug("Legend styling skipped: %s", exc)
 
     # -- actor helpers -----------------------------------------------------
     def _remove(self, name: str) -> None:
@@ -740,8 +770,8 @@ class CFDViewport(QWidget):
     @staticmethod
     def _bar_args(title: str, slot: int) -> dict[str, Any]:
         # Three stacked slots (surface, lines, slice) with a gap for each bar's title above it.
-        return dict(title=title, vertical=True, position_x=0.885, position_y=0.07 + 0.30 * slot, height=0.19,
-                    width=0.032, color=PALETTE.text_muted, title_font_size=12, label_font_size=11,
+        return dict(title=title, vertical=True, position_x=0.90, position_y=0.07 + 0.30 * slot, height=0.19,
+                    width=0.06, color=PALETTE.text_muted, title_font_size=12, label_font_size=11,
                     n_labels=5, fmt="%.2f", font_family="arial", shadow=False)
 
     # -- layers ------------------------------------------------------------

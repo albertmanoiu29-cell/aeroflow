@@ -163,6 +163,8 @@ class HomePage(QWidget):
                   "checked against theory.", "shock", "Ctrl+4"),
         HomeEntry("nozzle", "Rocket Nozzle Lab", "Engines from ignition: shock diamonds, thrust, aerospikes, solid "
                   "motors and flight.", "rocket", "Ctrl+5"),
+        HomeEntry("import", "Your own model", "Import an STL, OBJ, PLY, STEP or IGES model and test it in the wind "
+                  "tunnel.", "folder", "Ctrl+O"),
     )
     TOOLS = (
         HomeEntry("airfoil", "Airfoil analysis", "Panel method, stall estimate, drag polar", "airfoil", "Ctrl+Shift+A"),

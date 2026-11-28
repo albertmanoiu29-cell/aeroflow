@@ -82,43 +82,60 @@ def _show_splash(app, name: str, version: str):  # noqa: ANN001, ANN202
     try:
         import math
 
-        from PySide6.QtCore import QRectF, Qt
-        from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPixmap
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
         from PySide6.QtWidgets import QSplashScreen
 
-        from config.theme import PALETTE, make_logo_pixmap
+        from config.theme import PALETTE, make_logo_pixmap, ui_font
 
-        w, h = 560, 300
-        pix = QPixmap(w, h)
+        w, h = 620, 340
+        dpr = 2.0
+        pix = QPixmap(int(w * dpr), int(h * dpr))
+        pix.setDevicePixelRatio(dpr)
         pix.fill(QColor(PALETTE.bg_deep))
         p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         grad = QLinearGradient(0, 0, w, h)
         grad.setColorAt(0.0, QColor(PALETTE.surface))
         grad.setColorAt(1.0, QColor(PALETTE.bg_deep))
-        p.fillRect(0, 0, w, h, grad)
-        # stylised streamlines
-        p.setPen(QColor(PALETTE.cyan).darker(260))
-        for k in range(9):
-            y0 = 60 + k * 22
-            path_pts = [(x, y0 + 14.0 * math.sin((x + 40 * k) / 70.0)) for x in range(0, w + 1, 8)]
-            for (x1, y1), (x2, y2) in zip(path_pts, path_pts[1:]):
-                p.drawLine(int(x1), int(y1), int(x2), int(y2))
-        p.drawPixmap(40, 70, make_logo_pixmap(84))
-        p.setPen(QColor(PALETTE.text))
-        f = QFont()
-        f.setPixelSize(34)
-        f.setBold(True)
+        p.fillRect(QRectF(0, 0, w, h), grad)
+        # streamlines bending around an (invisible) airfoil on the right
+        for k in range(14):
+            y0 = 40 + k * 20.0
+            bump = 26.0 * math.exp(-((y0 - 170.0) / 60.0) ** 2) * (-1 if y0 < 170 else 1)
+            path = QPainterPath()
+            path.moveTo(0, y0)
+            path.cubicTo(QPointF(w * 0.45, y0), QPointF(w * 0.62, y0 + bump), QPointF(w, y0 + 0.4 * bump))
+            c = QColor(PALETTE.cyan)
+            c.setAlpha(int(26 + 30 * math.exp(-((y0 - 170.0) / 70.0) ** 2)))
+            p.setPen(QPen(c, 1.2))
+            p.drawPath(path)
+        p.drawPixmap(QPointF(44, 92), make_logo_pixmap(76))
+        f = ui_font(34)
+        f.setWeight(QFont.Weight.DemiBold)
         p.setFont(f)
-        p.drawText(QRectF(140, 72, w - 160, 44), Qt.AlignmentFlag.AlignVCenter, name)
-        f.setPixelSize(14)
-        f.setBold(False)
+        p.setPen(QColor(PALETTE.text))
+        p.drawText(QRectF(140, 90, w - 160, 46), Qt.AlignmentFlag.AlignVCenter, name)
+        f = ui_font(14)
         p.setFont(f)
         p.setPen(QColor(PALETTE.text_muted))
-        p.drawText(QRectF(142, 116, w - 160, 24), Qt.AlignmentFlag.AlignVCenter,
-                   f"Version {version} · 3-D CFD · polars · live flow lab")
-        p.setPen(QColor(PALETTE.border_strong))
-        p.drawRect(0, 0, w - 1, h - 1)
+        p.drawText(QRectF(142, 136, w - 160, 24), Qt.AlignmentFlag.AlignVCenter,
+                   "Aerodynamics and propulsion workbench")
+        # version badge
+        f = ui_font(12)
+        f.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f)
+        badge = QRectF(142, 172, 108, 24)
+        c = QColor(PALETTE.cyan)
+        c.setAlpha(40)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c)
+        p.drawRoundedRect(badge, 12, 12)
+        p.setPen(QColor(PALETTE.cyan))
+        p.drawText(badge, Qt.AlignmentFlag.AlignCenter, f"Version {version}")
+        p.setPen(QPen(QColor(PALETTE.border_strong), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 10, 10)
         p.end()
         splash = QSplashScreen(pix)
         splash.show()
@@ -134,7 +151,8 @@ def _splash_messenger(app, splash):  # noqa: ANN001, ANN202
 
     def say(text: str) -> None:
         if splash is not None:
-            splash.showMessage(text, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, QColor("#94A3B8"))
+            splash.showMessage("   " + text + "\n", Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
+                               QColor("#8A93A0"))
             app.processEvents()
     return say
 

@@ -257,11 +257,17 @@ FILE & EDIT
 SIMULATION
   Ctrl+R        Run simulation           Esc         Abort running task
 
-VIEW
+VIEW & NAVIGATION
+  Ctrl+K        Command palette          Alt+Home    Home screen
   Ctrl+1        Wind tunnel              Ctrl+2      Polar analysis
   Ctrl+3        Live Flow Lab            Ctrl+4      Supersonic Lab (window)
+  Ctrl+5        Rocket Nozzle Lab        Ctrl+,      Preferences
   F9 / F10      Controls / Analysis panel
-  F1            Help
+  F1            Help                     Shift+F1    Guide
+
+TOOLS
+  Ctrl+Shift+A  Airfoil analysis         Ctrl+Shift+W  Wing analysis
+  Ctrl+Shift+U  Aero calculator          Ctrl+Shift+P  Parametric study
 
 3-D VIEW (mouse)
   Left drag     Rotate                   Wheel       Zoom
@@ -306,12 +312,13 @@ class HelpDialog(QDialog):
         root.setContentsMargins(18, 18, 18, 18)
         head = QHBoxLayout()
         logo = QLabel()
-        logo.setPixmap(make_logo_pixmap(48))
+        logo.setPixmap(make_logo_pixmap(52))
         head.addWidget(logo)
+        head.addSpacing(6)
         tl = QVBoxLayout()
         t = QLabel(APP_NAME)
-        t.setProperty("role", "title")
-        s = QLabel(f"Version {APP_VERSION} · 3-D CFD, polar analysis and a real-time 2-D flow lab")
+        t.setProperty("role", "headline")
+        s = QLabel(f"Version {APP_VERSION} · aerodynamics and propulsion workbench")
         s.setProperty("role", "muted")
         tl.addWidget(t)
         tl.addWidget(s)
@@ -336,6 +343,7 @@ class HelpDialog(QDialog):
         about.setOpenExternalLinks(True)
         about.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         about.setAlignment(Qt.AlignmentFlag.AlignTop)
+        about.setContentsMargins(14, 12, 14, 12)
         tabs.addTab(about, "About")
         # System report: what to paste into a bug report (home folder replaced by ~).
         from utils.sysinfo import system_report
