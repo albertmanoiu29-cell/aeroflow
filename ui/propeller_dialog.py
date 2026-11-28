@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget,
+    QDialog, QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from config.settings import APP_NAME, isa_atmosphere
@@ -104,13 +104,39 @@ class PropellerDialog(QDialog):
         grid.addWidget(_card("Propeller efficiency", self.p_e), 0, 1)
         grid.addWidget(_card("Thrust along the blade", self.p_s), 1, 0)
         grid.addWidget(_card("Section angle of attack", self.p_a), 1, 1)
+        charts = QWidget()
+        charts.setLayout(grid)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(charts, "Performance")
+        self.view_host = QWidget()
+        QVBoxLayout(self.view_host).setContentsMargins(0, 0, 0, 0)
+        self.tabs.addTab(self.view_host, "3-D: rotation and airflow")
+        self.view3d = None
+        self.tabs.currentChanged.connect(self._tab_changed)
         root = QHBoxLayout(self)
         root.addWidget(lw)
-        root.addLayout(grid, 1)
+        root.addWidget(self.tabs, 1)
         for w in (self.d, self.pd, self.rpm, self.v, self.alt, self.camber, self.chord):
             w.valueChanged.connect(lambda _v: self.recompute())
         self.blades.valueChanged.connect(lambda _v: self.recompute())
         self.recompute()
+
+    def _tab_changed(self, index: int) -> None:
+        if index == 1 and self.view3d is None:
+            from visualization.propeller_view import Propeller3DView
+
+            self.view3d = Propeller3DView(self.view_host)
+            self.view_host.layout().addWidget(self.view3d)
+            self.recompute()
+            self.view3d.start()
+
+    def show_3d(self) -> None:
+        self.tabs.setCurrentIndex(1)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.view3d is not None:
+            self.view3d.shutdown()
+        super().closeEvent(event)
 
     def _prop(self) -> bem.Propeller:
         return bem.Propeller(self.d.value(), self.blades.value(), self.pd.value(), camber=self.camber.value(),
@@ -132,6 +158,10 @@ class PropellerDialog(QDialog):
             line.setPos(res.J)
         rad = 0.5 * prop.diameter
         self.c_dt.setData(res.r / rad, res.dT_dr)
+        if self.view3d is not None:
+            from core.propeller_flow import slipstream
+
+            self.view3d.set_propeller(prop.diameter, prop.blades, prop.pitch_ratio, slipstream(res, prop.diameter))
         self.c_al.setData(res.r / rad, res.alpha_deg)
         tip = math.pi * prop.diameter * self.rpm.value() / 60.0
         tip_mach = math.hypot(tip, self.v.value()) / isa_atmosphere(self.alt.value() * 1e3).speed_of_sound

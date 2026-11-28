@@ -81,13 +81,14 @@ def solve(prop: Propeller, rpm: float, speed: float, rho: float = 1.225, n: int 
     rad = 0.5 * prop.diameter
     r_hub = prop.hub_ratio * prop.diameter
     b = prop.blades
-    sigma = b * chord / (2.0 * math.pi * r)
-    a = np.full_like(r, 0.1)
+    v0 = max(speed, 0.0)
+    # Iterate on the induced velocities themselves (not on factors of V), so static thrust (V = 0) works:
+    # momentum on each annulus, dT/dr = 4 pi r rho F (V + vi) vi and dQ/dr = 4 pi r^3 rho F (V + vi) omega a'.
+    vi = np.full_like(r, 0.05 * omega * rad)
     ap = np.full_like(r, 0.01)
-    v0 = max(speed, 1e-3)
-    for _ in range(300):
+    for _ in range(400):
         vt = omega * r * (1.0 - ap)
-        va = v0 * (1.0 + a)
+        va = v0 + vi
         phi = np.arctan2(va, vt)
         alpha = beta - phi
         cl, cd = _airfoil(alpha, prop.camber, prop.cl_max)
@@ -97,17 +98,19 @@ def solve(prop: Propeller, rpm: float, speed: float, rho: float = 1.225, n: int 
         f_tip = 2.0 / math.pi * np.arccos(np.clip(np.exp(-b * (rad - r) / (2.0 * r * sphi)), 0.0, 1.0))
         f_hub = 2.0 / math.pi * np.arccos(np.clip(np.exp(-b * (r - r_hub) / (2.0 * r_hub * sphi)), 0.0, 1.0))
         f = np.maximum(f_tip * f_hub, 1e-3)
-        k = sigma * cn / (4.0 * f * np.sin(phi) ** 2)
-        kp = sigma * ct / (4.0 * f * np.sin(phi) * np.cos(phi))
-        a_new = np.clip(k / np.maximum(1.0 - k, 0.05), -0.5, 2.0)     # propeller (thrust-producing) branch
-        ap_new = np.clip(kp / (1.0 + kp), -0.5, 0.5)
-        if np.max(np.abs(a_new - a)) < 1e-7 and np.max(np.abs(ap_new - ap)) < 1e-7:
-            a, ap = a_new, ap_new
+        w2 = va * va + vt * vt
+        dt_blade = np.maximum(0.5 * w2 * chord * cn * b, 0.0)          # per unit rho
+        dq_blade = 0.5 * w2 * chord * ct * b * r
+        vi_new = 0.5 * (-v0 + np.sqrt(v0 * v0 + dt_blade / (math.pi * r * f)))
+        ap_new = np.clip(dq_blade / (4.0 * math.pi * r ** 3 * f * np.maximum(v0 + vi, 1e-6) * omega), -0.5, 0.5)
+        if np.max(np.abs(vi_new - vi)) < 1e-7 * (1.0 + omega * rad) and np.max(np.abs(ap_new - ap)) < 1e-8:
+            vi, ap = vi_new, ap_new
             break
-        a = 0.6 * a + 0.4 * a_new
-        ap = 0.6 * ap + 0.4 * ap_new
+        vi = 0.7 * vi + 0.3 * vi_new
+        ap = 0.7 * ap + 0.3 * ap_new
+    a = vi / max(v0, 1e-9) if v0 > 1e-9 else np.full_like(r, np.inf)
     vt = omega * r * (1.0 - ap)
-    va = v0 * (1.0 + a)
+    va = v0 + vi
     w2 = va * va + vt * vt
     phi = np.arctan2(va, vt)
     alpha = beta - phi
