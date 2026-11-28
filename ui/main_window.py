@@ -486,9 +486,9 @@ class MainWindow(QMainWindow):
         a(m_view, "Wind tunnel", lambda: self._set_mode(AppMode.CFD), "Ctrl+1")
         a(m_view, "Polar analysis", lambda: self._set_mode(AppMode.POLAR), "Ctrl+2")
         a(m_view, "Live Flow Lab", lambda: self._set_mode(AppMode.LIVE), "Ctrl+3")
-        a(m_view, "Supersonic Lab (separate window)…", self.open_supersonic, "Ctrl+4",
+        a(m_view, "Supersonic Lab", self.open_supersonic, "Ctrl+4",
           "Detailed Mach > 1 simulation: shock waves, expansion fans, bow shocks and theory comparison")
-        a(m_view, "Rocket Nozzle Lab (separate window)…", self.open_nozzle, "Ctrl+5",
+        a(m_view, "Rocket Nozzle Lab", self.open_nozzle, "Ctrl+5",
           "Rocket engine nozzle and exhaust plume: ignition, shock diamonds, thrust and Isp vs 1-D theory")
         m_view.addSeparator()
         a(m_view, "Home", self.show_home, "Alt+Home", "The start screen: workspaces, recent projects, what's new")
@@ -528,6 +528,9 @@ class MainWindow(QMainWindow):
             m_view.addAction(act)
             self.addAction(act)
         a(m_view, "Reset panel layout", self._reset_layout)
+        self.m_layouts = m_view.addMenu("Layouts")
+        self.m_layouts.aboutToShow.connect(self._fill_layouts_menu)
+        self._fill_layouts_menu()
 
         m_sim = mb.addMenu("&Simulation")
         a(m_sim, "Run", self.run_simulation, "Ctrl+R", "Solve the current geometry")
@@ -680,6 +683,91 @@ class MainWindow(QMainWindow):
         else:                                   # resizing docks before the first show is unsafe: do it after
             QTimer.singleShot(0, size_docks)
 
+    # -- named and per-workspace layouts -----------------------------------------------------------
+    BUILTIN_LAYOUTS = ("Default", "Focus on the 3-D view", "Wide analysis panel")
+
+    def _remember_layouts(self) -> bool:
+        v = self._settings().value("layouts/per_workspace", True)
+        return v if isinstance(v, bool) else str(v).lower() not in ("false", "0")
+
+    def _layout_names(self) -> list[str]:
+        v = self._settings().value("layouts/names", [])
+        if isinstance(v, str):
+            v = [v]
+        return [str(x) for x in (v or [])]
+
+    def _fill_layouts_menu(self) -> None:
+        menu = self.m_layouts
+        menu.clear()
+        for name in self.BUILTIN_LAYOUTS:
+            menu.addAction(name, lambda n=name: self.apply_layout(n))
+        names = self._layout_names()
+        if names:
+            menu.addSeparator()
+            for name in names:
+                menu.addAction(name, lambda n=name: self.apply_layout(n))
+        menu.addSeparator()
+        menu.addAction("Save current layout as…", self.save_layout_as)
+        act = menu.addAction("Delete a saved layout…", self.delete_layout)
+        act.setEnabled(bool(names))
+        menu.addSeparator()
+        rem = menu.addAction("Remember the layout of each workspace")
+        rem.setCheckable(True)
+        rem.setChecked(self._remember_layouts())
+        rem.toggled.connect(lambda on: self._settings().setValue("layouts/per_workspace", bool(on)))
+
+    def apply_layout(self, name: str) -> None:
+        self._leave_home()
+        if name == "Default":
+            self._reset_layout()
+        elif name == "Focus on the 3-D view":
+            self.left_dock.hide()
+            self.right_dock.hide()
+        elif name == "Wide analysis panel":
+            self.left_dock.show()
+            self.right_dock.show()
+            self.resizeDocks([self.left_dock, self.right_dock], [LEFT_DOCK_WIDTH, max(int(self.width() * 0.42), 520)],
+                             Qt.Orientation.Horizontal)
+        else:
+            state = self._settings().value(f"layouts/named/{name}")
+            if not isinstance(state, QByteArray) or state.isEmpty():
+                self.notify(f"The layout '{name}' could not be read.", "warning")
+                return
+            self.restoreState(state, _SETTINGS_VERSION)
+        self.notify(f"Layout: {name}")
+
+    def save_layout_as(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        if self._home_visible:
+            self._leave_home()
+        name, ok = QInputDialog.getText(self, "Save layout", "Name of this panel layout:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if name in self.BUILTIN_LAYOUTS:
+            self.notify("That name belongs to a built-in layout; choose another.", "warning")
+            return
+        s = self._settings()
+        s.setValue(f"layouts/named/{name}", self.saveState(_SETTINGS_VERSION))
+        names = [n for n in self._layout_names() if n != name] + [name]
+        s.setValue("layouts/names", names)
+        self.notify(f"Layout '{name}' saved: View ▸ Layouts brings it back.", "success")
+
+    def delete_layout(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        names = self._layout_names()
+        if not names:
+            return
+        name, ok = QInputDialog.getItem(self, "Delete layout", "Layout to delete:", names, 0, False)
+        if not ok:
+            return
+        s = self._settings()
+        s.remove(f"layouts/named/{name}")
+        s.setValue("layouts/names", [n for n in names if n != name])
+        self.notify(f"Layout '{name}' deleted.")
+
     def _save_layout(self) -> None:
         if getattr(self, "_home_visible", False):           # save the workspace layout, not the Home view
             left, right = self._docks_before_home
@@ -815,10 +903,16 @@ class MainWindow(QMainWindow):
         self._leave_lab_page()
         self._leave_home()
         previous = self.mode
+        if previous != mode and self._remember_layouts():
+            self._settings().setValue(f"layouts/workspace/{previous.name}", self.saveState(_SETTINGS_VERSION))
         self.mode = mode
         self.rail.set_current({AppMode.CFD: "cfd", AppMode.POLAR: "polar", AppMode.LIVE: "live"}[mode])
         self.mode_switch.set_index(MODES.index(mode))
         self.stack.setCurrentIndex(MODES.index(mode))
+        if previous != mode and self._remember_layouts():
+            saved = self._settings().value(f"layouts/workspace/{mode.name}")
+            if isinstance(saved, QByteArray) and not saved.isEmpty():
+                self.restoreState(saved, _SETTINGS_VERSION)
         live = mode == AppMode.LIVE
         self.left_stack.setCurrentIndex(1 if live else 0)
         self._update_chart_visibility()
