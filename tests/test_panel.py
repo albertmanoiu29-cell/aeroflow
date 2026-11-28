@@ -93,3 +93,29 @@ def test_lifting_line_stall_pattern() -> None:
     assert tapered.stall_y > 2.5                                       # strongly tapered wings stall outboard
     assert washed.stall_y < tapered.stall_y                            # washout moves it inboard
     assert rect.cl_max < 1.4                                           # the wing reaches less than the section
+
+
+def test_boundary_layer_drag_and_transition() -> None:
+    from core import boundary_layer as bl
+
+    nodes = _nodes("0012")
+    b0 = bl.analyse(pm.solve(nodes, 0.0), 3e6)
+    assert 0.0045 < b0.cd < 0.0065                                  # NACA 0012, Re 3e6: Cd0 ≈ 0.0055 (XFOIL/data)
+    assert b0.upper.transition_x == pytest.approx(b0.lower.transition_x, abs=0.02)   # symmetric
+    b8 = bl.analyse(pm.solve(nodes, 8.0), 3e6)
+    assert b8.upper.transition_x < b0.upper.transition_x < b8.lower.transition_x     # moves forward on top
+    assert b8.cd > b0.cd
+    tripped = bl.analyse(pm.solve(nodes, 0.0), 3e6, trip_upper=0.05, trip_lower=0.05)
+    assert tripped.cd > b0.cd and tripped.upper.transition_x < 0.1  # a trip strip adds turbulent drag
+    low = bl.analyse(pm.solve(nodes, 0.0), 2e5)
+    assert low.cd > b0.cd                                            # lower Reynolds number: more drag
+    assert b0.cd_friction < b0.cd * 1.2 and b0.cd_friction > 0.5 * b0.cd
+
+
+def test_viscous_polar_stall_from_separation() -> None:
+    p = pm.polar(_nodes("0012"), np.arange(-4.0, 22.01, 0.5), 3e6)
+    assert 13.0 < p.stall_alpha < 17.5 and 1.35 < p.cl_max < 1.65  # Abbott & von Doenhoff: 16°, 1.55
+    sep = [lay.upper.separation_x for lay in p.layers]
+    assert sep[0] > 0.98 and min(sep) < 0.9                         # separation creeps forward toward stall
+    thin = pm.polar(_nodes("0006"), np.arange(0.0, 16.01, 0.5), 3e6)
+    assert thin.cl_max < 1.0                                        # thin sections: leading-edge stall, low CL,max

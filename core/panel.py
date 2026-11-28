@@ -57,6 +57,7 @@ class PanelSolution:
     y: np.ndarray
     cp: np.ndarray
     upper: np.ndarray        # mask of upper-surface control points
+    vt: np.ndarray = None    # signed surface speed (along the clockwise node order), V = 1
 
 
 def solve(nodes: np.ndarray, alpha_deg: float) -> PanelSolution:
@@ -108,7 +109,7 @@ def solve(nodes: np.ndarray, alpha_deg: float) -> PanelSolution:
     cm = float(np.sum(-(xc - x0) * fy + yc * fx)) / chord ** 2
     le = int(np.argmin(xc))
     upper = np.arange(n) > le
-    return PanelSolution(alpha_deg, cl, cm, xc, yc, cp, upper)
+    return PanelSolution(alpha_deg, cl, cm, xc, yc, cp, upper, vt)
 
 
 def thickness(nodes: np.ndarray) -> float:
@@ -158,36 +159,77 @@ class Polar:
     stall_alpha: float       # degrees (nan if not reached in the sweep)
     cl_max: float            # viscous estimate; nan if not reached
     stall_negative: float    # degrees, the negative-α stall (nan if not reached)
+    layers: list = None      # boundary layers per angle (viscous polar)
 
 
-def polar(nodes: np.ndarray, alphas: np.ndarray, reynolds: float) -> Polar:
+def kirchhoff_factor(f: float) -> float:
+    """Lift fraction with trailing-edge separation at x/c = f (Kirchhoff flow, as in Beddoes-Leishman)."""
+    f = min(max(f, 0.0), 1.0)
+    return ((1.0 + math.sqrt(f)) / 2.0) ** 2
+
+
+def polar(nodes: np.ndarray, alphas: np.ndarray, reynolds: float, viscous: bool = True,
+          trip_upper: float | None = None, trip_lower: float | None = None) -> Polar:
+    """Lift, drag and moment across ``alphas``. With ``viscous`` (the default) an integral boundary layer
+    (:mod:`core.boundary_layer`) gives the profile drag (Squire-Young), transition and turbulent separation;
+    separation reduces the lift through the Kirchhoff relation (trailing-edge stall), and the Valarezo-Chin
+    pressure-recovery limit adds leading-edge stall. Without ``viscous``: the older skin-friction estimate."""
+    from core import boundary_layer as bl
+
     alphas = np.asarray(alphas, float)
     tc = thickness(nodes)
     sols = [solve(nodes, float(a)) for a in alphas]
     cl_inv = np.array([s.cl for s in sols])
-    cl = VISCOUS_LIFT_FACTOR * cl_inv
     cm = np.array([s.cm_quarter for s in sols])
     dcp = np.array([0.5 * (s.cp[0] + s.cp[-1]) - float(s.cp.min()) for s in sols])
     lim = stall_delta_cp(reynolds)
-    # skin friction, plus pressure drag that grows as the boundary layer nears separation (thickening wake)
-    cd = np.array([profile_drag(reynolds, tc, c) for c in cl]) + 0.015 * np.clip(dcp / lim, 0.0, 1.5) ** 6
     k = np.argsort(np.abs(alphas))[:2]
+    a0 = float(alphas[k[0]] - math.degrees(cl_inv[k[0]] / ((cl_inv[k[1]] - cl_inv[k[0]]) /
+                                                          math.radians(alphas[k[1]] - alphas[k[0]]))))         if len(alphas) > 1 and abs(cl_inv[k[1]] - cl_inv[k[0]]) > 1e-12 else 0.0
+    layers: list = []
+    if viscous:
+        cl = np.empty_like(cl_inv)
+        cd = np.empty_like(cl_inv)
+        for i, s in enumerate(sols):
+            b = bl.analyse(s, reynolds, trip_upper, trip_lower)
+            layers.append(b)
+            up = alphas[i] >= a0
+            f = b.upper.separation_x if up else b.lower.separation_x
+            if dcp[i] > lim:                                   # leading-edge stall: the suction peak collapses
+                f = min(f, max(0.0, 1.0 - (dcp[i] - lim) / (0.3 * lim)))
+            cl[i] = VISCOUS_LIFT_FACTOR * cl_inv[i] * kirchhoff_factor(f)
+            cd[i] = b.cd + 0.08 * (1.0 - min(f, 1.0)) ** 1.5           # separated wake (beyond Squire-Young)
+    else:
+        cl = VISCOUS_LIFT_FACTOR * cl_inv
+        cd = np.array([profile_drag(reynolds, tc, c) for c in cl]) + 0.015 * np.clip(dcp / lim, 0.0, 1.5) ** 6
     slope = float((cl[k[1]] - cl[k[0]]) / math.radians(alphas[k[1]] - alphas[k[0]])) if len(alphas) > 1 else 0.0
-    a0 = float(alphas[k[0]] - math.degrees(cl[k[0]] / slope)) if abs(slope) > 1e-9 else 0.0
     st, clm, neg = math.nan, math.nan, math.nan
     pos = alphas > a0
-    for i in range(1, len(alphas)):
-        if pos[i] and pos[i - 1] and dcp[i - 1] < lim <= dcp[i]:
-            f = (lim - dcp[i - 1]) / (dcp[i] - dcp[i - 1])
-            st = float(alphas[i - 1] + f * (alphas[i] - alphas[i - 1]))
-            clm = float(cl[i - 1] + f * (cl[i] - cl[i - 1]))
-            break
-    for i in range(len(alphas) - 1, 0, -1):
-        if not pos[i] and not pos[i - 1] and dcp[i] < lim <= dcp[i - 1]:
-            f = (lim - dcp[i]) / (dcp[i - 1] - dcp[i])
-            neg = float(alphas[i] + f * (alphas[i - 1] - alphas[i]))
-            break
-    return Polar(alphas, cl, cl_inv, cd, cm, dcp, tc, slope, a0, st, clm, neg)
+    if viscous:
+        if pos.sum() > 2:
+            i = int(np.argmax(np.where(pos, cl, -np.inf)))
+            if i < len(alphas) - 1:                            # a real maximum inside the sweep
+                st, clm = float(alphas[i]), float(cl[i])
+        if (~pos).sum() > 2:
+            i = int(np.argmin(np.where(~pos, cl, np.inf)))
+            if i > 0:
+                neg = float(alphas[i])
+    else:
+        for i in range(1, len(alphas)):
+            if pos[i] and pos[i - 1] and dcp[i - 1] < lim <= dcp[i]:
+                f = (lim - dcp[i - 1]) / (dcp[i] - dcp[i - 1])
+                st = float(alphas[i - 1] + f * (alphas[i] - alphas[i - 1]))
+                clm = float(cl[i - 1] + f * (cl[i] - cl[i - 1]))
+                break
+        for i in range(len(alphas) - 1, 0, -1):
+            if not pos[i] and not pos[i - 1] and dcp[i] < lim <= dcp[i - 1]:
+                f = (lim - dcp[i]) / (dcp[i - 1] - dcp[i])
+                neg = float(alphas[i] + f * (alphas[i - 1] - alphas[i]))
+                break
+    out = Polar(alphas, cl, cl_inv, cd, cm, dcp, tc, slope, a0, st, clm, neg)
+    out.layers = layers
+    return out
 
 
-__all__ = ["prepare", "solve", "PanelSolution", "thickness", "profile_drag", "polar", "Polar", "stall_delta_cp"]
+__all__ = ["prepare", "solve", "PanelSolution", "thickness", "profile_drag", "polar", "Polar", "stall_delta_cp",
+           "kirchhoff_factor"]

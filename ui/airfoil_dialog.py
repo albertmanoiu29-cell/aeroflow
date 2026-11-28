@@ -64,7 +64,12 @@ class AirfoilDialog(QDialog):
         self.panels.setRange(40, 400)
         self.panels.setValue(160)
         self.panels.setSingleStep(20)
-        self.re = _spin(1e4, 1e9, 3e6, 0, "", 1e5, "Chord Reynolds number (drag and the stall limit)")
+        self.re = _spin(1e4, 1e9, 3e6, 0, "", 1e5, "Chord Reynolds number (boundary layer, drag and stall)")
+        self.trip_u = _spin(0.0, 1.0, 0.0, 2, "x/c", 0.05, "Transition strip on the upper surface (0 = free "
+                            "transition, Michel's criterion)")
+        self.trip_l = _spin(0.0, 1.0, 0.0, 2, "x/c", 0.05, "Transition strip on the lower surface (0 = free)")
+        for sp in (self.trip_u, self.trip_l):
+            sp.setSpecialValueText("free")
         self.a_lo = _spin(-30.0, 0.0, -10.0, 1, "°", 1.0)
         self.a_hi = _spin(0.0, 30.0, 20.0, 1, "°", 1.0)
         self.a_step = _spin(0.1, 5.0, 0.5, 1, "°", 0.1)
@@ -76,6 +81,8 @@ class AirfoilDialog(QDialog):
         form.addRow("Airfoil", rw)
         form.addRow("Panels", self.panels)
         form.addRow("Reynolds number", self.re)
+        form.addRow("Trip, upper", self.trip_u)
+        form.addRow("Trip, lower", self.trip_l)
         form.addRow("α from", self.a_lo)
         form.addRow("α to", self.a_hi)
         form.addRow("α step", self.a_step)
@@ -85,10 +92,10 @@ class AirfoilDialog(QDialog):
         self.info.setWordWrap(True)
         exp = button("Export polar CSV…", "ghost", "", "α, CL (viscous estimate and inviscid), CD, Cm")
         exp.clicked.connect(self._export)
-        note = QLabel("Hess-Smith panel method: inviscid pressures and lift (close to wind-tunnel data while the "
-                      "flow stays attached); the viscous CL is 0.9 × inviscid. Stall from the Valarezo-Chin "
-                      "pressure-recovery limit; drag from skin friction with a thickness form factor. Expect "
-                      "±15 % on CL,max (more for thick, cambered trailing-edge stallers).")
+        note = QLabel("Hess-Smith panel method + integral boundary layer (Thwaites laminar, Michel transition, "
+                      "Head turbulent; Squire-Young drag). Turbulent separation lowers the lift (Kirchhoff "
+                      "trailing-edge stall); the Valarezo-Chin limit adds leading-edge stall. One-way coupling: "
+                      "expect ±10-15 % on CL,max, more for thick cambered sections.")
         note.setWordWrap(True)
         note.setProperty("role", "muted")
         left = QVBoxLayout()
@@ -125,7 +132,15 @@ class AirfoilDialog(QDialog):
         grid.addWidget(_card("Section", self.p_shape), 0, 1)
         grid.addWidget(_card("Lift curve", self.p_cl), 1, 0)
         grid.addWidget(_card("Drag polar", self.p_polar), 1, 1)
-        grid.addWidget(_card("Pitching moment", self.p_cm), 2, 0, 1, 2)
+        self.p_bl = _plot("x / c", "skin friction Cf × 1000", legend=True)
+        self.c_cfu = self.p_bl.plot(name="upper", pen=pg.mkPen(PALETTE.cyan, width=2))
+        self.c_cfl = self.p_bl.plot(name="lower", pen=pg.mkPen(PALETTE.warning, width=2))
+        self.c_marks = self.p_bl.plot(name="transition / separation", pen=None, symbol="o", symbolSize=8,
+                                      symbolBrush=pg.mkBrush(PALETTE.danger), symbolPen=None)
+        self.c_cp_marks = self.p_cp.plot(pen=None, symbol="t", symbolSize=10, symbolBrush=pg.mkBrush(PALETTE.danger),
+                                         symbolPen=None)
+        grid.addWidget(_card("Pitching moment", self.p_cm), 2, 0)
+        grid.addWidget(_card("Boundary layer", self.p_bl), 2, 1)
         root = QHBoxLayout(self)
         root.addWidget(lw)
         root.addLayout(grid, 1)
@@ -133,7 +148,7 @@ class AirfoilDialog(QDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self.recompute)
-        for w in (self.re, self.a_lo, self.a_hi, self.a_step):
+        for w in (self.re, self.a_lo, self.a_hi, self.a_step, self.trip_u, self.trip_l):
             w.valueChanged.connect(lambda _v: self._timer.start())
         self.panels.valueChanged.connect(lambda _v: (self._prepare(), self._timer.start()))
         self.alpha.valueChanged.connect(lambda _v: self._show_alpha())
@@ -182,7 +197,7 @@ class AirfoilDialog(QDialog):
         alphas = np.arange(lo, hi + 1e-9, max(self.a_step.value(), 0.1))
         if len(alphas) < 3:
             return
-        p = pm.polar(self.nodes, alphas, self.re.value())
+        p = pm.polar(self.nodes, alphas, self.re.value(), True, self._trip(self.trip_u), self._trip(self.trip_l))
         self.polar = p
         self.c_cli.setData(p.alpha, p.cl_inviscid)
         self.c_cm.setData(p.alpha, p.cm)
@@ -213,6 +228,10 @@ class AirfoilDialog(QDialog):
         self.info.setText("\n".join(lines))
         self._show_alpha()
 
+    @staticmethod
+    def _trip(sp) -> float | None:
+        return sp.value() if sp.value() > 0.0 else None
+
     def _show_alpha(self) -> None:
         a = self.alpha.value() / 10.0
         self.alpha_lbl.setText(f"α = {a:.1f}°")
@@ -224,7 +243,34 @@ class AirfoilDialog(QDialog):
         up, lo = s.upper, ~s.upper
         self.c_up.setData(s.x[up], s.cp[up])
         self.c_lo.setData(s.x[lo][::-1], s.cp[lo][::-1])
-        self.p_cp.setTitle(f"CL {pm.VISCOUS_LIFT_FACTOR * s.cl:.3f} (inviscid {s.cl:.3f}) · Cm {s.cm_quarter:+.4f}",
+        from core import boundary_layer as bl
+
+        b = bl.analyse(s, self.re.value(), self._trip(self.trip_u), self._trip(self.trip_l))
+        self.c_cfu.setData(b.upper.x, b.upper.cf * 1e3)
+        self.c_cfl.setData(b.lower.x, b.lower.cf * 1e3)
+        mx, my, cx, cy = [], [], [], []
+        for surf, ys in ((b.upper, s.cp[up]), (b.lower, s.cp[lo])):
+            for xm in (surf.transition_x, surf.separation_x if surf.separation_x < 0.999 else float("nan")):
+                if xm == xm:
+                    mx.append(xm)
+                    my.append(float(np.interp(xm, surf.x, surf.cf * 1e3)))
+                    xs_s = s.x[up] if surf is b.upper else s.x[lo][::-1]
+                    ys_s = ys if surf is b.upper else ys[::-1]
+                    order = np.argsort(xs_s)
+                    cx.append(xm)
+                    cy.append(float(np.interp(xm, xs_s[order], ys_s[order])))
+        self.c_marks.setData(mx, my)
+        self.c_cp_marks.setData(cx, cy)
+
+        def where(v: float) -> str:
+            return "—" if v != v else f"{v:.2f}"
+
+        self.p_bl.setTitle(f"transition x/c: upper {where(b.upper.transition_x)}, lower {where(b.lower.transition_x)}"
+                           f" · separation {where(b.upper.separation_x) if b.upper.separation_x < 0.999 else 'none'}"
+                           f" · Cd {b.cd:.5f}", color=PALETTE.text_muted, size="9pt")
+        cl_v = (float(np.interp(a, self.polar.alpha, self.polar.cl)) if self.polar is not None
+                else pm.VISCOUS_LIFT_FACTOR * s.cl)
+        self.p_cp.setTitle(f"CL {cl_v:.3f} (inviscid {s.cl:.3f}) · Cm {s.cm_quarter:+.4f}",
                            color=PALETTE.text_muted, size="9pt")
 
     def _export(self) -> None:
