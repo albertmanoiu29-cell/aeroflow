@@ -170,7 +170,8 @@ class HomePage(QWidget):
         HomeEntry("airfoil", "Airfoil analysis", "Panel method, stall estimate, drag polar", "airfoil", "Ctrl+Shift+A"),
         HomeEntry("wing", "Wing analysis", "Lifting line, span loading, induced drag", "wing", "Ctrl+Shift+W"),
         HomeEntry("calc", "Aero calculator", "Atmosphere, Mach, Reynolds, stall speed", "calculator", "Ctrl+Shift+U"),
-        HomeEntry("propeller", "Propeller", "Blade-element momentum theory", "propeller"),
+        HomeEntry("aircraft", "Aircraft design", "Sizing, stability, climb, range", "plane", "Ctrl+Shift+D"),
+        HomeEntry("propeller", "Propeller", "BEM, spinning 3-D slipstream", "propeller"),
         HomeEntry("flight", "Flight dynamics", "Trim, short period and phugoid", "plane"),
     )
     WHATS_NEW = (
@@ -196,7 +197,7 @@ class HomePage(QWidget):
         main.addLayout(self._grid(self.WORKSPACES, 3, big=True))
         main.addSpacing(6)
         main.addWidget(make_section_label("Engineering tools"))
-        main.addLayout(self._grid(self.TOOLS, 5, big=False))
+        main.addLayout(self._grid(self.TOOLS, 3, big=False))
         main.addStretch(1)
         side = QVBoxLayout()
         side.setSpacing(12)
