@@ -586,6 +586,7 @@ class MainWindow(QMainWindow):
         a(m_help, "Help and shortcuts", self.show_help, "F1")
         a(m_help, "Guide (what everything means)…", lambda: __import__("ui.guide", fromlist=["show_guide"]).show_guide(self),
           "Shift+F1", "Explanations of each lab and of the physics on screen")
+        a(m_help, "Take the tour", self.start_tour, "", "A two-minute guided tour of the window")
         a(m_help, "Open log folder", lambda: self._open_folder(get_paths().logs))
         m_help.addSeparator()
         a(m_help, "Check for updates…", lambda: self.check_for_updates(manual=True), "",
@@ -745,6 +746,60 @@ class MainWindow(QMainWindow):
         if (v if isinstance(v, bool) else str(v).lower() not in ("false", "0")) and \
                 not os.environ.get("AEROFLOW_NO_HOME"):
             self.show_home()
+        tour_done = self._settings().value("ui/tour_done", False)
+        if not (tour_done if isinstance(tour_done, bool) else str(tour_done).lower() in ("true", "1")) and                 not os.environ.get("AEROFLOW_NO_TOUR") and QApplication.platformName() not in ("offscreen", "minimal"):
+            QTimer.singleShot(1200, self.start_tour)
+
+    # -- guided tour ---------------------------------------------------------------------------------
+    def start_tour(self) -> None:
+        if self._closing or getattr(self, "_tour", None) is not None:
+            return
+        from ui.tour import Step, TourOverlay
+
+        def rail(key: str):
+            return lambda: self.rail.widgetForAction(self.rail.actions_by_key[key])
+
+        steps = [
+            Step("Welcome to AeroFlow Studio",
+                 "A quick look around: where the workspaces are, how to find any command, and where results "
+                 "appear. It takes about two minutes. <b>→</b> or Enter for the next step, Esc to skip."),
+            Step("The Home screen",
+                 "Every workspace, lab and tool, your recent projects and what's new. It opens at start-up "
+                 "(you can turn that off in Preferences).", lambda: self.home, self.show_home),
+            Step("The navigation rail",
+                 "One click to Home, the <b>wind tunnel</b>, the <b>polar</b>, the <b>Live Flow Lab</b>, the "
+                 "<b>Supersonic</b> and <b>Nozzle</b> labs and the engineering tools. Ctrl+1 … Ctrl+5 do the same.",
+                 lambda: self.rail),
+            Step("Find anything: Ctrl+K",
+                 "Type part of any command, workspace or tool and press Enter: “polar”, “report”, “mission”, "
+                 "“screenshot”…", lambda: self.btn_search),
+            Step("Controls",
+                 "In the wind tunnel: pick or import a geometry, set the speed, angle of attack and altitude, then "
+                 "press <b>Run</b> (Ctrl+R). Changes re-solve live.", lambda: self.left_dock,
+                 lambda: self._set_mode(AppMode.CFD)),
+            Step("The 3-D flow",
+                 "Streamlines and surface pressure. Drag to rotate, Shift-drag to pan, wheel to zoom. Colours: "
+                 "warm is faster air or higher pressure.", lambda: self.cfd_view),
+            Step("Results",
+                 "Forces, coefficients, charts and the run history. Simulation ▸ <b>Pin result</b>, change the "
+                 "design and <b>Compare</b> to see the difference.", lambda: self.right_dock),
+            Step("The labs",
+                 "Live simulations: shock waves above Mach 1, and rocket engines from ignition. They run on the "
+                 "GPU when you have one (NVIDIA, AMD or Intel).", rail("supersonic")),
+            Step("Engineering tools",
+                 "Airfoil, wing and calculator here; the <b>Tools</b> menu adds the propeller, aircraft design, "
+                 "mission planner and flight dynamics. Every tool has undo (Ctrl+Z).", rail("airfoil")),
+            Step("Help is always here",
+                 "The Guide explains each lab and the physics on screen (Shift+F1); F1 lists the shortcuts. Run "
+                 "this tour again from Help ▸ Take the tour. Have fun!", rail("guide")),
+        ]
+        self._tour = TourOverlay(self, steps)
+
+        def done(_completed: bool) -> None:
+            self._tour = None
+            self._settings().setValue("ui/tour_done", True)
+
+        self._tour.finished.connect(done)
 
     def _start_warmups(self) -> None:
         if self._closing:
